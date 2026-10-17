@@ -149,6 +149,18 @@ class IcoResTest(unittest.TestCase):
         self.assertIn(b"PerMonitorV2", found[6][2])
 
 
+class SysoTest(unittest.TestCase):
+    def test_absolute_symbols_move_to_section_one(self):
+        def sym(name, sect, cls, aux=0):
+            return struct.pack("<8sIhHBB", name, 7, sect, 0, cls, aux)
+        symbols = sym(b"@comp.id", -1, 3) + sym(b".rsrc$01", 2, 3, 1) + bytes(18) + sym(b"@feat.00", -1, 3)
+        header = struct.pack("<HHIIIHH", 0x8664, 0, 0, 20, 4, 0, 0)
+        fixed = pi.fix_syso(header + symbols + b"\x04\x00\x00\x00")
+        entries = [struct.unpack_from("<8sIhHBB", fixed, 20 + 18 * i) for i in (0, 1, 3)]
+        self.assertEqual([(e[2], e[4]) for e in entries], [(1, 3), (2, 3), (1, 3)])
+        self.assertEqual(fixed[20 + 18 * 2:20 + 18 * 3], bytes(18))  # the aux record is left alone
+
+
 class ProjectTest(unittest.TestCase):
     def test_write_project(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -239,6 +239,37 @@ def encode_res(images, manifest=MANIFEST):
     return out
 
 
+def fix_syso(coff):
+    """Make cvtres.exe output linkable by Go: its absolute symbols (@comp.id, @feat.00) have section
+    number -1, which Go's linker rejects ("sectnum < 0"); attach them to section 1 as static symbols."""
+    data = bytearray(coff)
+    nsym_ptr, nsym = struct.unpack_from("<II", data, 8)
+    i = 0
+    while i < nsym:
+        off = nsym_ptr + 18 * i
+        sect, = struct.unpack_from("<h", data, off + 12)
+        if sect < 0:
+            struct.pack_into("<h", data, off + 12, 1)
+            data[off + 16] = 3  # IMAGE_SYM_CLASS_STATIC
+        i += 1 + data[off + 17]
+    return bytes(data)
+
+
+def make_syso(res_path, out_path):
+    """app.res -> a Go .syso via the MSVC cvtres.exe (Visual Studio), patched by fix_syso."""
+    import glob
+    import subprocess
+    found = sorted(glob.glob(r"C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cvtres.exe"))
+    if not found:
+        raise FileNotFoundError("cvtres.exe (Visual Studio C++ tools) not found")
+    subprocess.run([found[-1], "/nologo", "/machine:x64", f"/out:{out_path}", res_path], check=True)
+    with open(out_path, "rb") as f:
+        fixed = fix_syso(f.read())
+    with open(out_path, "wb") as f:
+        f.write(fixed)
+    return out_path
+
+
 def rgba_file(img):
     """Raw pixels with an 8-byte header (width, height as little-endian u32)."""
     return struct.pack("<II", img.width, img.height) + img.rgba
@@ -319,6 +350,9 @@ def write_project(project_dir, silk_file, name, extras=()):
 
 
 def main(argv):
+    if argv[:1] == ["--syso"]:  # --syso app.res out.syso
+        print(make_syso(argv[1], argv[2]))
+        return
     names = argv or list(PROJECTS)
     for project in names:
         silk_file, _, name, extras = PROJECTS[project]

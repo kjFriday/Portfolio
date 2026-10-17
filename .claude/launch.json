@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "crud-hub-api",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["create_read_update_delete_simple_io_data_base/api.py"],
+      "port": 8700
+    },
+    {
+      "name": "ticket-tracker",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8710", "--bind", "127.0.0.1", "--directory", "simple_ticket_tracker/www"],
+      "port": 8710
+    },
+    {
+      "name": "data-dash",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8711", "--bind", "127.0.0.1", "--directory", "data_dash/www"],
+      "port": 8711
+    }
+  ]
+}

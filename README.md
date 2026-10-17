@@ -11,17 +11,53 @@ Six small programs that run a fictional company, **ACME Inc.**, from one shared 
    ┌───────────────┬────────────┼─────────────┬────────────────┐
    ▼               ▼            ▼             ▼                ▼
   CMS          Data Dash   Doc pipeline   Notify hub    Ticket tracker
-  (Go)     (FastAPI+React)   (Python)      (planned)       (planned)
+  (Go)       (Rust/WASM)     (Python)        (Go)         (Rust/WASM)
 ```
 
 | Project | Folder | Status |
 |---|---|---|
 | CRUD hub | `create_read_update_delete_simple_io_data_base` | Working: GUI, REST API, seed data, tests |
 | Content management | `content_management_system` | Helper packages tested; server not yet wired |
-| Data dashboard | `data_dash` | Fixture data only |
+| Data dashboard | `data_dash` | Working: business + fixture charts, standalone or live |
 | Document pipeline | `document_mover_and_changer` | `docpipe` helpers tested; pipeline not built |
-| Notification hub | `notification_and_message_hub` | Design reference + templates |
-| Ticket tracker | `simple_ticket_tracker` | Needs a spec |
+| Notification hub | `notification_and_message_hub` | Throttle + textsafe packages; dispatcher not built |
+| Ticket tracker | `simple_ticket_tracker` | Working: kanban board with CRUD, standalone or live |
+
+## Standalone or connected
+
+Every project carries a `mock/` folder: a JSON snapshot of the hub's seeded rows (same ids), written by
+`export_mock.py`. A project runs on its snapshot with nothing else started, and switches to the live hub
+API to show the projects talking to each other. The Rust/WASM apps have a *Data* switch for this
+(`?source=hub` in the URL does the same).
+
+Mock data: people are random pairs from common first- and last-name lists (realistic, but no one real);
+free text is lorem ipsum. `seed.py` builds 120 employees, 3,000 customers, 15,000 orders and documents,
+2,000 tickets and about 17,000 events, identical on every run.
+
+```bash
+python seed.py
+```
+
+```bash
+python export_mock.py
+```
+
+(run in `create_read_update_delete_simple_io_data_base`)
+
+## Quick start (Ticket tracker, Data Dash)
+
+Requires Rust with the `wasm32-unknown-unknown` target and `wasm-pack`. In `simple_ticket_tracker` or
+`data_dash`:
+
+```bash
+wasm-pack build --target web --out-dir www/pkg --no-typescript
+```
+
+```bash
+python -m http.server 8710 --bind 127.0.0.1 --directory www
+```
+
+(use port 8711 for `data_dash`), then open the page. Each project's README has the details.
 
 ## Quick start (CRUD hub)
 
@@ -43,7 +79,7 @@ Then open `http://127.0.0.1:8700/api/` or run `python main.py` for the desktop G
 | Method | Path | Does |
 |---|---|---|
 | GET | `/api/` | List tables and columns |
-| GET | `/api/{table}?limit=N` | List rows |
+| GET | `/api/{table}?limit=N&offset=M` | List rows, newest first (`limit` 1-500); `X-Total-Count` header gives the table size |
 | GET | `/api/{table}/{id}` | One row |
 | POST | `/api/{table}` | Create (JSON body) → `{"id": n}` |
 | PATCH | `/api/{table}/{id}` | Update |
@@ -64,6 +100,12 @@ go test ./internal/...
 ```
 
 (run in `content_management_system`)
+
+```bash
+cargo test
+```
+
+(run in `simple_ticket_tracker` and `data_dash`)
 
 ## Layout
 

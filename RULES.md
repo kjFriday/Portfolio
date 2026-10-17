@@ -5,10 +5,10 @@ How work is done in the ACME Inc. portfolio.
 ## Data
 1. **Mock data only.** Every person, company, address and order is invented. No real personal data, credentials or customer records, ever.
 2. **Deterministic seeds.** `seed.py` must produce identical output on every run.
-3. **Reused data keeps its license.** Note the source and license in that folder's `data/README.md`. Only CC0 / public-domain or self-authored data is accepted.
+3. **Reused data keeps its license.** Note the source and license in that folder's `data/README.md`. Only CC0 / public-domain or self-authored data is accepted. Icons may also be CC BY: credit the author, link the licence and say what changed in the project's `icon/README.md` and its About box.
 
 ## The hub
-4. The CRUD hub owns the schema. Other projects read and write **through its API**, not the SQLite file.
+4. The CRUD hub owns the schema and creates the shared database. Other programs open the SQLite file **by path** (`--db`, `ACME_DB` or their saved setting), never change its schema, and write only the rows they own. The path is the only link between programs.
 5. Schema changes are made in `db.py` `SCHEMA` and logged.
 6. All string input passes `textsafe` before it is stored.
 
@@ -32,3 +32,6 @@ How work is done in the ACME Inc. portfolio.
 
 ## License
 17. All code is AGPL-3.0 (see `LICENSE`). Contributions are accepted under the same license.
+
+## Programs
+18. Each project is a self-contained desktop program: it opens its own window with its own icon and version, and installs and uninstalls itself per user.

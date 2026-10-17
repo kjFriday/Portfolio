@@ -1,0 +1,18 @@
+[submodule "content_management_system"]
+	path = content_management_system
+	url = https://github.com/kjFriday/content_management_system.git
+[submodule "create_read_update_delete_simple_io_data_base"]
+	path = create_read_update_delete_simple_io_data_base
+	url = https://github.com/kjFriday/create_read_update_delete_simple_io_data_base.git
+[submodule "data_dash"]
+	path = data_dash
+	url = https://github.com/kjFriday/data_dash.git
+[submodule "document_mover_and_changer"]
+	path = document_mover_and_changer
+	url = https://github.com/kjFriday/document_mover_and_changer.git
+[submodule "notification_and_message_hub"]
+	path = notification_and_message_hub
+	url = https://github.com/kjFriday/notification_and_message_hub.git
+[submodule "simple_ticket_tracker"]
+	path = simple_ticket_tracker
+	url = https://github.com/kjFriday/simple_ticket_tracker.git

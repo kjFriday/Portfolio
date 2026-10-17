@@ -60,8 +60,15 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 **Verification**
 - Both apps checked in a browser: standalone and live modes, no console errors. Tracker: move, create (escaped HTML), delete round-trip through the API. Dash: live totals match SQL over all 15,000 orders.
 
+**Every project runs on its own** (bare bones; each also talks to the hub)
+- Hub seed: `order.created` events now carry `customer_id`, and order/ticket events from the seeded today's last 3 days stay `pending` (222 in all), so the dispatcher has a queue. Snapshots re-exported. 42 hub tests.
+- content_management_system: the cgo SQLite server moved to `reference/` (kept, not built). New stdlib server on :8720: post list, post pages, related posts (`internal/related`), did-you-mean (`internal/suggest`), search, health. Posts from `mock/posts.json`; authors from the snapshot or, with `-hub`, the hub's `employees`. New `internal/store` with tests.
+- document_mover_and_changer: `python -m docpipe` renders invoices, receipts and packing slips at each `documents` row's path, with a SHA-256 manifest; `--hub ... --register` reads the newest orders from the hub and writes back missing `documents` rows and a `documents.generated` event. 51 tests.
+- notification_and_message_hub: `go run ./cmd/dispatch` routes pending events to customers, throttles per recipient on the events' own clock and writes an outbox; with `-hub` it PATCHes event statuses (a second run finds the queue empty).
+- Checked against the running hub: CMS authors (120) from the API, docpipe registered its run event, the dispatcher sent 222 events' messages and marked them.
+
 ## Open
-- cms: switch to a pure-Go SQLite driver so `main.go` builds; wire the new packages into routes; read `mock/posts.json`.
-- document_mover_and_changer: build the pipeline (orders → invoice files → `documents` table); start from `mock/`.
-- notification_and_message_hub: build the event dispatcher over `mock/events.json` and the hub's `events` table.
+- cms: writing posts (auth, storage); a pure-Go SQLite driver if posts move to a database.
+- document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.
+- notification_and_message_hub: real channels behind the outbox; retry for held messages.
 - simple_ticket_tracker: comments, priorities, due dates.

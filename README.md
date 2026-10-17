@@ -12,16 +12,25 @@ Six small programs that run a fictional company, **ACME Inc.**, from one shared 
    ▼               ▼            ▼             ▼                ▼
   CMS          Data Dash   Doc pipeline   Notify hub    Ticket tracker
   (Go)       (Rust/WASM)     (Python)        (Go)         (Rust/WASM)
+   :8720        :8711                                       :8710
 ```
 
 | Project | Folder | Status |
 |---|---|---|
 | CRUD hub | `create_read_update_delete_simple_io_data_base` | Working: GUI, REST API, seed data, tests |
-| Content management | `content_management_system` | Helper packages tested; server not yet wired |
+| Content management | `content_management_system` | Bare bones: read-only post API + pages; authors from snapshot or hub |
 | Data dashboard | `data_dash` | Working: business + fixture charts, standalone or live |
-| Document pipeline | `document_mover_and_changer` | `docpipe` helpers tested; pipeline not built |
-| Notification hub | `notification_and_message_hub` | Throttle + textsafe packages; dispatcher not built |
+| Document pipeline | `document_mover_and_changer` | Bare bones: orders → document files + manifest; can register back to the hub |
+| Notification hub | `notification_and_message_hub` | Bare bones: dispatcher with throttle; marks hub events sent |
 | Ticket tracker | `simple_ticket_tracker` | Working: kanban board with CRUD, standalone or live |
+
+| Project | Standalone | Connected to the hub |
+|---|---|---|
+| CMS | `go run .` | `go run . -hub http://127.0.0.1:8700` |
+| Data Dash | open the page | *Data* → *Live CRUD hub* |
+| Doc pipeline | `python -m docpipe` | `python -m docpipe --hub http://127.0.0.1:8700 --register` |
+| Notify hub | `go run ./cmd/dispatch` | `go run ./cmd/dispatch -hub http://127.0.0.1:8700` |
+| Ticket tracker | open the page | *Data* → *Live CRUD hub* |
 
 ## Standalone or connected
 
@@ -99,7 +108,7 @@ python -m unittest discover
 go test ./internal/...
 ```
 
-(run in `content_management_system`)
+(run in `content_management_system` and `notification_and_message_hub`)
 
 ```bash
 cargo test

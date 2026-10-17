@@ -13,7 +13,7 @@ How work is done in the ACME Inc. portfolio.
 6. All string input passes `textsafe` before it is stored.
 
 ## Reused code
-7. Originals go to `_extracted/` **unedited**, with a SHA-256 line in `MANIFEST.tsv`. Never edit staged files.
+7. Originals go to `_extracted/` **unedited**, with a SHA-256 line in `MANIFEST.tsv`. Never edit staged files. `_extracted/` stays local (git-ignored) and is never published.
 8. Adapted copies live in the project and are listed in its `PROVENANCE.md` (file → source → symbols).
 9. Copy the needed functions only, rename to neutral ACME Inc. terms, and add tests.
 

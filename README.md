@@ -120,7 +120,7 @@ cargo test
 
 - `LOG.md` — dated work log.
 - `RULES.md` — rules for working in this repo.
-- `_extracted/` — unedited originals of reused code plus a SHA-256 `MANIFEST.tsv`; each project's `PROVENANCE.md` maps adapted files back to them.
+- Reused code: each project's `PROVENANCE.md` maps adapted files to their originals by SHA-256. The originals are kept privately by the owner and are not published.
 
 ## License
 

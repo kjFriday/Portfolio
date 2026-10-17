@@ -67,6 +67,9 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 - notification_and_message_hub: `go run ./cmd/dispatch` routes pending events to customers, throttles per recipient on the events' own clock and writes an outbox; with `-hub` it PATCHes event statuses (a second run finds the queue empty).
 - Checked against the running hub: CMS authors (120) from the API, docpipe registered its run event, the dispatcher sent 222 events' messages and marked them.
 
+**Publishing**
+- Six project repos pushed. The staged originals in `_extracted/` are private, so they are now git-ignored and were removed from this repo's unpublished history before its first push; the local copy is unchanged. Provenance notes no longer name a local folder. Leftover files nothing used were removed from the projects.
+
 ## Open
 - cms: writing posts (auth, storage); a pure-Go SQLite driver if posts move to a database.
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

@@ -37,6 +37,13 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 **Cleanup**
 - Older source projects removed from the portfolio folder after their backups were verified file-by-file (SHA-256). Reused code remains in `_extracted/`.
 
+## 2026-10-17
+
+**CRUD hub** (`create_read_update_delete_simple_io_data_base`)
+- API contract: a bad `?limit` (it must be 1-500), a body that is not a JSON object, or a write with no known columns now answers **400**. A constraint failure, such as a NOT NULL column or deleting a row that other rows still reference, answers **409**. Before, those requests crashed the handler and dropped the connection.
+- Text cleaning moved into the data layer, so the GUI's writes go through `textsafe` too. The GUI's Update stores blank fields as NULL.
+- Added `test_db.py` and `test_api.py` (the API is tested over real HTTP against a temporary database). 32 tests pass on 5 runs in a row. Seed output is unchanged and deterministic.
+
 ## Open
 - cms: switch to a pure-Go SQLite driver so `main.go` builds; wire the new packages into routes.
 - data_dash: build the dashboard over the hub API.

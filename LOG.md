@@ -70,8 +70,21 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 **Publishing**
 - Six project repos pushed. The staged originals in `_extracted/` are private, so they are now git-ignored and were removed from this repo's unpublished history before its first push; the local copy is unchanged. Provenance notes no longer name a local folder. Leftover files nothing used were removed from the projects.
 
+**Six desktop programs, one shared database** (version 0.2.0 everywhere)
+- Each project is now a self-contained program: its own window with its own pixel icon and version in the title, `--install` / `--uninstall` per user (Start menu under ACME Inc, Apps & features, no admin rights), and a `--root` sandbox. The only link between programs is the path to the shared SQLite file (`--db`, `ACME_DB`, a saved setting, or `%LOCALAPPDATA%\ACME Inc\acme.db`); with no database each runs on its snapshot.
+- Icons: six Silk icons (Mark James, CC BY 2.5), enlarged by whole pixels only. `tools/pixel_icons.py` (stdlib) writes each project's `icon/` (PNG sizes, `.ico`, a Windows resource with a DPI-aware manifest, a Go `.syso`); RULES #3 allows CC BY icons with credit.
+- CRUD hub: menu, status bar, About; reseeding backs the file up and refills it in place; `export_mock.py` also writes `mock/schema.sql`. The REST API is retired (in git history).
+- Doc pipeline: a tkinter window (run, register, manifest, preview); reads and writes the database directly.
+- CMS and Notify hub: WebView2 windows (`github.com/jchv/go-webview2`, pure Go) over an in-process server that only the window can use; SQLite through `modernc.org/sqlite` v1.46.1 (last for Go 1.24). Notify has a queue/dispatch/deliveries window.
+- Ticket tracker and Data Dash: a `desktop` cargo feature (`wry`, `tao`, `rusqlite` bundled) hosts the wasm page and answers the hub's API contract from the shared file through an `acme://` protocol; Data Dash read-only.
+- RULES #4: programs open the shared file by path and write only their own rows. New rule 18: every project is a self-contained desktop program.
+
+**Verification**
+- Python: hub 54 and docpipe 81 tests, 5 runs each. Go: `go vet` clean, `go test -count=5` passes in both. Rust: `cargo test` and `cargo test --features desktop` pass in both. Icon tool: 13 tests.
+- `tools/verify.ps1` against a fresh sandbox database: all six windows open with their icon, version and the database as source; the doc pipeline's registration is visible to the hub; Notify takes 222 pending events to 0 and a second pass changes nothing; the file is free once every program closes.
+- Sandbox install, launch of the installed copy and self-uninstall checked for all six. A real (non-sandbox) install has not been run.
 ## Open
-- cms: writing posts (auth, storage); a pure-Go SQLite driver if posts move to a database.
+- cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.
 - notification_and_message_hub: real channels behind the outbox; retry for held messages.
 - simple_ticket_tracker: comments, priorities, due dates.

@@ -1,47 +1,101 @@
 # ACME Inc. — a mini software ecosystem
 
-Six small programs that run a fictional company, **ACME Inc.**, from one shared mock database. ACME Inc., its staff, customers, orders and tickets are all invented.
+Six small desktop programs that run a fictional company, **ACME Inc.**, from one shared mock database.
+ACME Inc., its staff, customers, orders and tickets are all invented.
+
+Each program is self-contained: it opens its own window with its own pixel icon and version, installs
+and uninstalls itself, and runs on its bundled snapshot when there is no database. The only link between
+them is the **path to the shared SQLite file**.
 
 ```
-                 ┌──────────────────────────────┐
-                 │  CRUD hub  (Python, SQLite)  │
-                 │  tkinter GUI + REST :8700    │
-                 └──────────────┬───────────────┘
-                                │ JSON over HTTP
-   ┌───────────────┬────────────┼─────────────┬────────────────┐
-   ▼               ▼            ▼             ▼                ▼
-  CMS          Data Dash   Doc pipeline   Notify hub    Ticket tracker
-  (Go)       (Rust/WASM)     (Python)        (Go)         (Rust/WASM)
-   :8720        :8711                                       :8710
+   CRUD Hub      Doc Pipeline     Journal      Notify Hub    Ticket Tracker    Data Dash
+   (Python)        (Python)        (Go)          (Go)        (Rust/WASM)      (Rust/WASM)
+   tkinter         tkinter        WebView2      WebView2       WebView2         WebView2
+      │               │              │              │              │                │
+      └───────────────┴──────────────┴──────┬───────┴──────────────┴────────────────┘
+                                             ▼
+                          %LOCALAPPDATA%\ACME Inc\acme.db (SQLite)
 ```
 
-| Project | Folder | Status |
+| Program | Folder | Icon (Silk) | Reads | Writes |
+|---|---|---|---|---|
+| ACME CRUD Hub | `create_read_update_delete_simple_io_data_base` | database | every table | every table; owns the schema and the seed |
+| ACME Doc Pipeline | `document_mover_and_changer` | folder_go | orders, documents, customers, products | documents rows, a `documents.generated` event |
+| ACME Journal (CMS) | `content_management_system` | newspaper | employees (post authors) | nothing |
+| ACME Notify Hub | `notification_and_message_hub` | bell | events, customers | `events.status` |
+| ACME Ticket Tracker | `simple_ticket_tracker` | note | tickets, customers, employees | tickets |
+| ACME Data Dash | `data_dash` | chart_bar | orders, products, customers, tickets | nothing |
+
+## Desktop apps
+
+Every program uses the same conventions:
+
+- **Title bar:** `ACME Inc. — <name> 0.2.0`. The version has one source per project (Python
+  `__version__`, Go `const Version`, Rust `CARGO_PKG_VERSION`) and also appears in the About box and in
+  Apps & features.
+- **Database path:** `--db PATH`, then the `ACME_DB` environment variable, then the path saved from the
+  program's own Database… choice (`%LOCALAPPDATA%\ACME Inc\<app id>\settings.json`), then
+  `%LOCALAPPDATA%\ACME Inc\acme.db`. Only the hub creates the file and its schema. If the file is missing
+  or its schema doesn't match, a program runs on its `mock/` snapshot and says so.
+- **Install:** `--install` copies the program to `%LOCALAPPDATA%\Programs\ACME Inc\<name>\`, adds it to
+  the Start menu under **ACME Inc** (`--desktop-shortcut` adds one to the desktop too), and lists it in
+  **Apps & features**. It works per user and needs no admin rights.
+- **Uninstall:** `--uninstall` removes all of that. It never deletes the shared database.
+- **Sandbox:** `--root DIR` does all of the above inside DIR.
+- **Other flags:** `--version`, `--quiet`, and `--smoke FILE` (opens the window, writes a JSON report, closes).
+- **Windows:** the Python programs use tkinter. The Go and Rust programs use Edge WebView2 (part of
+  Windows 10/11), and their pages are served in-process to that window only:
+  - Go uses a loopback server with a per-run token.
+  - Rust uses a custom `acme://` protocol.
+
+| Program | Run | Install |
 |---|---|---|
-| CRUD hub | `create_read_update_delete_simple_io_data_base` | Working: GUI, REST API, seed data, tests |
-| Content management | `content_management_system` | Bare bones: read-only post API + pages; authors from snapshot or hub |
-| Data dashboard | `data_dash` | Working: business + fixture charts, standalone or live |
-| Document pipeline | `document_mover_and_changer` | Bare bones: orders → document files + manifest; can register back to the hub |
-| Notification hub | `notification_and_message_hub` | Bare bones: dispatcher with throttle; marks hub events sent |
-| Ticket tracker | `simple_ticket_tracker` | Working: kanban board with CRUD, standalone or live |
+| CRUD Hub | `python main.py` | `python main.py --install` |
+| Doc Pipeline | `python -m docpipe` | `python -m docpipe --install` |
+| Journal | `go build -ldflags "-H windowsgui" -o acme-cms.exe .` then `acme-cms.exe` | `acme-cms.exe -install` |
+| Notify Hub | `go build -ldflags "-H windowsgui" -o acme-notify.exe ./cmd/notify` then `acme-notify.exe` | `acme-notify.exe -install` |
+| Ticket Tracker | `wasm-pack build --target web --out-dir www/pkg --no-typescript`, `cargo build --release --features desktop`, then `target\release\acme-tickets.exe` | `acme-tickets.exe --install` |
+| Data Dash | same as the tracker, then `target\release\acme-dash.exe` | `acme-dash.exe --install` |
 
-| Project | Standalone | Connected to the hub |
-|---|---|---|
-| CMS | `go run .` | `go run . -hub http://127.0.0.1:8700` |
-| Data Dash | open the page | *Data* → *Live CRUD hub* |
-| Doc pipeline | `python -m docpipe` | `python -m docpipe --hub http://127.0.0.1:8700 --register` |
-| Notify hub | `go run ./cmd/dispatch` | `go run ./cmd/dispatch -hub http://127.0.0.1:8700` |
-| Ticket tracker | open the page | *Data* → *Live CRUD hub* |
+Requirements:
 
-## Standalone or connected
+- Python 3.10+ (standard library only).
+- Go 1.24 (no cgo needed).
+- Rust with the MSVC toolchain, the `wasm32-unknown-unknown` target and `wasm-pack`.
 
-Every project carries a `mock/` folder: a JSON snapshot of the hub's seeded rows (same ids), written by
-`export_mock.py`. A project runs on its snapshot with nothing else started, and switches to the live hub
-API to show the projects talking to each other. The Rust/WASM apps have a *Data* switch for this
-(`?source=hub` in the URL does the same).
+Each project's README has the details and explains its dependencies.
 
-Mock data: people are random pairs from common first- and last-name lists (realistic, but no one real);
-free text is lorem ipsum. `seed.py` builds 120 employees, 3,000 customers, 15,000 orders and documents,
-2,000 tickets and about 17,000 events, identical on every run.
+## Icons
+
+The icons are from the **Silk** set by Mark James (famfamfam.com/lab/icons/silk), licensed under
+[Creative Commons Attribution 2.5](http://creativecommons.org/licenses/by/2.5/).
+
+- The unedited 16×16 originals are in `icons/silk/`.
+- `tools/pixel_icons.py` (standard library only) makes each project's `icon/` folder: 32, 48 and 256 px
+  PNGs, an `.ico` and a Windows resource.
+- The only change it makes is enlarging the originals by whole pixels (nearest-neighbour), so every size
+  stays pixelated.
+- Each `icon/README.md` credits the source and lists every file's SHA-256.
+- The tests check that every size matches the original pixel for pixel.
+
+```bash
+python tools/pixel_icons.py
+```
+
+## Mock data
+
+People are random pairs from common first- and last-name lists, so they look realistic but no one is
+real. Free text is lorem ipsum. `seed.py` builds:
+
+- 120 employees
+- 3,000 customers
+- 15,000 orders and their documents
+- 2,000 tickets
+- about 17,000 events
+
+The data is identical on every run. Reseeding a database that is already in use backs it up first and
+refills it in place. `export_mock.py` writes each project's `mock/` snapshot, plus `mock/schema.sql`
+(the hub's schema) for their tests.
 
 ```bash
 python seed.py
@@ -53,79 +107,38 @@ python export_mock.py
 
 (run in `create_read_update_delete_simple_io_data_base`)
 
-## Quick start (Ticket tracker, Data Dash)
-
-Requires Rust with the `wasm32-unknown-unknown` target and `wasm-pack`. In `simple_ticket_tracker` or
-`data_dash`:
-
-```bash
-wasm-pack build --target web --out-dir www/pkg --no-typescript
-```
-
-```bash
-python -m http.server 8710 --bind 127.0.0.1 --directory www
-```
-
-(use port 8711 for `data_dash`), then open the page. Each project's README has the details.
-
-## Quick start (CRUD hub)
-
-Requires Python 3.10+ (stdlib only).
-
-```bash
-cd create_read_update_delete_simple_io_data_base
-python seed.py
-```
-
-```bash
-python api.py
-```
-
-Then open `http://127.0.0.1:8700/api/` or run `python main.py` for the desktop GUI.
-
-### API
-
-| Method | Path | Does |
-|---|---|---|
-| GET | `/api/` | List tables and columns |
-| GET | `/api/{table}?limit=N&offset=M` | List rows, newest first (`limit` 1-500); `X-Total-Count` header gives the table size |
-| GET | `/api/{table}/{id}` | One row |
-| POST | `/api/{table}` | Create (JSON body) → `{"id": n}` |
-| PATCH | `/api/{table}/{id}` | Update |
-| DELETE | `/api/{table}/{id}` | Delete |
-
-Tables: `employees`, `customers`, `products`, `orders`, `tickets`, `documents`, `events`. String input is sanitized; an unknown table returns `404` with a `did_you_mean` hint.
-
 ## Tests
 
-```bash
-python -m unittest discover
-```
+| Project folder | Command |
+|---|---|
+| `create_read_update_delete_simple_io_data_base` | `python -m unittest discover` |
+| `document_mover_and_changer` | `python -m unittest discover -s tests` |
+| `content_management_system`, `notification_and_message_hub` | `go test ./...` |
+| `simple_ticket_tracker`, `data_dash` | `cargo test`, then `cargo test --features desktop` |
+| the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
 
-(run in `create_read_update_delete_simple_io_data_base`; in `document_mover_and_changer` add `-s tests`)
+`tools/verify.ps1` runs all six programs against one sandbox database. It checks:
 
-```bash
-go test ./internal/...
-```
-
-(run in `content_management_system` and `notification_and_message_hub`)
-
-```bash
-cargo test
-```
-
-(run in `simple_ticket_tracker` and `data_dash`)
+- each window's title, icon, version and source;
+- that the doc pipeline's registration shows up for the hub;
+- that a second Notify pass finds nothing pending;
+- that nothing is left holding the file.
 
 ## Layout
 
-- `LOG.md` — dated work log.
-- `RULES.md` — rules for working in this repo.
-- Reused code: each project's `PROVENANCE.md` maps adapted files to their originals by SHA-256. The originals are kept privately by the owner and are not published.
+- `LOG.md`: dated work log.
+- `RULES.md`: rules for working in this repo.
+- `icons/silk/`: the icon originals; `tools/`: the icon tool, the end-to-end check and a window-screenshot helper.
+- Reused code: each project's `PROVENANCE.md` maps adapted files to their originals by SHA-256. The
+  originals are kept privately by the owner and are not published.
 
 ## License
 
 Copyright (C) 2026 kjFriday.
 
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, version 3. It is distributed WITHOUT ANY WARRANTY; see [LICENSE](LICENSE) for details.
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU
+Affero General Public License as published by the Free Software Foundation, version 3. It is
+distributed WITHOUT ANY WARRANTY; see [LICENSE](LICENSE) for details.
 
-Mock data derived from Wikidata is CC0 1.0 (see each `data/README.md`).
+Mock data derived from Wikidata is CC0 1.0 (see each `data/README.md`). Icons: Silk by Mark James, CC BY
+2.5, enlarged by nearest-neighbour (see `icons/silk/README.md`).

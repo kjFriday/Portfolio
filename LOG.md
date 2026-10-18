@@ -100,10 +100,17 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 - Checked for all six, each in its own sandbox: quiet install (every file matches its source by SHA-256; marker, Start-menu shortcut and Apps & features entry as expected), the installed copy started the way its shortcut starts it (title, icon, version, the shared database as source), a repair at the same version, the uninstaller with `-purge` (settings folder gone, shared database kept, nothing left behind), and both windows walked with `-smoke` at 96 DPI and 142 % text size (every control inside its window, clear of the others, its text fitting). Rebuilding gives byte-identical setups. No real (non-sandbox) install was run.
 - The six projects have no LICENSE file of their own, so their setups show no License page.
 
+## 2026-10-18
+
+**Setups ready to publish** (the six programs)
+- Trimmed build paths. The exes and the wasm carried the build machine's user folder (Go module cache, cargo registry, rustup library sources) and the project folder. The Go READMEs now build with `go build -trimpath`. The Rust READMEs first set `CARGO_ENCODED_RUSTFLAGS` to `--remap-path-prefix=<user folder>=~`, which `wasm-pack` and `cargo build` both use (one flag, so a folder name with spaces works); cargo's `trim-paths` profile option is still unstable on cargo 1.99. The portfolio README's table matches.
+- Ticket tracker and Data Dash: the source-tree fallback for `www` no longer compiles in the project folder (`CARGO_MANIFEST_DIR`). It stays in release builds, since `target\release\acme-*.exe`, `--install` run from there and `tools/verify.ps1` use it, but is found at run time: the `www` in the project above the `target` folder holding the exe. An installed copy uses the `www` beside it, as before. New test.
+- Each project now has the AGPL-3.0 `LICENSE`, and its `setup.json` names it, so its setup shows the License page (Next waits for "I accept"). The doc pipeline README gained a License section. Each README's Install section says how to build the setup.
+- Checked from a clean checkout of each repo: tests pass (CRUD hub 63, doc pipeline 90, Go vet and tests in both, Rust 16 + 38 and 18 + 41). The exes, the wasm, the maker and all six setups were built as the READMEs say; no exe, wasm or installed file holds the user folder, the portfolio folder or a module-cache path. The same sandbox check as on 2026-10-17 passed for all six, now with the License page walked by `-smoke`. Rebuilding gives byte-identical setups.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.
 - notification_and_message_hub: real channels behind the outbox; retry for held messages.
 - simple_ticket_tracker: comments, priorities, due dates.
 - install_wizard_maker: code signing; the six programs' `--uninstall` could hand over to `uninstall.exe` when a wizard installed them.
-- All six projects: a LICENSE file in each repo (its setup would then show the License page); build the exes with trimmed paths (`go build -trimpath`, a path remap for Rust) before any setup is published, since the exes carry the build machine's paths.

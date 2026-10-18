@@ -53,9 +53,9 @@ Every program uses the same conventions:
 |---|---|---|
 | CRUD Hub | `python main.py` | `python main.py --install` |
 | Doc Pipeline | `python -m docpipe` | `python -m docpipe --install` |
-| Journal | `go build -ldflags "-H windowsgui" -o acme-cms.exe .` then `acme-cms.exe` | `acme-cms.exe -install` |
-| Notify Hub | `go build -ldflags "-H windowsgui" -o acme-notify.exe ./cmd/notify` then `acme-notify.exe` | `acme-notify.exe -install` |
-| Ticket Tracker | `wasm-pack build --target web --out-dir www/pkg --no-typescript`, `cargo build --release --features desktop`, then `target\release\acme-tickets.exe` | `acme-tickets.exe --install` |
+| Journal | `go build -trimpath -ldflags "-H windowsgui" -o acme-cms.exe .` then `acme-cms.exe` | `acme-cms.exe -install` |
+| Notify Hub | `go build -trimpath -ldflags "-H windowsgui" -o acme-notify.exe ./cmd/notify` then `acme-notify.exe` | `acme-notify.exe -install` |
+| Ticket Tracker | `$env:CARGO_ENCODED_RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~"`, `wasm-pack build --target web --out-dir www/pkg --no-typescript`, `cargo build --release --features desktop`, then `target\release\acme-tickets.exe` | `acme-tickets.exe --install` |
 | Data Dash | same as the tracker, then `target\release\acme-dash.exe` | `acme-dash.exe --install` |
 
 Requirements:

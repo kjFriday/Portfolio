@@ -2,12 +2,6 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "crud-hub-api",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["create_read_update_delete_simple_io_data_base/api.py"],
-      "port": 8700
-    },
-    {
       "name": "ticket-tracker",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8710", "--bind", "127.0.0.1", "--directory", "simple_ticket_tracker/www"],
@@ -16,8 +10,14 @@
     {
       "name": "cms",
       "runtimeExecutable": "go",
-      "runtimeArgs": ["-C", "content_management_system", "run", ".", "-hub", "http://127.0.0.1:8700"],
+      "runtimeArgs": ["-C", "content_management_system", "run", ".", "-serve"],
       "port": 8720
+    },
+    {
+      "name": "notify",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["-C", "notification_and_message_hub", "run", "./cmd/notify", "-serve"],
+      "port": 8730
     },
     {
       "name": "data-dash",

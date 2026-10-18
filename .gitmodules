@@ -16,3 +16,6 @@
 [submodule "simple_ticket_tracker"]
 	path = simple_ticket_tracker
 	url = https://github.com/kjFriday/simple_ticket_tracker.git
+[submodule "install_wizard_maker"]
+	path = install_wizard_maker
+	url = https://github.com/kjFriday/install_wizard_maker.git

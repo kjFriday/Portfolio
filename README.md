@@ -1,7 +1,8 @@
 # ACME Inc. — a mini software ecosystem
 
-Six small desktop programs that run a fictional company, **ACME Inc.**, from one shared mock database.
-ACME Inc., its staff, customers, orders and tickets are all invented.
+Six small desktop programs that run a fictional company, **ACME Inc.**, from one shared mock database,
+and a seventh that makes install wizards for them (or for any Windows program). ACME Inc., its staff,
+customers, orders and tickets are all invented.
 
 Each program is self-contained: it opens its own window with its own pixel icon and version, installs
 and uninstalls itself, and runs on its bundled snapshot when there is no database. The only link between
@@ -65,6 +66,19 @@ Requirements:
 
 Each project's README has the details and explains its dependencies.
 
+## Install wizards
+
+`install_wizard_maker` is the seventh program, **ACME Wizard Maker** (Go, standard library only, a native
+Win32 window; Silk icon "wand"). It turns a `setup.json` into one self-contained `setup.exe` for any
+Windows program: a classic wizard (license, folder, shortcuts) that installs per user with no admin
+rights, lists the program in Apps & features, upgrades it in place by app id, and leaves an uninstaller
+that removes only what it installed. It writes the same `install.json` marker and `--root` sandbox as the
+programs' own `--install`, so either can take over the other's install. It does not use the database.
+
+| Program | Run | Install |
+|---|---|---|
+| Wizard Maker | `go build -trimpath -ldflags "-H windowsgui -s -w" -o wizard-maker.exe .` then `wizard-maker.exe` | `wizard-maker.exe -install` |
+
 ## Icons
 
 The icons are from the **Silk** set by Mark James (famfamfam.com/lab/icons/silk), licensed under
@@ -113,7 +127,7 @@ python export_mock.py
 |---|---|
 | `create_read_update_delete_simple_io_data_base` | `python -m unittest discover` |
 | `document_mover_and_changer` | `python -m unittest discover -s tests` |
-| `content_management_system`, `notification_and_message_hub` | `go test ./...` |
+| `content_management_system`, `notification_and_message_hub`, `install_wizard_maker` | `go test ./...` |
 | `simple_ticket_tracker`, `data_dash` | `cargo test`, then `cargo test --features desktop` |
 | the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
 

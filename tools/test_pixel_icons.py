@@ -1,3 +1,11 @@
+# ==== ACME Inc. portfolio ===============================================
+# Project: portfolio | File: tools/test_pixel_icons.py
+# About: Tests for pixel_icons.py.
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
 import os
 import struct
 import sys
@@ -217,3 +225,5 @@ class ProjectTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=48fa8a03c83bfcc1252285abad342d8e3e67142c2ae484e3c19d6b9b0ec17b88 ====

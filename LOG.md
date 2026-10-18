@@ -108,6 +108,11 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 - Each project now has the AGPL-3.0 `LICENSE`, and its `setup.json` names it, so its setup shows the License page (Next waits for "I accept"). The doc pipeline README gained a License section. Each README's Install section says how to build the setup.
 - Checked from a clean checkout of each repo: tests pass (CRUD hub 63, doc pipeline 90, Go vet and tests in both, Rust 16 + 38 and 18 + 41). The exes, the wasm, the maker and all six setups were built as the READMEs say; no exe, wasm or installed file holds the user folder, the portfolio folder or a module-cache path. The same sandbox check as on 2026-10-17 passed for all six, now with the License page walked by `-smoke`. Rebuilding gives byte-identical setups.
 
+**Source stamps** (portfolio and all seven projects)
+- New `stamp.py` (standard library only) with `test_stamp.py` (27 tests). It adds a header to every tracked source file (project, file, a one-line description taken from the file's own doc comment, copyright, AGPL-3.0 SPDX line, a pointer to `PROVENANCE.md` where the project has one). It also adds a footer: an HMAC-SHA256 of the author's name, the file's path and the rest of the file, under a private key kept outside the repo. `--check` reports files that are unstamped or no longer match; `--restamp PATH` re-stamps after the author's own edits.
+- 193 files stamped (Go, Python, Rust, PowerShell, JS, CSS, HTML). Not stamped: the five generated `mock/schema.sql` files, `reference/` excerpts and `testdata/` fixtures. Shebangs, coding cookies, doctypes and build tags stay where they must, and line endings and BOMs are kept.
+- Checked after stamping: CRUD hub 63, doc pipeline 90, icon tool 16, Go vet and tests in all three Go projects, Rust 16 + 3 / 38 + 3 (tracker) and 18 + 3 / 41 + 3 (Data Dash) with and without `desktop`; gofmt clean. `cargo fmt --check` reports the same diffs as before stamping, none in the stamps.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

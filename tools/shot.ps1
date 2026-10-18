@@ -1,3 +1,11 @@
+# ==== ACME Inc. portfolio ===============================================
+# Project: portfolio | File: tools/shot.ps1
+# About: Screenshot one ACME window for checking icons and titles by eye: tools\shot.ps1 -Title...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
 # Screenshot one ACME window for checking icons and titles by eye:
 #   tools\shot.ps1 -Title "ACME CRUD Hub" -Out shot.png -Exe python -ArgList main.py,--db,C:\tmp\acme.db
 param([string]$Title, [string]$Out, [string]$Exe, [string[]]$ArgList = @(), [int]$Wait = 3)
@@ -28,3 +36,5 @@ $g = [System.Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc(); [W]::PrintWi
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
 "{0} '{1}' -> {2}" -f $win.ProcessName, $win.MainWindowTitle, $Out
 Stop-Process -Id $win.Id -ErrorAction SilentlyContinue; Stop-Process $p -ErrorAction SilentlyContinue
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=802b90e79419911b70b86b2a06579b540805af5d68496cd8f1c4310a06568aa3 ====

@@ -130,6 +130,7 @@ python export_mock.py
 | `content_management_system`, `notification_and_message_hub`, `install_wizard_maker` | `go test ./...` |
 | `simple_ticket_tracker`, `data_dash` | `cargo test`, then `cargo test --features desktop` |
 | the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
+| the portfolio folder (stamps) | `python -m unittest test_stamp` |
 
 `tools/verify.ps1` runs all six programs against one sandbox database. It checks:
 
@@ -149,6 +150,19 @@ python export_mock.py
 ## License
 
 Copyright (C) 2026 kjFriday.
+
+Every source file begins with a short header (project, file, what it does, the license) and ends with a
+stamp: an HMAC-SHA256 of the author's name, the file's path and the rest of the file, made with a key only
+the author holds. You may change any file under the license. The stamp shows whether a file still
+matches the version the author wrote. `stamp.py` (standard library only) adds and checks the stamps:
+
+```bash
+python stamp.py --check
+```
+
+`python stamp.py` stamps new files, and `python stamp.py --restamp PATH` re-stamps a file the author has
+changed. Generated files, third-party excerpts (`reference/`) and test fixtures (`testdata/`) are not
+stamped.
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU
 Affero General Public License as published by the Free Software Foundation, version 3. It is

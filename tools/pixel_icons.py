@@ -1,3 +1,11 @@
+# ==== ACME Inc. portfolio ===============================================
+# Project: portfolio | File: tools/pixel_icons.py
+# About: Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
 """Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
 
     python tools/pixel_icons.py            # write icon/ into all seven projects
@@ -397,3 +405,5 @@ def main(argv):
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=90da7f8e76c408237a32ddb3fa207d502f1a1f5ec2fe5b4cc44aaae01ec6b895 ====

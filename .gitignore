@@ -1,2 +1,4 @@
 # Private staging of reused originals; kept locally, never published (RULES 7 and 16)
 _extracted/
+# The private key for stamp.py; kept outside the repo, never published
+*stamp_key*

@@ -1,3 +1,11 @@
+# ==== ACME Inc. portfolio ===============================================
+# Project: portfolio | File: tools/verify.ps1
+# About: End-to-end check of the six ACME programs against one sandbox database (nothing outside...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
 # End-to-end check of the six ACME programs against one sandbox database (nothing outside $Sandbox is
 # touched). Builds the Go exes itself; build the Rust ones first (cargo build --release --features desktop):
 #   powershell -ExecutionPolicy Bypass -File tools\verify.ps1
@@ -64,3 +72,5 @@ Rename-Item $db "acme-moved.db"; Rename-Item (Join-Path $Sandbox "acme-moved.db"
 Check "acme.db can be renamed with every program closed" $true
 
 if ($failed) { "$failed check(s) failed"; exit 1 } else { "All checks passed." }
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=e87481fe69d338affb957d49b8d259bf154ff437bc7203174572fc2d36d142c3 ====

@@ -1,13 +1,14 @@
 """Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
 
-    python tools/pixel_icons.py            # write icon/ into all six projects
+    python tools/pixel_icons.py            # write icon/ into all seven projects
     python tools/pixel_icons.py data_dash  # just one
 
 Every size is the original enlarged by whole pixels (nearest-neighbour), so the icons stay pixelated.
 Each project gets icon/ with the unedited original, app-32/48/256.png, app.ico (16/32/48 as 32-bit BMP,
 256 as PNG), app.res (icon group 1 plus a DPI-aware manifest, for linking into an exe) and README.md
 with the credit and SHA-256 of every file. Rust projects also get app-32.rgba (raw pixels for a window
-icon) and www/favicon.png.
+icon) and www/favicon.png. A project drawn with native Win32 controls ("controls") gets a manifest that
+also asks for Common Controls 6 (themed controls) and declares asInvoker and Windows 10.
 """
 
 import hashlib
@@ -29,6 +30,7 @@ PROJECTS = {
     "notification_and_message_hub": ("bell.png", "ACME.Notify", "ACME Notify Hub", ()),
     "simple_ticket_tracker": ("note.png", "ACME.Tickets", "ACME Ticket Tracker", ("rgba", "favicon")),
     "data_dash": ("chart_bar.png", "ACME.Dash", "ACME Data Dash", ("rgba", "favicon")),
+    "install_wizard_maker": ("wand.png", "ACME.Wizard", "ACME Wizard Maker", ("controls",)),
 }
 
 CREDIT = ("Icon: Silk by Mark James (famfamfam.com/lab/icons/silk), CC BY 2.5 "
@@ -216,6 +218,37 @@ MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </assembly>
 """
 
+# For programs drawn with native Win32 controls: themed controls (Common Controls 6), never elevated
+# (asInvoker), Windows 10, and the same DPI awareness as MANIFEST.
+CONTROLS_MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+                        processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>
+"""
+
 RT_ICON, RT_GROUP_ICON, RT_MANIFEST = 3, 14, 24
 
 
@@ -301,6 +334,7 @@ WHAT = {
     "app.res": "RT_GROUP_ICON 1 + DPI-aware manifest, for linking into an exe",
     "app-32.rgba": "32 px raw RGBA (8-byte width/height header) for the window icon",
 }
+WHAT_CONTROLS_RES = "RT_GROUP_ICON 1 + DPI-aware, Common Controls 6, asInvoker manifest, for linking into an exe"
 
 
 def outputs(original_bytes, extras=()):
@@ -314,7 +348,7 @@ def outputs(original_bytes, extras=()):
         "app-48.png": encode_png(scale(img, 3)),
         "app-256.png": encode_png(scale(img, 16)),
         "app.ico": encode_ico(images),
-        "app.res": encode_res(images),
+        "app.res": encode_res(images, CONTROLS_MANIFEST if "controls" in extras else MANIFEST),
     }
     if "rgba" in extras:
         files["app-32.rgba"] = rgba_file(scale(img, 2))
@@ -332,11 +366,12 @@ def write_project(project_dir, silk_file, name, extras=()):
     folder = os.path.join(project_dir, "icon")
     os.makedirs(folder, exist_ok=True)
     files = {f"silk-{silk_file}": original, **outputs(original, extras)}
+    what = {**WHAT, "app.res": WHAT_CONTROLS_RES} if "controls" in extras else WHAT
     rows = []
     for rel, data in files.items():
         with open(os.path.join(folder, rel), "wb") as f:
             f.write(data)
-        rows.append(f"| `{rel}` | {WHAT.get(rel, 'original, unedited (16 px)')} | `{sha(data)}` |")
+        rows.append(f"| `{rel}` | {what.get(rel, 'original, unedited (16 px)')} | `{sha(data)}` |")
     written = [os.path.join(folder, rel) for rel in files]
     with open(os.path.join(folder, "README.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(README.format(name=name, silk=silk_file, original=f"silk-{silk_file}", rows="\n".join(rows)))

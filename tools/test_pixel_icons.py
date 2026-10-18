@@ -148,6 +148,28 @@ class IcoResTest(unittest.TestCase):
         self.assertEqual([found[i][2] for i in range(1, 5)], [blob for _, blob in self.images])
         self.assertIn(b"PerMonitorV2", found[6][2])
 
+    def test_controls_manifest(self):
+        plain = pi.outputs(pi.encode_png(self.original))["app.res"]
+        controls = pi.outputs(pi.encode_png(self.original), ("controls",))["app.res"]
+        self.assertEqual(plain, pi.encode_res(self.images))
+        self.assertEqual(controls, pi.encode_res(self.images, pi.CONTROLS_MANIFEST))
+        self.assertNotIn(b"Common-Controls", plain)
+        for needle in (b"Microsoft.Windows.Common-Controls", b'level="asInvoker"', b"PerMonitorV2",
+                       b"{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, controls)
+
+    def test_existing_res_unchanged(self):
+        # every project's committed app.res is what this script makes today
+        for project, (silk, _, _, extras) in pi.PROJECTS.items():
+            path = os.path.join(pi.ROOT, project, "icon", "app.res")
+            if not os.path.exists(path):
+                continue
+            with open(os.path.join(pi.SILK, silk), "rb") as f:
+                made = pi.outputs(f.read(), extras)["app.res"]
+            with open(path, "rb") as f, self.subTest(project=project):
+                self.assertEqual(f.read(), made)
+
 
 class SysoTest(unittest.TestCase):
     def test_absolute_symbols_move_to_section_one(self):
@@ -180,10 +202,17 @@ class ProjectTest(unittest.TestCase):
             self.assertEqual(struct.unpack("<II", raw[:8]), (32, 32))
             self.assertEqual(raw[8:], pi.scale(pi.decode_png(original), 2).rgba)
 
-    def test_six_distinct_icons(self):
+    def test_seven_distinct_icons(self):
         files = [silk for silk, *_ in pi.PROJECTS.values()]
-        self.assertEqual(len(set(files)), 6)
-        self.assertEqual(len({app for _, app, *_ in pi.PROJECTS.values()}), 6)
+        self.assertEqual(len(set(files)), 7)
+        self.assertEqual(len({app for _, app, *_ in pi.PROJECTS.values()}), 7)
+
+    def test_controls_readme_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pi.write_project(tmp, "wand.png", "ACME Wizard Maker", ("controls",))
+            with open(os.path.join(tmp, "icon", "README.md"), encoding="utf-8") as f:
+                readme = f.read()
+            self.assertIn(pi.WHAT_CONTROLS_RES, readme)
 
 
 if __name__ == "__main__":

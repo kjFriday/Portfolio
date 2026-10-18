@@ -83,8 +83,20 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 - Python: hub 54 and docpipe 81 tests, 5 runs each. Go: `go vet` clean, `go test -count=5` passes in both. Rust: `cargo test` and `cargo test --features desktop` pass in both. Icon tool: 13 tests.
 - `tools/verify.ps1` against a fresh sandbox database: all six windows open with their icon, version and the database as source; the doc pipeline's registration is visible to the hub; Notify takes 222 pending events to 0 and a second pass changes nothing; the file is free once every program closes.
 - Sandbox install, launch of the installed copy and self-uninstall checked for all six. A real (non-sandbox) install has not been run.
+
+**install_wizard_maker** (new: ACME Wizard Maker, the seventh program)
+- Makes install wizards: `wizard-maker.exe build setup.json` (or its window) turns a program's files into one self-contained `setup.exe`. Go 1.24, standard library only: native Win32 windows through `syscall`, shortcuts through COM (with the AppUserModelID the PowerShell shortcuts cannot set), the registry through advapi32.
+- A setup is the maker's own exe with the program's icon and version info rewritten into its last PE section (pure Go, no UpdateResource), then a zip and a 32-byte trailer. Same input, same bytes, wherever the folder is.
+- The wizard: Welcome, License (Next waits for "I accept"), Install Folder (only a new, empty or own folder), Shortcuts, Installing, Finish (Launch through the new shortcut). Upgrade in place by app id, repair at the same version, a downgrade refused. Per user only: it refuses to run as administrator.
+- Installing is one transaction (unpack and check SHA-256 first, set replaced files aside, any failure or Cancel puts everything back; tested by failing at every step). The uninstaller removes only what setup installed and only unchanged files, then removes itself after it exits.
+- Same marker (`install.json`), folders and `--root` sandbox as the six programs' own `--install`, so either installer can take over the other's install. `{python}` programs get the newest registered CPython (PEP 514) in their shortcut.
+- Layouts grow with both the DPI and the user's text size ("Make text bigger"); `-smoke FILE` walks every window, captures each page and reports every control.
+- The maker installs itself (`-install` builds its own setup.exe and runs it; Help menu too). Icon: Silk "wand" (CC BY 2.5), added with a `controls` manifest option in `tools/pixel_icons.py` (Common Controls 6, asInvoker); the six projects' `app.res` are unchanged.
+- Verification: `go vet` clean; `go test -count=5 ./...` passes (end-to-end installs, upgrades, refusals and uninstalls in a sandbox, through the quiet path and through the windows). Icon tool: 16 tests. A real (non-sandbox) install of a throwaway fixture showed its Apps & features entry and Start-menu shortcut, and its uninstaller left nothing behind. The maker's own setup.exe (from its `setup.json`) installs and uninstalls in a sandbox. Only 142 % text size was checked by eye (the layout scales with it); other DPI settings were not.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.
 - notification_and_message_hub: real channels behind the outbox; retry for held messages.
 - simple_ticket_tracker: comments, priorities, due dates.
+- install_wizard_maker: code signing; a `setup.json` for each of the six programs; the six programs' `--uninstall` could hand over to `uninstall.exe` when a wizard installed them.

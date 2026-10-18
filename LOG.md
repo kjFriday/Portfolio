@@ -94,9 +94,16 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 - The maker installs itself (`-install` builds its own setup.exe and runs it; Help menu too). Icon: Silk "wand" (CC BY 2.5), added with a `controls` manifest option in `tools/pixel_icons.py` (Common Controls 6, asInvoker); the six projects' `app.res` are unchanged.
 - Verification: `go vet` clean; `go test -count=5 ./...` passes (end-to-end installs, upgrades, refusals and uninstalls in a sandbox, through the quiet path and through the windows). Icon tool: 16 tests. A real (non-sandbox) install of a throwaway fixture showed its Apps & features entry and Start-menu shortcut, and its uninstaller left nothing behind. The maker's own setup.exe (from its `setup.json`) installs and uninstalls in a sandbox. Only 142 % text size was checked by eye (the layout scales with it); other DPI settings were not.
 
+**A setup.exe for each program** (made with ACME Wizard Maker)
+- Each of the six projects has a `setup.json`: `wizard-maker.exe build setup.json` makes `dist\<name>-0.2.0-setup.exe` (git-ignored). App id, name, group (ACME Inc), icon and settings folder (which the uninstaller offers to remove) are the ones the program's own `--install` uses.
+- What each packs: the CMS and the Notify hub, their exe; the ticket tracker and Data Dash, the release exe and `www` (with `www/pkg` rebuilt); the CRUD hub and the doc pipeline, exactly the files their own installer copies (22 and 31), started by the newest registered Python 3.10+ with the AppUserModelID their window sets (`ACME.Hub`, `ACME.DocPipe`), so the taskbar keeps window and shortcut together.
+- Checked for all six, each in its own sandbox: quiet install (every file matches its source by SHA-256; marker, Start-menu shortcut and Apps & features entry as expected), the installed copy started the way its shortcut starts it (title, icon, version, the shared database as source), a repair at the same version, the uninstaller with `-purge` (settings folder gone, shared database kept, nothing left behind), and both windows walked with `-smoke` at 96 DPI and 142 % text size (every control inside its window, clear of the others, its text fitting). Rebuilding gives byte-identical setups. No real (non-sandbox) install was run.
+- The six projects have no LICENSE file of their own, so their setups show no License page.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.
 - notification_and_message_hub: real channels behind the outbox; retry for held messages.
 - simple_ticket_tracker: comments, priorities, due dates.
-- install_wizard_maker: code signing; a `setup.json` for each of the six programs; the six programs' `--uninstall` could hand over to `uninstall.exe` when a wizard installed them.
+- install_wizard_maker: code signing; the six programs' `--uninstall` could hand over to `uninstall.exe` when a wizard installed them.
+- All six projects: a LICENSE file in each repo (its setup would then show the License page); build the exes with trimmed paths (`go build -trimpath`, a path remap for Rust) before any setup is published, since the exes carry the build machine's paths.

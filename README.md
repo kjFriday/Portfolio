@@ -1,5 +1,9 @@
 # ACME Inc. — a mini software ecosystem
 
+**ACME** stands for **American Company Management Engine**: seven programs that each run on their own
+and share only data (a SQLite file and JSON), with no code shared between them at run time. The rules
+they share are in [ENGINE.md](create_read_update_delete_simple_io_data_base/ENGINE.md).
+
 Six small desktop programs that run a fictional company, **ACME Inc.**, from one shared mock database,
 and a seventh that makes install wizards for them (or for any Windows program). ACME Inc., its staff,
 customers, orders and tickets are all invented.

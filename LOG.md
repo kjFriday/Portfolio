@@ -113,6 +113,17 @@ ACME Inc. is a fictional company. All data in this ecosystem is mock data.
 - 193 files stamped (Go, Python, Rust, PowerShell, JS, CSS, HTML). Not stamped: the five generated `mock/schema.sql` files, `reference/` excerpts and `testdata/` fixtures. Shebangs, coding cookies, doctypes and build tags stay where they must, and line endings and BOMs are kept.
 - Checked after stamping: CRUD hub 63, doc pipeline 90, icon tool 16, Go vet and tests in all three Go projects, Rust 16 + 3 / 38 + 3 (tracker) and 18 + 3 / 41 + 3 (Data Dash) with and without `desktop`; gofmt clean. `cargo fmt --check` reports the same diffs as before stamping, none in the stamps.
 
+## 2026-10-26
+
+**The ACME engine**
+- ACME now stands for **American Company Management Engine**: the seven programs and the contracts
+  they share. Named in the portfolio README, the hub README and the hub's About box.
+- New `ENGINE.md` in the hub: one rule (every program runs on its own and shares data, never code or
+  processes) and five contracts (database, JSON snapshot, settings, install marker, identity), plus
+  the order for paring the programs down.
+- Checked: hub 63 tests pass; `--smoke` against a temporary database opens the window; `stamp.py
+  --check` is clean after re-stamping `main.py`.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

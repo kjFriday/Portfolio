@@ -22,6 +22,7 @@ Start it from anywhere inside the portfolio folder; it finds the portfolio by lo
 - **Actions** for the selected program: Build (Go and Rust only), Test, Run, Version (`--version`) and
   Smoke (`--smoke FILE`; the report is added to the log).
 - **Live tests**: tick it, and the program's tests run again whenever a file in its folder is saved.
+- **Desktop shortcuts** (Ctrl+Shift+D): builds every program from source (Go: `go build`; Rust: `wasm-pack` then `cargo build --release --features desktop`; Python needs no build), then puts two shortcuts per program on the desktop: `<name> <version>` (from its `setup.json`, with its own icon) that starts that build, and `<name> source` that opens its folder. A program that fails to build gets no shortcut. Running it again replaces the old set, so a new version replaces the old shortcut; **Remove desktop shortcuts** takes the set away. The list of what was placed is kept in the user's config folder.
 - **Jobs and log**: a tab per job with its status; output appears as it is printed (last 5,000 lines).
 
 ## Config fileset
@@ -45,6 +46,7 @@ Default controls:
 | Build, Test, Run, Version, Smoke | F4, F5, F6, F7, F8 |
 | Test all | Ctrl+Shift+T |
 | Live tests on/off | Ctrl+L |
+| Desktop shortcuts | Ctrl+Shift+D |
 | Next / previous program | Ctrl+Down / Ctrl+Up |
 
 ## Install

@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod config;
+mod desktop;
 mod install;
 mod jobs;
 mod live;
@@ -40,7 +41,8 @@ struct App {
     shown: Option<usize>,
     /// Last finished status per (project, action).
     last: Vec<[Option<Status>; Action::ALL.len()]>,
-    owner: Vec<(usize, usize)>,
+    /// (program, action) for each job; None for desktop-shortcut jobs.
+    owner: Vec<Option<(usize, usize)>>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     live: Arc<Mutex<Vec<bool>>>,
@@ -119,7 +121,7 @@ impl App {
         job.push(format!("> {} {}", cmd.program, cmd.args.join(" ")));
         self.jobs.push(job);
         self.smoke.push((Action::ALL[a] == Action::Smoke).then_some(report));
-        self.owner.push((p, a));
+        self.owner.push(Some((p, a)));
         self.last[p][a] = Some(Status::Running);
         self.shown = Some(id);
         let ctx = ctx.clone();
@@ -138,8 +140,9 @@ impl App {
                         }
                         let _ = std::fs::remove_file(path);
                     }
-                    let (p, a) = self.owner[id];
-                    self.last[p][a] = Some(s.clone());
+                    if let Some((p, a)) = self.owner[id] {
+                        self.last[p][a] = Some(s.clone());
+                    }
                     self.jobs[id].status = s;
                 }
             }
@@ -150,8 +153,32 @@ impl App {
         }
     }
 
+    /// Start a desktop-shortcut job: build and place the set (`make`), or take it away.
+    fn desktop_job(&mut self, ctx: &egui::Context, make: bool) {
+        let (Some(root), Some(user)) = (self.root.clone(), self.cfg.user_dir.clone()) else { return };
+        if self.desktop_busy() {
+            return;
+        }
+        let id = self.jobs.len();
+        let title = if make { "Desktop shortcuts" } else { "Remove desktop shortcuts" };
+        self.jobs.push(Job { title: title.into(), lines: vec![], status: Status::Running });
+        self.smoke.push(None);
+        self.owner.push(None);
+        self.shown = Some(id);
+        let wake = { let ctx = ctx.clone(); move || ctx.request_repaint() };
+        if make {
+            desktop::make(id, root, user, None, self.tx.clone(), wake);
+        } else {
+            desktop::remove(id, user, self.tx.clone(), wake);
+        }
+    }
+
+    fn desktop_busy(&self) -> bool {
+        self.owner.iter().zip(&self.jobs).any(|(o, j)| o.is_none() && j.status == Status::Running)
+    }
+
     fn running(&self, p: usize, a: usize) -> bool {
-        self.owner.iter().zip(&self.jobs).any(|(&o, j)| o == (p, a) && j.status == Status::Running)
+        self.owner.iter().zip(&self.jobs).any(|(&o, j)| o == Some((p, a)) && j.status == Status::Running)
     }
 
     fn is_live(&self, p: usize) -> bool {
@@ -196,6 +223,9 @@ impl App {
         }
         if self.pressed(ctx, "test_all") {
             (0..PROJECTS.len()).for_each(|p| self.start(ctx, p, TEST));
+        }
+        if self.pressed(ctx, "desktop_shortcuts") {
+            self.desktop_job(ctx, true);
         }
         if self.pressed(ctx, "next") {
             self.selected = (self.selected + 1) % PROJECTS.len();
@@ -292,6 +322,18 @@ impl eframe::App for App {
             ui.separator();
             if ui.button(format!("Test all{}", self.hint("test_all"))).clicked() {
                 (0..PROJECTS.len()).for_each(|p| self.start(ctx, p, TEST));
+            }
+            ui.add_space(8.0);
+            let can = self.root.is_some() && self.cfg.user_dir.is_some() && !self.desktop_busy();
+            if ui
+                .add_enabled(can, egui::Button::new(format!("Desktop shortcuts{}", self.hint("desktop_shortcuts"))))
+                .on_hover_text("Build every program from source, then put a versioned shortcut to each build and to each source folder on the desktop.")
+                .clicked()
+            {
+                self.desktop_job(ctx, true);
+            }
+            if ui.add_enabled(can, egui::Button::new("Remove desktop shortcuts")).clicked() {
+                self.desktop_job(ctx, false);
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -516,4 +558,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=be012c98d7d30c320f0dc7813fffc3a6f95d4ede7be3caf39074acd7768b9933 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=fd22873f4ab5c6a015fca84ceefd6e1e3620c1893d776de486818266b64bb40a ====

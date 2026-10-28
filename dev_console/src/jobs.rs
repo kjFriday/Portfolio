@@ -50,32 +50,33 @@ impl Job {
 /// `wake` is called after each event so the window repaints.
 pub fn spawn(id: usize, cmd: Cmd, tx: Sender<Event>, wake: impl Fn() + Send + Clone + 'static) {
     thread::spawn(move || {
-        let mut c = Command::new(&cmd.program);
-        c.args(&cmd.args).current_dir(&cmd.cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes for child tools
-        }
-        let mut child = match c.spawn() {
-            Ok(ch) => ch,
-            Err(e) => {
-                let _ = tx.send(Event::Done(id, Status::Failed(format!("{}: {e}", cmd.program))));
-                wake();
-                return;
-            }
-        };
-        let readers = [pipe(child.stdout.take(), id, &tx, &wake), pipe(child.stderr.take(), id, &tx, &wake)];
-        for r in readers.into_iter().flatten() {
-            let _ = r.join();
-        }
-        let status = match child.wait() {
-            Ok(s) => Status::Exited(s.code().unwrap_or(-1)),
-            Err(e) => Status::Failed(e.to_string()),
-        };
+        let status = run(id, &cmd, &tx, &wake);
         let _ = tx.send(Event::Done(id, status));
         wake();
     });
+}
+
+/// Run `cmd` on this thread, streaming its lines to `tx` as job `id`; returns how it ended.
+pub fn run(id: usize, cmd: &Cmd, tx: &Sender<Event>, wake: &(impl Fn() + Send + Clone + 'static)) -> Status {
+    let mut c = Command::new(&cmd.program);
+    c.args(&cmd.args).current_dir(&cmd.cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes for child tools
+    }
+    let mut child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(e) => return Status::Failed(format!("{}: {e}", cmd.program)),
+    };
+    let readers = [pipe(child.stdout.take(), id, tx, wake), pipe(child.stderr.take(), id, tx, wake)];
+    for r in readers.into_iter().flatten() {
+        let _ = r.join();
+    }
+    match child.wait() {
+        Ok(s) => Status::Exited(s.code().unwrap_or(-1)),
+        Err(e) => Status::Failed(e.to_string()),
+    }
 }
 
 fn pipe<R: Read + Send + 'static>(
@@ -144,4 +145,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=2134c8a2dd5ccc4be366f3ba9eab8de25d2112eb4772aef4e7ece97b9f9b65a1 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=8fb0f3010dc5069548d6e9d80d81ae98db6ea811045391e93223563bf74b25a2 ====

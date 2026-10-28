@@ -218,10 +218,10 @@ class ProjectTest(unittest.TestCase):
             self.assertEqual(struct.unpack("<II", raw[:8]), (32, 32))
             self.assertEqual(raw[8:], pi.scale(pi.decode_png(original), 2).rgba)
 
-    def test_seven_distinct_icons(self):
+    def test_distinct_icons(self):
         files = [silk for silk, *_ in pi.PROJECTS.values()]
-        self.assertEqual(len(set(files)), 7)
-        self.assertEqual(len({app for _, app, *_ in pi.PROJECTS.values()}), 7)
+        self.assertEqual(len(set(files)), len(pi.PROJECTS))
+        self.assertEqual(len({app for _, app, *_ in pi.PROJECTS.values()}), len(pi.PROJECTS))
 
     def test_controls_readme_row(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,4 +234,4 @@ class ProjectTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=2371e05d6663ef1a5cd72d98f086b4d0553ecc996234951064ce220171392119 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=3afbd03cf809607bfb103f23af3a5b63d73e95b9218d79076482c1a1364f4992 ====

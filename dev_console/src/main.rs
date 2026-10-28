@@ -233,6 +233,13 @@ impl App {
     }
 }
 
+/// The 32 px Silk icon from icon/app-32.rgba (8-byte little-endian width/height header, then RGBA).
+fn window_icon() -> egui::IconData {
+    const RAW: &[u8] = include_bytes!("../icon/app-32.rgba");
+    let dim = |i: usize| u32::from_le_bytes(RAW[i..i + 4].try_into().unwrap());
+    egui::IconData { rgba: RAW[8..].to_vec(), width: dim(0), height: dim(4) }
+}
+
 fn sc_text(sc: &KeyboardShortcut) -> String {
     let mut s = String::new();
     if sc.modifiers.ctrl || sc.modifiers.command {
@@ -299,6 +306,13 @@ impl eframe::App for App {
             for w in &self.cfg.warnings {
                 ui.colored_label(egui::Color32::YELLOW, w);
             }
+            ui.add_space(8.0);
+            ui.collapsing("About", |ui| {
+                ui.label(format!("{} {VERSION}", install::NAME));
+                ui.weak("Generic Company Inc. is fictional. AGPL-3.0.");
+                ui.weak("Icon: application_xp_terminal.png from the Silk icon set by Mark James, CC BY 2.5; enlarged by whole pixels.");
+                ui.hyperlink_to("CC BY 2.5", "http://creativecommons.org/licenses/by/2.5/");
+            });
         });
 
         egui::Panel::top("actions").show(ui, |ui| {
@@ -456,7 +470,10 @@ fn main() {
     let cfg = config::load(&layers, config::user_dir(local.as_deref()));
 
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([1000.0, 640.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_title(TITLE)
+            .with_inner_size([1000.0, 640.0])
+            .with_icon(window_icon()),
         ..Default::default()
     };
     let smoke = args.smoke;
@@ -485,6 +502,13 @@ mod tests {
     }
 
     #[test]
+    fn window_icon_is_32px_rgba() {
+        let icon = window_icon();
+        assert_eq!((icon.width, icon.height), (32, 32));
+        assert_eq!(icon.rgba.len(), 32 * 32 * 4);
+    }
+
+    #[test]
     fn shortcut_text_reads_back() {
         let sc = config::shortcut("Ctrl+Shift+T").unwrap().unwrap();
         assert_eq!(sc_text(&sc), "Ctrl+Shift+T");
@@ -492,4 +516,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=c80bf763c6be1247b5c638a462bcffcda76b039729805087f54c46994f19ba1f ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=be012c98d7d30c320f0dc7813fffc3a6f95d4ede7be3caf39074acd7768b9933 ====

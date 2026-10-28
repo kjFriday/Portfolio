@@ -135,8 +135,8 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Config fileset in `dev_console/config/`: `settings.ini` (text size, live interval, skipped folders) and `controls.ini` (every keyboard control, rebindable). The user's own copies under the app's settings folder override single keys.
 - Text size with Ctrl+Plus / Ctrl+Minus / Ctrl+0, saved between runs.
 - `--install`, `--uninstall`, `--root`, `--quiet`, `--version`, `--smoke FILE`, like the other programs.
+- Icon: Silk `application_xp_terminal.png` (CC BY 2.5), added to `icons/silk` and `tools/pixel_icons.py`.
 ## Open
-- dev_console: its own Silk icon (needs one more icon from the set).
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.
 - notification_and_message_hub: real channels behind the outbox; retry for held messages.

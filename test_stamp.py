@@ -1,4 +1,12 @@
-# ==== ACME Inc. portfolio ===============================================
+# ==== Generic Company Inc. portfolio ====================================
+# Project: portfolio | File: test_stamp.py
+# About: ==== Generic Company Inc. portfolio ===============================================...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
+# ==== Generic Company Inc. portfolio ===============================================
 # Project: portfolio | File: test_stamp.py
 # About: Tests for stamp.py.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
@@ -33,7 +41,7 @@ class RoundTrip(unittest.TestCase):
         ".rs": "//! The dashboard core.\nfn main() {}\n",
         ".js": "/* Draws the chart. */\nconst a = 1;\n",
         ".css": "/* Page styles. */\nbody { margin: 0 }\n",
-        ".html": "<!DOCTYPE html>\n<html><head><title>ACME Tickets</title></head></html>\n",
+        ".html": "<!DOCTYPE html>\n<html><head><title>Generic Company Tickets</title></head></html>\n",
         ".sql": "-- Shared schema; owned by the hub.\nCREATE TABLE t (id INTEGER);\n",
     }
 
@@ -51,7 +59,7 @@ class RoundTrip(unittest.TestCase):
         expect = {
             ".py": "Load the seed rows.", ".ps1": "End-to-end check of the programs.",
             ".go": "Package foo parses things.", ".rs": "The dashboard core.", ".js": "Draws the chart.",
-            ".css": "Page styles.", ".html": "ACME Tickets", ".sql": "Shared schema, owned by the hub.",
+            ".css": "Page styles.", ".html": "Generic Company Tickets", ".sql": "Shared schema, owned by the hub.",
         }
         for ext, text in self.SAMPLES.items():
             with self.subTest(ext=ext):
@@ -73,8 +81,8 @@ class RoundTrip(unittest.TestCase):
         self.assertNotIn("*/", st.sentence("a */ b", st.STYLES[".css"]))
 
     def test_sentence_does_not_stop_at_abbreviations(self):
-        self.assertEqual(st.sentence("Where the ACME Inc. programs live. More.", st.STYLES[".py"]),
-                         "Where the ACME Inc. programs live.")
+        self.assertEqual(st.sentence("Where the Generic Company Inc. programs live. More.", st.STYLES[".py"]),
+                         "Where the Generic Company Inc. programs live.")
 
     def test_fallbacks(self):
         self.assertEqual(st.fallback(["package db"], ".go", "cms", "internal/db/db_test.go"), "Tests for package db.")
@@ -200,4 +208,4 @@ class Repository(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5f8b56ebcf649927a3b868d662e5979e61343f7c6458d987003411ae206a2956 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=861cc5bad045f0f5ee2c5fe6a0731f8270b476d3821bf0f765fffb155ede6595 ====

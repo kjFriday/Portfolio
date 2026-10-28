@@ -1,4 +1,12 @@
-# ==== ACME Inc. portfolio ===============================================
+# ==== Generic Company Inc. portfolio ====================================
+# Project: portfolio | File: tools/test_pixel_icons.py
+# About: ==== Generic Company Inc. portfolio ===============================================...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
+# ==== Generic Company Inc. portfolio ===============================================
 # Project: portfolio | File: tools/test_pixel_icons.py
 # About: Tests for pixel_icons.py.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
@@ -194,7 +202,7 @@ class SysoTest(unittest.TestCase):
 class ProjectTest(unittest.TestCase):
     def test_write_project(self):
         with tempfile.TemporaryDirectory() as tmp:
-            written = pi.write_project(tmp, "note.png", "ACME Ticket Tracker", ("rgba", "favicon"))
+            written = pi.write_project(tmp, "note.png", "Generic Company Ticket Tracker", ("rgba", "favicon"))
             names = sorted(os.path.relpath(p, tmp).replace(os.sep, "/") for p in written)
             self.assertEqual(names, ["icon/app-256.png", "icon/app-32.png", "icon/app-32.rgba", "icon/app-48.png",
                                      "icon/app.ico", "icon/app.res", "icon/silk-note.png", "www/favicon.png"])
@@ -217,7 +225,7 @@ class ProjectTest(unittest.TestCase):
 
     def test_controls_readme_row(self):
         with tempfile.TemporaryDirectory() as tmp:
-            pi.write_project(tmp, "wand.png", "ACME Wizard Maker", ("controls",))
+            pi.write_project(tmp, "wand.png", "Generic Company Wizard Maker", ("controls",))
             with open(os.path.join(tmp, "icon", "README.md"), encoding="utf-8") as f:
                 readme = f.read()
             self.assertIn(pi.WHAT_CONTROLS_RES, readme)
@@ -226,4 +234,4 @@ class ProjectTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=48fa8a03c83bfcc1252285abad342d8e3e67142c2ae484e3c19d6b9b0ec17b88 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=2371e05d6663ef1a5cd72d98f086b4d0553ecc996234951064ce220171392119 ====

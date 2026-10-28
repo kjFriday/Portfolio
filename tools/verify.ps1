@@ -1,20 +1,28 @@
-# ==== ACME Inc. portfolio ===============================================
+# ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/verify.ps1
-# About: End-to-end check of the six ACME programs against one sandbox database (nothing outside...
+# About: ==== Generic Company Inc. portfolio ===============================================...
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
 # ========================================================================
 
-# End-to-end check of the six ACME programs against one sandbox database (nothing outside $Sandbox is
+# ==== Generic Company Inc. portfolio ===============================================
+# Project: portfolio | File: tools/verify.ps1
+# About: End-to-end check of the six Generic Company programs against one sandbox database (nothing outside...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
+# End-to-end check of the six Generic Company programs against one sandbox database (nothing outside $Sandbox is
 # touched). Builds the Go exes itself; build the Rust ones first (cargo build --release --features desktop):
 #   powershell -ExecutionPolicy Bypass -File tools\verify.ps1
-param([string]$Sandbox = (Join-Path $env:TEMP "acme-verify"))
+param([string]$Sandbox = (Join-Path $env:TEMP "generic-company-verify"))
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Remove-Item -Recurse -Force $Sandbox -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $Sandbox | Out-Null
-$db = Join-Path $Sandbox "acme.db"
+$db = Join-Path $Sandbox "generic_company.db"
 $hub = Join-Path $root "create_read_update_delete_simple_io_data_base"
 $failed = 0
 function Check($what, $ok) {
@@ -34,8 +42,8 @@ function Smoke($name, $exe, [string[]]$extra) {
 "Building the Go programs"
 $bin = Join-Path $Sandbox "bin"
 $env:GOTOOLCHAIN = "local"; $env:CGO_ENABLED = "0"
-go -C (Join-Path $root "content_management_system") build -ldflags "-H windowsgui" -o (Join-Path $bin "acme-cms.exe") .
-go -C (Join-Path $root "notification_and_message_hub") build -ldflags "-H windowsgui" -o (Join-Path $bin "acme-notify.exe") ./cmd/notify
+go -C (Join-Path $root "content_management_system") build -ldflags "-H windowsgui" -o (Join-Path $bin "generic-company-cms.exe") .
+go -C (Join-Path $root "notification_and_message_hub") build -ldflags "-H windowsgui" -o (Join-Path $bin "generic-company-notify.exe") ./cmd/notify
 
 "Seeding $db"
 python (Join-Path $hub "seed.py") --fresh --db $db | Out-Null
@@ -46,12 +54,12 @@ $h = Smoke "hub" "python" @("`"$(Join-Path $hub 'main.py')`"")
 Check "hub counts match the file" ($h.counts.orders -eq (Rows orders) -and $h.counts.tickets -eq (Rows tickets))
 $d = Smoke "docpipe" "python" @("`"$(Join-Path $root 'document_mover_and_changer\docpipe_app.py')`"", "--out", "`"$(Join-Path $Sandbox 'docs')`"")
 Check "doc pipeline read 400 orders" ($d.counts.orders -eq 400)
-$c = Smoke "cms" (Join-Path $bin "acme-cms.exe") @()
+$c = Smoke "cms" (Join-Path $bin "generic-company-cms.exe") @()
 Check "CMS authors from the database" ($c.counts.authors -eq (Rows employees))
-$n = Smoke "notify" (Join-Path $bin "acme-notify.exe") @()
-$t = Smoke "tickets" (Join-Path $root "simple_ticket_tracker\target\release\acme-tickets.exe") @()
+$n = Smoke "notify" (Join-Path $bin "generic-company-notify.exe") @()
+$t = Smoke "tickets" (Join-Path $root "simple_ticket_tracker\target\release\generic-company-tickets.exe") @()
 Check "tracker shows every ticket" ($t.counts.shown -eq (Rows tickets))
-$s = Smoke "dash" (Join-Path $root "data_dash\target\release\acme-dash.exe") @()
+$s = Smoke "dash" (Join-Path $root "data_dash\target\release\generic-company-dash.exe") @()
 
 "Programs talking through the file"
 Push-Location (Join-Path $root "document_mover_and_changer")
@@ -68,9 +76,9 @@ Pop-Location
 Check "dispatch: pending $pending0 -> $after1, second pass -> $after2 (no change)" ($after1 -lt $pending0 -and $after2 -eq $after1)
 
 "Nothing left holding the file"
-Rename-Item $db "acme-moved.db"; Rename-Item (Join-Path $Sandbox "acme-moved.db") "acme.db"
-Check "acme.db can be renamed with every program closed" $true
+Rename-Item $db "generic-company-moved.db"; Rename-Item (Join-Path $Sandbox "generic-company-moved.db") "generic_company.db"
+Check "generic_company.db can be renamed with every program closed" $true
 
 if ($failed) { "$failed check(s) failed"; exit 1 } else { "All checks passed." }
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e87481fe69d338affb957d49b8d259bf154ff437bc7203174572fc2d36d142c3 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c35c56ce6d3d9d510e2177a91fc55293c2f2e85c63f99d04838b38d26f03289f ====

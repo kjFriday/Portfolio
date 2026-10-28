@@ -1,4 +1,12 @@
-# ==== ACME Inc. portfolio ===============================================
+# ==== Generic Company Inc. portfolio ====================================
+# Project: portfolio | File: stamp.py
+# About: Add a license header and a keyed stamp footer to every tracked source file (standard...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
+# ==== Generic Company Inc. portfolio ===============================================
 # Project: portfolio | File: stamp.py
 # About: Add a license header and a keyed stamp footer to every tracked source file (standard...
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
@@ -67,7 +75,7 @@ STYLES = {
     ".sql": Style("SQL", "-- ", "", ("--",), {"/*": "*/"}),
 }
 
-TITLE = "==== ACME Inc. portfolio "
+TITLE = "==== Generic Company Inc. portfolio "
 TITLE = TITLE + "=" * (WIDTH - len(TITLE))
 RULE = "=" * WIDTH
 FOOTER_RE = re.compile(r"==== stamp (v\d+) \| author=([^\s|]+) \| hmac-sha256=([0-9a-f]{64}) ====")
@@ -398,4 +406,4 @@ def main(argv=None):
 if __name__ == "__main__":
     sys.exit(main())
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=1b8a3616d71216a312a7184365be18db9548495590d8b470e999d2119651989b ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=6f6ce1ecf5a17f568da920d72778ae310ad4f7f0d7f254dbc4693c9459fd5480 ====

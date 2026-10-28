@@ -1,13 +1,21 @@
-# ==== ACME Inc. portfolio ===============================================
+# ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/shot.ps1
-# About: Screenshot one ACME window for checking icons and titles by eye: tools\shot.ps1 -Title...
+# About: ==== Generic Company Inc. portfolio ===============================================...
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
 # ========================================================================
 
-# Screenshot one ACME window for checking icons and titles by eye:
-#   tools\shot.ps1 -Title "ACME CRUD Hub" -Out shot.png -Exe python -ArgList main.py,--db,C:\tmp\acme.db
+# ==== Generic Company Inc. portfolio ===============================================
+# Project: portfolio | File: tools/shot.ps1
+# About: Screenshot one Generic Company window for checking icons and titles by eye: tools\shot.ps1 -Title...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
+# Screenshot one Generic Company window for checking icons and titles by eye:
+#   tools\shot.ps1 -Title "Generic Company CRUD Hub" -Out shot.png -Exe python -ArgList main.py,--db,C:\tmp\generic_company.db
 param([string]$Title, [string]$Out, [string]$Exe, [string[]]$ArgList = @(), [int]$Wait = 3)
 
 Add-Type -AssemblyName System.Drawing
@@ -37,4 +45,4 @@ $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.D
 "{0} '{1}' -> {2}" -f $win.ProcessName, $win.MainWindowTitle, $Out
 Stop-Process -Id $win.Id -ErrorAction SilentlyContinue; Stop-Process $p -ErrorAction SilentlyContinue
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=802b90e79419911b70b86b2a06579b540805af5d68496cd8f1c4310a06568aa3 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=793cba249f96fe07cd159b36e405cb7b8096c2c2aa7257185a9850cb5095d4fc ====

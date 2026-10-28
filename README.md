@@ -1,11 +1,11 @@
-# ACME Inc. — a mini software ecosystem
+# Generic Company Inc. — a mini software ecosystem
 
-**ACME** stands for **American Company Management Engine**: seven programs that each run on their own
+**Generic Company** stands for **American Company Management Engine**: seven programs that each run on their own
 and share only data (a SQLite file and JSON), with no code shared between them at run time. The rules
 they share are in [ENGINE.md](create_read_update_delete_simple_io_data_base/ENGINE.md).
 
-Six small desktop programs that run a fictional company, **ACME Inc.**, from one shared mock database,
-and a seventh that makes install wizards for them (or for any Windows program). ACME Inc., its staff,
+Six small desktop programs that run a fictional company, **Generic Company Inc.**, from one shared mock database,
+and a seventh that makes install wizards for them (or for any Windows program). Generic Company Inc., its staff,
 customers, orders and tickets are all invented.
 
 Each program is self-contained: it opens its own window with its own pixel icon and version, installs
@@ -19,31 +19,31 @@ them is the **path to the shared SQLite file**.
       │               │              │              │              │                │
       └───────────────┴──────────────┴──────┬───────┴──────────────┴────────────────┘
                                              ▼
-                          %LOCALAPPDATA%\ACME Inc\acme.db (SQLite)
+                          %LOCALAPPDATA%\Generic Company Inc\generic_company.db (SQLite)
 ```
 
 | Program | Folder | Icon (Silk) | Reads | Writes |
 |---|---|---|---|---|
-| ACME CRUD Hub | `create_read_update_delete_simple_io_data_base` | database | every table | every table; owns the schema and the seed |
-| ACME Doc Pipeline | `document_mover_and_changer` | folder_go | orders, documents, customers, products | documents rows, a `documents.generated` event |
-| ACME Journal (CMS) | `content_management_system` | newspaper | employees (post authors) | nothing |
-| ACME Notify Hub | `notification_and_message_hub` | bell | events, customers | `events.status` |
-| ACME Ticket Tracker | `simple_ticket_tracker` | note | tickets, customers, employees | tickets |
-| ACME Data Dash | `data_dash` | chart_bar | orders, products, customers, tickets | nothing |
+| Generic Company CRUD Hub | `create_read_update_delete_simple_io_data_base` | database | every table | every table; owns the schema and the seed |
+| Generic Company Doc Pipeline | `document_mover_and_changer` | folder_go | orders, documents, customers, products | documents rows, a `documents.generated` event |
+| Generic Company Journal (CMS) | `content_management_system` | newspaper | employees (post authors) | nothing |
+| Generic Company Notify Hub | `notification_and_message_hub` | bell | events, customers | `events.status` |
+| Generic Company Ticket Tracker | `simple_ticket_tracker` | note | tickets, customers, employees | tickets |
+| Generic Company Data Dash | `data_dash` | chart_bar | orders, products, customers, tickets | nothing |
 
 ## Desktop apps
 
 Every program uses the same conventions:
 
-- **Title bar:** `ACME Inc. — <name> 0.2.0`. The version has one source per project (Python
+- **Title bar:** `Generic Company Inc. — <name> 0.2.0`. The version has one source per project (Python
   `__version__`, Go `const Version`, Rust `CARGO_PKG_VERSION`) and also appears in the About box and in
   Apps & features.
-- **Database path:** `--db PATH`, then the `ACME_DB` environment variable, then the path saved from the
-  program's own Database… choice (`%LOCALAPPDATA%\ACME Inc\<app id>\settings.json`), then
-  `%LOCALAPPDATA%\ACME Inc\acme.db`. Only the hub creates the file and its schema. If the file is missing
+- **Database path:** `--db PATH`, then the `GENERIC_COMPANY_DB` environment variable, then the path saved from the
+  program's own Database… choice (`%LOCALAPPDATA%\Generic Company Inc\<app id>\settings.json`), then
+  `%LOCALAPPDATA%\Generic Company Inc\generic_company.db`. Only the hub creates the file and its schema. If the file is missing
   or its schema doesn't match, a program runs on its `mock/` snapshot and says so.
-- **Install:** `--install` copies the program to `%LOCALAPPDATA%\Programs\ACME Inc\<name>\`, adds it to
-  the Start menu under **ACME Inc** (`--desktop-shortcut` adds one to the desktop too), and lists it in
+- **Install:** `--install` copies the program to `%LOCALAPPDATA%\Programs\Generic Company Inc\<name>\`, adds it to
+  the Start menu under **Generic Company Inc** (`--desktop-shortcut` adds one to the desktop too), and lists it in
   **Apps & features**. It works per user and needs no admin rights.
 - **Uninstall:** `--uninstall` removes all of that. It never deletes the shared database.
 - **Sandbox:** `--root DIR` does all of the above inside DIR.
@@ -51,16 +51,16 @@ Every program uses the same conventions:
 - **Windows:** the Python programs use tkinter. The Go and Rust programs use Edge WebView2 (part of
   Windows 10/11), and their pages are served in-process to that window only:
   - Go uses a loopback server with a per-run token.
-  - Rust uses a custom `acme://` protocol.
+  - Rust uses a custom `generic_company://` protocol.
 
 | Program | Run | Install |
 |---|---|---|
 | CRUD Hub | `python main.py` | `python main.py --install` |
 | Doc Pipeline | `python -m docpipe` | `python -m docpipe --install` |
-| Journal | `go build -trimpath -ldflags "-H windowsgui" -o acme-cms.exe .` then `acme-cms.exe` | `acme-cms.exe -install` |
-| Notify Hub | `go build -trimpath -ldflags "-H windowsgui" -o acme-notify.exe ./cmd/notify` then `acme-notify.exe` | `acme-notify.exe -install` |
-| Ticket Tracker | `$env:CARGO_ENCODED_RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~"`, `wasm-pack build --target web --out-dir www/pkg --no-typescript`, `cargo build --release --features desktop`, then `target\release\acme-tickets.exe` | `acme-tickets.exe --install` |
-| Data Dash | same as the tracker, then `target\release\acme-dash.exe` | `acme-dash.exe --install` |
+| Journal | `go build -trimpath -ldflags "-H windowsgui" -o generic-company-cms.exe .` then `generic-company-cms.exe` | `generic-company-cms.exe -install` |
+| Notify Hub | `go build -trimpath -ldflags "-H windowsgui" -o generic-company-notify.exe ./cmd/notify` then `generic-company-notify.exe` | `generic-company-notify.exe -install` |
+| Ticket Tracker | `$env:CARGO_ENCODED_RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~"`, `wasm-pack build --target web --out-dir www/pkg --no-typescript`, `cargo build --release --features desktop`, then `target\release\generic-company-tickets.exe` | `generic-company-tickets.exe --install` |
+| Data Dash | same as the tracker, then `target\release\generic-company-dash.exe` | `generic-company-dash.exe --install` |
 
 Requirements:
 
@@ -72,7 +72,7 @@ Each project's README has the details and explains its dependencies.
 
 ## Install wizards
 
-`install_wizard_maker` is the seventh program, **ACME Wizard Maker** (Go, standard library only, a native
+`install_wizard_maker` is the seventh program, **Generic Company Wizard Maker** (Go, standard library only, a native
 Win32 window; Silk icon "wand"). It turns a `setup.json` into one self-contained `setup.exe` for any
 Windows program: a classic wizard (license, folder, shortcuts) that installs per user with no admin
 rights, lists the program in Apps & features, upgrades it in place by app id, and leaves an uninstaller

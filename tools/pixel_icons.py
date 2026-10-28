@@ -1,4 +1,12 @@
-# ==== ACME Inc. portfolio ===============================================
+# ==== Generic Company Inc. portfolio ====================================
+# Project: portfolio | File: tools/pixel_icons.py
+# About: Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# ========================================================================
+
+# ==== Generic Company Inc. portfolio ===============================================
 # Project: portfolio | File: tools/pixel_icons.py
 # About: Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
@@ -32,13 +40,13 @@ SIZES = (16, 32, 48, 256)
 
 # project folder -> (Silk file, app id, display name, extras)
 PROJECTS = {
-    "create_read_update_delete_simple_io_data_base": ("database.png", "ACME.Hub", "ACME CRUD Hub", ()),
-    "document_mover_and_changer": ("folder_go.png", "ACME.DocPipe", "ACME Doc Pipeline", ()),
-    "content_management_system": ("newspaper.png", "ACME.CMS", "ACME Journal", ()),
-    "notification_and_message_hub": ("bell.png", "ACME.Notify", "ACME Notify Hub", ()),
-    "simple_ticket_tracker": ("note.png", "ACME.Tickets", "ACME Ticket Tracker", ("rgba", "favicon")),
-    "data_dash": ("chart_bar.png", "ACME.Dash", "ACME Data Dash", ("rgba", "favicon")),
-    "install_wizard_maker": ("wand.png", "ACME.Wizard", "ACME Wizard Maker", ("controls",)),
+    "create_read_update_delete_simple_io_data_base": ("database.png", "GenericCompany.Hub", "Generic Company CRUD Hub", ()),
+    "document_mover_and_changer": ("folder_go.png", "GenericCompany.DocPipe", "Generic Company Doc Pipeline", ()),
+    "content_management_system": ("newspaper.png", "GenericCompany.CMS", "Generic Company Journal", ()),
+    "notification_and_message_hub": ("bell.png", "GenericCompany.Notify", "Generic Company Notify Hub", ()),
+    "simple_ticket_tracker": ("note.png", "GenericCompany.Tickets", "Generic Company Ticket Tracker", ("rgba", "favicon")),
+    "data_dash": ("chart_bar.png", "GenericCompany.Dash", "Generic Company Data Dash", ("rgba", "favicon")),
+    "install_wizard_maker": ("wand.png", "GenericCompany.Wizard", "Generic Company Wizard Maker", ("controls",)),
 }
 
 CREDIT = ("Icon: Silk by Mark James (famfamfam.com/lab/icons/silk), CC BY 2.5 "
@@ -406,4 +414,4 @@ def main(argv):
 if __name__ == "__main__":
     main(sys.argv[1:])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=90da7f8e76c408237a32ddb3fa207d502f1a1f5ec2fe5b4cc44aaae01ec6b895 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=e2a823a501e3158a4f6938dc929c2891db8fd5c33af45b23ff10382ed2f0935a ====

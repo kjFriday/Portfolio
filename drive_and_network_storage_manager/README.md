@@ -13,7 +13,7 @@ python storage_manager.py --selftest
 ```
 
 ```bash
-python storage_manager.py --folder D:\ --view duplicates
+python storage_manager.py --folder D:\ --view map
 ```
 
 ## How it works
@@ -23,6 +23,7 @@ Pick a folder or drive (the list offers recent folders, drives and saved shares)
 | Sidebar | What it shows | Action |
 |---|---|---|
 | Overview | Files, size and folders; free space on the drive; what is worth a look; space by type (Images, Video, …). | Open the trash folder. |
+| Space map | A sunburst of the folder: rings are folder levels, each slice's angle is its size. Point at a slice for its path and size; click a folder to zoom in, the centre or Backspace to go back up. **Colour by Duplicate copies** turns slices red where extra copies take the space. A "Biggest here" list beside it does the same from the keyboard (Enter zooms). | Open the folder; right-click a slice to open it or show it in its folder. |
 | Largest files | The 100 biggest files. | Move to trash, show in folder. |
 | Old files | Files not changed for N days (365 by default; change it in place, no new scan). | Move to trash, show in folder. |
 | Duplicates | Files stored more than once, grouped, biggest savings first. Green is kept, red goes to the trash. | Move extra copies to trash; **Keep selected copy** changes which one stays. |

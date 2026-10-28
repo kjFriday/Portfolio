@@ -171,6 +171,15 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Jobs can now be stopped: `Event::Started` carries the process id, Stop runs `taskkill /T` (the server `go run` starts dies with it) and the job ends as Stopped, not as a failure. Closing the console stops a running live site.
 - Checked: `cargo test` (47), and `cargo test -- --ignored`: the Journal started on a free port passed all 7 checks and its port was closed after Stop, both through `production.rs` and through the view's own Start and Stop. `--smoke` lists the four views. The window itself was not looked at.
 
+**drive_and_network_storage_manager: benchmark kit**
+- `bench/make_dataset.py` writes seeded test folders (`small`, `local`, `nas` ~200k files, `large` 1-10 GB files) with known duplicates and traps (same size, different content; same ends, one byte different in the middle) and a `truth.json`. `bench/run_ours.py` times `find_duplicates`, reports peak memory and network bytes, and scores the answer, or an fclones JSON answer, against the truth. Plan in `BENCHMARK_PLAN.md`; `market_research.md` at the top explains why Storage Manager is the product to sell.
+
+**drive_and_network_storage_manager 0.3.0** (space map)
+- New **Space map** view: a sunburst of the analyzed folder, rings by folder depth (up to 6), angle by size, biggest first from 12 o'clock. Slices narrower than 0.6° merge into "N smaller items"; a folder's loose files are one "N files here" slice. Point at a slice for its path, size, share and file count; click a folder to zoom in, the centre or Backspace to go up; right-click to open or show it. A "Biggest here" list beside it does the same from the keyboard.
+- **Colour by Duplicate copies** turns slices red by the share of their bytes that are extra duplicate copies (following "Keep selected copy"), so it shows where the waste is.
+- Core: `build_folder_tree`, `mark_wasted`, `find_node`, `layout_sunburst`, `ring_points`, `arc_color`, plain records `Node` and `Arc`. The tree is built on the analysis thread (200k files in ~1 s worst case, one folder per file), layout takes ~10 ms; after moves it is rebuilt from the smaller report.
+- Checked: `--selftest` 62 checks, all pass. Driven in-process with Tk events (hover, click to zoom, Backspace, colour switch) on the portfolio folder and a seeded duplicate set, with window screenshots after each step.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

@@ -28,6 +28,10 @@ Records
   Copy       {"source": str, "target": str, "size": int}
   Share      {"name": str, "unc": str, "letter": str}
   ShareState {"reachable": bool, "total": int, "used": int, "free": int, "error": str}
+  Node       {"name": str, "path": str, "bytes": int, "files": int, "wasted": int, "own_bytes": int,
+              "own_files": int, "own_wasted": int, "children": {name: Node}}   own_* = files directly in it
+  Arc        {"path": str, "name": str, "kind": "folder"|"files"|"rest", "depth": int, "start": float,
+              "extent": float, "bytes": int, "files": int, "wasted": int, "branch": int}
 
 Progress
   Long functions take progress(text, done, total, unit), or None. unit is "files", "bytes" or
@@ -46,13 +50,15 @@ Usage
   python storage_manager.py --version
   python storage_manager.py --smoke FILE open the window, write a JSON report to FILE, close
   python storage_manager.py --folder PATH [--view KEY]
-                                         analyze PATH straight away (KEY: a sidebar entry, e.g. duplicates)
+                                         analyze PATH straight away (KEY: a sidebar entry, e.g. duplicates or map)
 """
 
+import colorsys
 import concurrent.futures
 import hashlib
 import heapq
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -61,7 +67,7 @@ import tempfile
 import threading
 import time
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 APP_NAME = "Generic Company Storage Manager"
 APP_ID = "GenericCompany.Storage"
 ICON_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "app.ico")
@@ -76,6 +82,9 @@ HASH_WORKERS = 8              # files read at once; hides disk, antivirus and ne
 PROGRESS_EVERY = 500          # files between progress reports
 LARGEST_COUNT = 100           # files listed under "Largest files"
 MAX_ROWS = 2000               # rows a list shows; actions still apply to every row
+MAP_DEPTH = 6                 # rings the space map shows around its centre folder
+MAP_MIN_DEGREES = 0.6         # narrower slices are merged into one "smaller items" slice
+MAP_HUES = [210, 135, 35, 275, 180, 55, 245, 95]   # one per top-level slice; no red, which marks duplicates
 SECONDS_PER_DAY = 86400
 
 # Extension (lower case, with dot) -> folder name used by organize and the type summary.
@@ -602,6 +611,232 @@ def select_empty_dirs(all_empty, chosen, root):
                 break
             parent = above
     return result
+
+
+# ---- space map (sunburst) -----------------------------------------------------------------------
+
+def new_node(name, path):
+    return {"name": name, "path": path, "bytes": 0, "files": 0, "wasted": 0,
+            "own_bytes": 0, "own_files": 0, "own_wasted": 0, "children": {}}
+
+
+def path_parts(relative):
+    """'a\\b/c.txt' -> ['a', 'b', 'c.txt']."""
+    parts = []
+    for part in relative.replace("/", os.sep).split(os.sep):
+        if part != "" and part != ".":
+            parts.append(part)
+    return parts
+
+
+def build_folder_tree(root, files):
+    """Folder tree of root with the bytes and file count of everything below each folder -> Node."""
+    name = os.path.basename(root.rstrip("\\/"))
+    if name == "":
+        name = root
+    tree = new_node(name, root)
+    # Totals per folder first (a cut at the last separator is cheap), then each folder is placed in
+    # the tree once: there are far fewer folders than files.
+    own = {}
+    for info in files:
+        path = info["path"]
+        cut = path.rfind(os.sep)
+        if path.rfind("/") > cut:
+            cut = path.rfind("/")
+        folder = root
+        if cut >= 0:
+            folder = path[0:cut]
+        if len(folder) < len(root):  # a file right in a drive root: "D:\x" gives "D:"
+            folder = root
+        if folder not in own:
+            own[folder] = {"bytes": 0, "files": 0}
+        own[folder]["bytes"] = own[folder]["bytes"] + info["size"]
+        own[folder]["files"] = own[folder]["files"] + 1
+    for folder in own:
+        total = own[folder]
+        node = tree
+        node["bytes"] = node["bytes"] + total["bytes"]
+        node["files"] = node["files"] + total["files"]
+        for part in path_parts(relative_path(root, folder)):
+            if part not in node["children"]:
+                node["children"][part] = new_node(part, os.path.join(node["path"], part))
+            node = node["children"][part]
+            node["bytes"] = node["bytes"] + total["bytes"]
+            node["files"] = node["files"] + total["files"]
+        node["own_bytes"] = node["own_bytes"] + total["bytes"]
+        node["own_files"] = node["own_files"] + total["files"]
+    return tree
+
+
+def folder_chain(tree, root, parts):
+    """Nodes from the tree's top down through the folders named in parts, or None if one is missing."""
+    chain = [tree]
+    node = tree
+    for part in parts:
+        if part not in node["children"]:
+            return None
+        node = node["children"][part]
+        chain.append(node)
+    return chain
+
+
+def find_node(tree, root, folder):
+    """The Node for folder (root or a folder below it), or None when it is not in the tree."""
+    chain = folder_chain(tree, root, path_parts(relative_path(root, folder)))
+    if chain is None:
+        return None
+    return chain[len(chain) - 1]
+
+
+def mark_wasted(tree, root, groups, keep):
+    """Set each Node's wasted bytes: the duplicate copies below it that are not the kept one."""
+    pending = [tree]
+    while len(pending) > 0:
+        node = pending.pop()
+        node["wasted"] = 0
+        node["own_wasted"] = 0
+        for name in node["children"]:
+            pending.append(node["children"][name])
+    for group in groups:
+        keeper = keeper_index(group, keep)
+        index = 0
+        while index < len(group):
+            if index != keeper:
+                info = group[index]
+                parts = path_parts(relative_path(root, info["path"]))
+                chain = folder_chain(tree, root, parts[0:len(parts) - 1])
+                if chain is not None:
+                    for node in chain:
+                        node["wasted"] = node["wasted"] + info["size"]
+                    last = chain[len(chain) - 1]
+                    last["own_wasted"] = last["own_wasted"] + info["size"]
+            index = index + 1
+
+
+def entry_bytes(entry):
+    return entry["bytes"]
+
+
+def map_entries(node):
+    """A folder's slices: its subfolders, plus one entry for the files directly in it, biggest first."""
+    entries = []
+    for name in node["children"]:
+        child = node["children"][name]
+        if child["bytes"] > 0:
+            entries.append({"kind": "folder", "node": child, "name": child["name"], "path": child["path"],
+                            "bytes": child["bytes"], "files": child["files"], "wasted": child["wasted"]})
+    if node["own_bytes"] > 0:
+        entries.append({"kind": "files", "node": None, "name": plural(node["own_files"], "file") + " here",
+                        "path": node["path"], "bytes": node["own_bytes"], "files": node["own_files"],
+                        "wasted": node["own_wasted"]})
+    entries.sort(key=entry_bytes, reverse=True)
+    return entries
+
+
+def layout_sunburst(node, max_depth, min_degrees):
+    """Rings around node -> list of Arc, inner rings first.
+
+    Angles are degrees clockwise from 12 o'clock. Each folder's slices share its angle by bytes;
+    slices narrower than min_degrees are merged into one "rest" arc. Rings stop at max_depth.
+    """
+    arcs = []
+    if node["bytes"] <= 0:
+        return arcs
+    pending = [{"node": node, "start": 0.0, "extent": 360.0, "depth": 1, "branch": -1}]
+    while len(pending) > 0:
+        item = pending.pop(0)
+        parent = item["node"]
+        entries = map_entries(parent)
+        angle = item["start"]
+        rest = {"bytes": 0, "files": 0, "wasted": 0, "count": 0, "start": 0.0}
+        index = 0
+        while index < len(entries):
+            entry = entries[index]
+            extent = item["extent"] * entry["bytes"] / parent["bytes"]
+            branch = item["branch"]
+            if item["depth"] == 1:
+                branch = index
+            # Biggest first, so once one slice is too narrow every later one is too: merge the tail
+            # (a lone narrow slice is drawn as itself).
+            if extent < min_degrees and index < len(entries) - 1:
+                if rest["count"] == 0:
+                    rest["start"] = angle
+                    rest["branch"] = branch
+                rest["bytes"] = rest["bytes"] + entry["bytes"]
+                rest["files"] = rest["files"] + entry["files"]
+                rest["wasted"] = rest["wasted"] + entry["wasted"]
+                rest["count"] = rest["count"] + 1
+            elif rest["count"] > 0:
+                rest["bytes"] = rest["bytes"] + entry["bytes"]
+                rest["files"] = rest["files"] + entry["files"]
+                rest["wasted"] = rest["wasted"] + entry["wasted"]
+                rest["count"] = rest["count"] + 1
+            else:
+                arcs.append({"path": entry["path"], "name": entry["name"], "kind": entry["kind"],
+                             "depth": item["depth"], "start": angle, "extent": extent, "bytes": entry["bytes"],
+                             "files": entry["files"], "wasted": entry["wasted"], "branch": branch})
+                if entry["kind"] == "folder" and item["depth"] < max_depth:
+                    pending.append({"node": entry["node"], "start": angle, "extent": extent,
+                                    "depth": item["depth"] + 1, "branch": branch})
+            angle = angle + extent
+            index = index + 1
+        if rest["count"] > 0:
+            arcs.append({"path": parent["path"], "name": plural(rest["count"], "smaller item"), "kind": "rest",
+                         "depth": item["depth"], "start": rest["start"],
+                         "extent": item["start"] + item["extent"] - rest["start"], "bytes": rest["bytes"],
+                         "files": rest["files"], "wasted": rest["wasted"], "branch": rest["branch"]})
+    return arcs
+
+
+def ring_points(cx, cy, inner, outer, start, extent, step):
+    """Polygon [x0, y0, x1, y1, ...] for a ring slice: along the outer edge, then back along the inner one.
+
+    Angles are degrees clockwise from 12 o'clock; step is the largest angle between two points.
+    """
+    count = int(math.ceil(extent / step))
+    if count < 1:
+        count = 1
+    points = []
+    index = 0
+    while index <= count:
+        angle = math.radians(start + extent * index / count)
+        points.append(cx + outer * math.sin(angle))
+        points.append(cy - outer * math.cos(angle))
+        index = index + 1
+    index = count
+    while index >= 0:
+        angle = math.radians(start + extent * index / count)
+        points.append(cx + inner * math.sin(angle))
+        points.append(cy - inner * math.cos(angle))
+        index = index - 1
+    return points
+
+
+def hls_hex(hue, lightness, saturation):
+    red, green, blue = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return "#%02x%02x%02x" % (int(red * 255 + 0.5), int(green * 255 + 0.5), int(blue * 255 + 0.5))
+
+
+def arc_color(arc, mode, max_depth):
+    """Fill colour of an Arc. mode "folders": one hue per top-level slice, lighter further out.
+    mode "duplicates": grey, turning red as the share of duplicate copies in the slice grows."""
+    outward = 0.0
+    if max_depth > 1:
+        outward = (arc["depth"] - 1) / float(max_depth - 1)
+    if mode == "duplicates":
+        share = 0.0
+        if arc["bytes"] > 0:
+            share = arc["wasted"] / float(arc["bytes"])
+        strength = share / 0.5
+        if strength > 1.0:
+            strength = 1.0
+        return hls_hex(0.0, 0.86 - 0.36 * strength, 0.75 * strength)
+    hue = MAP_HUES[arc["branch"] % len(MAP_HUES)] / 360.0
+    if arc["kind"] == "rest":
+        return hls_hex(hue, 0.80 + 0.08 * outward, 0.0)
+    if arc["kind"] == "files":
+        return hls_hex(hue, 0.74 + 0.08 * outward, 0.18)
+    return hls_hex(hue, 0.50 + 0.25 * outward, 0.55)
 
 
 # ---- organize -----------------------------------------------------------------------------------
@@ -1223,6 +1458,66 @@ def selftest():
         changed = plan_sync(root, target, None, None)["value"]
         check(len(changed) == 2, "changed and new files found", failures)
 
+        print("space map")
+        top = os.path.join(work, "m")
+        map_files = [{"path": os.path.join(top, "big", "a.bin"), "size": 600, "modified": now},
+                     {"path": os.path.join(top, "big", "deep", "b.bin"), "size": 210, "modified": now},
+                     {"path": os.path.join(top, "big", "c.bin"), "size": 90, "modified": now},
+                     {"path": os.path.join(top, "small", "c.bin"), "size": 90, "modified": now},
+                     {"path": os.path.join(top, "loose.bin"), "size": 10, "modified": now}]
+        tree = build_folder_tree(top, map_files)
+        check(tree["bytes"] == 1000 and tree["files"] == 5 and tree["own_bytes"] == 10, "tree totals", failures)
+        check(tree["children"]["big"]["bytes"] == 900 and tree["children"]["big"]["own_files"] == 2, "folder totals", failures)
+        drive = build_folder_tree("D:" + os.sep, [{"path": "D:" + os.sep + "x.bin", "size": 5, "modified": now},
+                                                  {"path": os.path.join("D:" + os.sep, "a", "y.bin"), "size": 7, "modified": now}])
+        check(drive["own_bytes"] == 5 and drive["children"]["a"]["bytes"] == 7 and drive["bytes"] == 12,
+              "tree of a drive root", failures)
+        arcs = layout_sunburst(tree, 6, 0.0)
+        ring_total = 0.0
+        big_arc = None
+        for arc in arcs:
+            if arc["depth"] == 1:
+                ring_total = ring_total + arc["extent"]
+            if arc["path"] == os.path.join(top, "big") and arc["kind"] == "folder":
+                big_arc = arc
+        check(abs(ring_total - 360.0) < 1e-9, "first ring is a full circle", failures)
+        check(big_arc is not None and abs(big_arc["extent"] - 324.0) < 1e-9 and big_arc["start"] == 0.0,
+              "biggest slice first, sized by bytes", failures)
+        inside = 0.0
+        for arc in arcs:
+            if arc["depth"] == 2 and arc["branch"] == big_arc["branch"]:
+                inside = inside + arc["extent"]
+        check(abs(inside - big_arc["extent"]) < 1e-9, "a folder's slices fill its angle", failures)
+        merged = layout_sunburst(tree, 6, 50.0)
+        rests = []
+        for arc in merged:
+            if arc["kind"] == "rest":
+                rests.append(arc)
+        check(len(rests) == 1 and rests[0]["bytes"] == 100 and abs(rests[0]["extent"] - 36.0) < 1e-9
+              and rests[0]["name"] == "2 smaller items", "narrow slices merge into one", failures)
+        shallow = layout_sunburst(tree, 1, 0.0)
+        deepest = 0
+        for arc in shallow:
+            if arc["depth"] > deepest:
+                deepest = arc["depth"]
+        check(deepest == 1, "rings stop at max depth", failures)
+        pair = [[map_files[3], map_files[2]]]
+        mark_wasted(tree, top, pair, {})
+        check(tree["wasted"] == 90 and tree["children"]["big"]["own_wasted"] == 90
+              and tree["children"]["small"]["wasted"] == 0, "wasted bytes land on the extra copy's folders", failures)
+        mark_wasted(tree, top, pair, {map_files[2]["path"]: True})
+        check(tree["children"]["small"]["wasted"] == 90 and tree["children"]["big"]["wasted"] == 0,
+              "wasted bytes follow the kept copy", failures)
+        check(find_node(tree, top, os.path.join(top, "big", "deep"))["name"] == "deep"
+              and find_node(tree, top, top) is tree and find_node(tree, top, os.path.join(top, "gone")) is None,
+              "find a folder in the tree", failures)
+        points = ring_points(100.0, 100.0, 10.0, 20.0, 0.0, 90.0, 30.0)
+        check(len(points) == 16 and abs(points[0] - 100.0) < 1e-9 and abs(points[1] - 80.0) < 1e-9,
+              "ring slice starts at 12 o'clock", failures)
+        grey = arc_color({"depth": 1, "bytes": 10, "wasted": 0, "kind": "folder", "branch": 0}, "duplicates", 6)
+        red = arc_color({"depth": 1, "bytes": 10, "wasted": 10, "kind": "folder", "branch": 0}, "duplicates", 6)
+        check(grey[1:3] == grey[3:5] == grey[5:7] and red[1:3] > red[3:5], "duplicate colours go from grey to red", failures)
+
         print("shares, settings, desktop")
         check(unc_host("\\\\nas01\\media\\x") == "nas01", "host from UNC", failures)
         check(unc_host("C:\\x") == "", "non-UNC has no host", failures)
@@ -1279,6 +1574,7 @@ def set_icon(window):
 # Sidebar: (key, label, section). Sections group the entries; "" is top level.
 VIEWS = [
     ("overview", "Overview", ""),
+    ("map", "Space map", ""),
     ("largest", "Largest files", "Clean up"),
     ("old", "Old files", "Clean up"),
     ("duplicates", "Duplicates", "Clean up"),
@@ -1310,6 +1606,13 @@ def run_gui(smoke_path, start_folder, start_view):
         "org_root": "",
         "old_days": settings["stale_days"],
         "view": "overview",
+        "map_tree": None,    # Node tree of the report; None after files were moved (rebuilt when shown)
+        "map_pending": False,  # the analysis is still building the tree
+        "map_wasted_ok": False,  # map_tree's wasted bytes match the current groups and keep choices
+        "map_center": "",    # folder in the middle of the space map
+        "map_items": {},     # canvas item -> Arc
+        "map_hover": None,   # canvas item under the mouse
+        "map_redraw": None,  # pending after() id while the canvas is being resized
     }
     buttons = []        # (button, predicate): enabled when idle and predicate() is true
     views = {}
@@ -1663,6 +1966,257 @@ def run_gui(smoke_path, start_folder, start_view):
         lambda row: (row["type"], human_count(row["files"]), human_size(row["bytes"]), row["share"]),
         {"type": lambda row: row["type"].lower(), "files": lambda row: row["files"], "size": lambda row: row["bytes"]})
     type_table["frame"].pack(fill="both", expand=True)
+
+    # Space map: a sunburst of the folders, angle by size. Click a folder to zoom in, the centre to go up.
+    mp = make_view("map", "Space map")
+    map_mode_var = tk.StringVar(value="folders")
+    map_info = tk.StringVar(value="")
+    canvas_background = style.lookup("TFrame", "background")
+    if canvas_background == "":
+        canvas_background = window.cget("background")
+
+    def map_ready():
+        return state["map_tree"] is not None
+
+    def map_can_go_up():
+        return map_ready() and os.path.normcase(state["map_center"]) != os.path.normcase(state["root"])
+
+    add_button(mp, "Up one level", lambda: map_up(), map_can_go_up, False)
+    add_button(mp, "Open this folder", lambda: launch(open_folder_command(state["map_center"])), map_ready, False)
+    ttk.Label(mp["actions"], text="Colour by").pack(side="left", padx=(12, 6))
+    ttk.Radiobutton(mp["actions"], text="Folders", value="folders", variable=map_mode_var,
+                    command=lambda: map_draw()).pack(side="left")
+    ttk.Radiobutton(mp["actions"], text="Duplicate copies", value="duplicates", variable=map_mode_var,
+                    command=lambda: map_draw()).pack(side="left", padx=(6, 0))
+    # Two lines tall whatever the text, so the map does not jump while the mouse moves over it.
+    map_info_holder = ttk.Frame(mp["frame"], height=2 * line_height + 4)
+    map_info_holder.pack(fill="x", pady=(0, 6))
+    map_info_holder.pack_propagate(False)
+    wrapping(ttk.Label(map_info_holder, textvariable=map_info)).pack(fill="x", anchor="nw")
+    map_body = ttk.Frame(mp["frame"])
+    map_body.pack(fill="both", expand=True)
+    map_canvas = tk.Canvas(map_body, background=canvas_background, highlightthickness=0, width=360, height=300)
+    map_canvas.pack(side="left", fill="both", expand=True)
+    map_table = make_table(
+        map_body,
+        [("name", "Biggest here", 190, "w", True), ("size", "Size", 85, "e", False), ("share", "Share", 65, "e", False)],
+        lambda row: (row["name"], human_size(row["bytes"]), row["share"]),
+        {"name": lambda row: row["name"].lower(), "size": lambda row: row["bytes"]})
+    map_table["frame"].pack(side="left", fill="y", padx=(10, 0))
+    map_menu = tk.Menu(window, tearoff=0)
+
+    def map_center_node():
+        node = find_node(state["map_tree"], state["root"], state["map_center"])
+        if node is None:
+            node = state["map_tree"]
+            state["map_center"] = state["root"]
+        return node
+
+    def map_prepare():
+        """Make map_tree match the report and the duplicate groups. The analysis builds the tree on its
+        worker thread; it is only rebuilt here after files were moved."""
+        report = state["report"]
+        if report is None or state["map_pending"]:
+            return
+        if state["map_tree"] is None:
+            state["map_tree"] = build_folder_tree(state["root"], report["files"])
+            state["map_wasted_ok"] = False
+        if not state["map_wasted_ok"] and state["groups"] is not None:
+            mark_wasted(state["map_tree"], state["root"], state["groups"], state["keep"])
+            state["map_wasted_ok"] = True
+        set_side("map", plural(len(state["map_tree"]["children"]), "folder"))
+
+    def map_arc_text(arc, node):
+        name = arc["name"]
+        if arc["kind"] == "folder":
+            name = rel(arc["path"])
+        elif arc["kind"] == "rest":
+            name = name + " in " + rel(arc["path"])
+        share = 0.0
+        if node["bytes"] > 0:
+            share = 100.0 * arc["bytes"] / node["bytes"]
+        text = name + "  —  " + human_size(arc["bytes"]) + " (%.1f %%)" % share + "  ·  " + plural(arc["files"], "file")
+        if map_mode_var.get() == "duplicates":
+            if state["groups"] is None:
+                text = text + "  ·  duplicates not compared yet"
+            else:
+                text = text + "  ·  " + human_size(arc["wasted"]) + " in duplicate copies"
+        return text
+
+    def map_default_text(node):
+        text = "Point at a slice to see what it is. Click a folder to zoom in"
+        if map_can_go_up():
+            text = text + ", the centre (or Backspace) to go back up"
+        text = text + ". Right-click for more."
+        if map_mode_var.get() == "duplicates":
+            if state["groups"] is None:
+                text = "Duplicates are still being compared; the map turns red where copies are found."
+            else:
+                text = "Red marks space taken by duplicate copies: the redder, the bigger its share. " + text
+        return text
+
+    def map_draw():
+        map_canvas.delete("all")
+        state["map_items"] = {}
+        state["map_hover"] = None
+        map_prepare()
+        width = map_canvas.winfo_width()
+        height = map_canvas.winfo_height()
+        tree = state["map_tree"]
+        if tree is None or state["report"] is None or state["map_pending"]:
+            waiting = "Analyze a folder to see where its space goes."
+            if state["map_pending"]:
+                waiting = "Drawing the map…"
+            map_canvas.create_text(width / 2, height / 2, text=waiting, fill="#6b6b6b", font=base_font)
+            mp["subtitle"].set("")
+            map_info.set("")
+            fill_table(map_table, [])
+            refresh_buttons()
+            return
+        node = map_center_node()
+        mode = map_mode_var.get()
+        mp["subtitle"].set(node["path"] + "  ·  " + human_size(node["bytes"]) + " in " + plural(node["files"], "file"))
+        map_info.set(map_default_text(node))
+        rows = []
+        for entry in map_entries(node):
+            share = 0.0
+            if node["bytes"] > 0:
+                share = 100.0 * entry["bytes"] / node["bytes"]
+            entry["share"] = "%.1f %%" % share
+            rows.append(entry)
+        fill_table(map_table, rows)
+        refresh_buttons()
+        radius = (min(width, height) - 16) / 2.0
+        if radius < 60:
+            return
+        cx = width / 2.0
+        cy = height / 2.0
+        hole = radius * 0.2
+        arcs = layout_sunburst(node, MAP_DEPTH, MAP_MIN_DEGREES)
+        rings = 3  # shallow folders get wider rings instead of a small map in a big canvas
+        for arc in arcs:
+            if arc["depth"] > rings:
+                rings = arc["depth"]
+        ring = (radius - hole) / rings
+        for arc in arcs:
+            inner = hole + (arc["depth"] - 1) * ring
+            points = ring_points(cx, cy, inner, inner + ring, arc["start"], arc["extent"], 2.0)
+            item = map_canvas.create_polygon(points, fill=arc_color(arc, mode, rings), outline=canvas_background,
+                                             width=1)
+            state["map_items"][item] = arc
+        map_canvas.create_oval(cx - hole, cy - hole, cx + hole, cy + hole, fill="#ffffff", outline="#c8c8c8",
+                               tags=("centre",))
+        label = node["name"]
+        if len(label) > 18:
+            label = label[0:17] + "…"
+        map_canvas.create_text(cx, cy - line_height / 2, text=label, font=strong_font, tags=("centre",))
+        map_canvas.create_text(cx, cy + line_height / 2, text=human_size(node["bytes"]), fill="#6b6b6b",
+                               font=base_font, tags=("centre",))
+
+    def map_target(event):
+        """The Arc under the mouse, "centre", or None."""
+        found = map_canvas.find_withtag("current")
+        if len(found) == 0:
+            return None
+        if found[0] in state["map_items"]:
+            return state["map_items"][found[0]]
+        if "centre" in map_canvas.gettags(found[0]):
+            return "centre"
+        return None
+
+    def map_hover(event):
+        found = map_canvas.find_withtag("current")
+        item = None
+        if len(found) > 0 and found[0] in state["map_items"]:
+            item = found[0]
+        if item == state["map_hover"]:
+            return
+        if state["map_hover"] is not None:
+            map_canvas.itemconfigure(state["map_hover"], outline=canvas_background, width=1)
+        state["map_hover"] = item
+        if state["map_tree"] is None:
+            return
+        if item is None:
+            map_canvas.configure(cursor="hand2" if map_target(event) == "centre" and map_can_go_up() else "")
+            map_info.set(map_default_text(map_center_node()))
+            return
+        arc = state["map_items"][item]
+        map_canvas.itemconfigure(item, outline="#202020", width=2)
+        map_canvas.tag_raise(item)
+        map_canvas.configure(cursor="hand2" if arc["kind"] == "folder" else "")
+        map_info.set(map_arc_text(arc, map_center_node()))
+
+    def map_zoom(path):
+        state["map_center"] = path
+        map_draw()
+
+    def map_up():
+        if not map_can_go_up():
+            return
+        parent = os.path.dirname(state["map_center"])
+        if len(parent) < len(state["root"]):
+            parent = state["root"]
+        map_zoom(parent)
+
+    def map_click(event):
+        map_canvas.focus_set()  # so Backspace goes up a level instead of editing the folder box
+        target = map_target(event)
+        if target == "centre":
+            map_up()
+        elif target is not None and target["kind"] == "folder":
+            map_zoom(target["path"])
+
+    def map_right_click(event):
+        target = map_target(event)
+        if target is None:
+            return
+        if target == "centre":
+            path = state["map_center"]
+            can_zoom = False
+        else:
+            path = target["path"]
+            can_zoom = target["kind"] == "folder"
+        map_menu.delete(0, "end")
+        if can_zoom:
+            map_menu.add_command(label="Zoom in", command=lambda: map_zoom(path))
+        map_menu.add_command(label="Open folder", command=lambda: launch(open_folder_command(path)))
+        map_menu.add_command(label="Show in its folder", command=lambda: launch(reveal_command(path)))
+        map_menu.tk_popup(event.x_root, event.y_root)
+
+    def map_resized(event):
+        if state["map_redraw"] is not None:
+            window.after_cancel(state["map_redraw"])
+        state["map_redraw"] = window.after(60, map_resize_done)
+
+    def map_resize_done():
+        state["map_redraw"] = None
+        if state["view"] == "map":
+            map_draw()
+
+    def map_table_open(event):
+        rows = picked_rows(map_table)
+        if len(map_table["tree"].selection()) == 0 or len(rows) == 0:
+            return
+        if rows[0]["kind"] == "folder":
+            map_zoom(rows[0]["path"])
+        else:
+            launch(open_folder_command(rows[0]["path"]))
+
+    def map_backspace(event):
+        if state["view"] != "map":
+            return
+        if isinstance(event.widget, (ttk.Entry, ttk.Combobox, ttk.Spinbox, tk.Entry, tk.Text)):
+            return
+        map_up()
+
+    map_canvas.bind("<Motion>", map_hover)
+    map_canvas.bind("<Leave>", map_hover)
+    map_canvas.bind("<Button-1>", map_click)
+    map_canvas.bind("<Button-3>", map_right_click)
+    map_canvas.bind("<Configure>", map_resized)
+    map_table["tree"].bind("<Double-1>", map_table_open)
+    map_table["tree"].bind("<Return>", map_table_open)
+    window.bind("<BackSpace>", map_backspace)
 
     def trash_folder():
         if state["root"] == "":
@@ -2075,6 +2629,9 @@ def run_gui(smoke_path, start_folder, start_view):
         if report is None:
             for entry in VIEWS:
                 set_side(entry[0], "")
+            state["map_tree"] = None
+            if state["view"] == "map":
+                map_draw()
             refresh_buttons()
             return
         stale_total = total_size(report["stale"])
@@ -2136,6 +2693,10 @@ def run_gui(smoke_path, start_folder, start_view):
         refresh_buttons()
 
     def refresh_duplicates():
+        # The space map shows the duplicate copies too; redraw it now if it is on screen.
+        state["map_wasted_ok"] = False
+        if state["view"] == "map":
+            map_draw()
         dup_tree.delete(*dup_tree.get_children())
         groups = state["groups"]
         if groups is None:
@@ -2176,6 +2737,8 @@ def run_gui(smoke_path, start_folder, start_view):
     def show_view(key):
         state["view"] = key
         views[key]["frame"].tkraise()
+        if key == "map":
+            map_draw()
         if tuple(sidebar.selection()) != (key,):
             sidebar.selection_set(key)
 
@@ -2246,14 +2809,24 @@ def run_gui(smoke_path, start_folder, start_view):
             if not scanned["ok"]:
                 return scanned
             post("scan", scanned["value"])
+            post("tree", build_folder_tree(root, scanned["value"]["files"]))
             return find_duplicates_in(scanned["value"]["files"], cancel_flag, send)
 
         def on_message(kind, value):
+            if kind == "tree":
+                state["map_tree"] = value
+                state["map_pending"] = False
+                state["map_wasted_ok"] = False
+                if state["view"] == "map":
+                    map_draw()
             if kind == "scan":
                 state["root"] = root
                 state["report"] = value
                 state["groups"] = None
                 state["keep"] = {}
+                state["map_tree"] = None
+                state["map_pending"] = True
+                state["map_center"] = root
                 state["dup_note"] = "comparing\u2026"
                 refresh_all()
                 log("  " + plural(value["file_count"], "file") + ", " + human_size(value["total_bytes"]))
@@ -2270,6 +2843,10 @@ def run_gui(smoke_path, start_folder, start_view):
                            + human_size(savings["bytes"]) + " in duplicate copies")
 
         def on_fail(result):
+            if state["map_pending"]:  # the tree never arrived; build it here when the map is shown
+                state["map_pending"] = False
+                if state["view"] == "map":
+                    map_draw()
             if state["report"] is not None and state["root"] == root:
                 state["dup_note"] = "not compared (" + result["error"] + ")"
                 refresh_all()
@@ -2288,6 +2865,7 @@ def run_gui(smoke_path, start_folder, start_view):
             state["report"] = remove_from_report(state["report"], gone, LARGEST_COUNT, state["old_days"], time.time())
             if state["groups"] is not None:
                 state["groups"] = remove_from_groups(state["groups"], gone)
+            state["map_tree"] = None  # rebuilt from the smaller report when the map is next drawn
             refresh_all()
 
         run_job(label, lambda post: apply_moves(root, moves, state["cancel"], progress_sender(post)), finish, None, None)
@@ -2411,4 +2989,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4b9f63f495d910d72e7a2881c26304f122a166bcb7aa5b4c2a998a79b879f6f8 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=5d9bdd59a0d23aca144dc47f827f0c43257c75edeefe8e829010c748548865b9 ====

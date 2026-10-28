@@ -19,20 +19,39 @@ Written to be easy to port to another language:
 Records
   Result     {"ok": bool, "error": str, "value": any}
   FileInfo   {"path": str, "size": int, "modified": float}
-  ScanReport {"root": str, "file_count": int, "total_bytes": int, "largest": [FileInfo],
-              "stale": [FileInfo], "empty_dirs": [str], "errors": [str]}
-  Move       {"source": str, "target": str}
+  Walk       {"files": [FileInfo], "empty_dirs": [str], "errors": [str], "dir_count": int}
+  ScanReport {"root": str, "file_count": int, "dir_count": int, "total_bytes": int,
+              "drive_free": int, "drive_total": int, "by_type": {name: {"files": int, "bytes": int}},
+              "largest": [FileInfo], "stale": [FileInfo], "empty_dirs": [str], "errors": [str],
+              "files": [FileInfo]}
+  Move       {"source": str, "target": str}             target "" removes an empty folder
+  Copy       {"source": str, "target": str, "size": int}
   Share      {"name": str, "unc": str, "letter": str}
   ShareState {"reachable": bool, "total": int, "used": int, "free": int, "error": str}
+
+Progress
+  Long functions take progress(text, done, total, unit), or None. unit is "files", "bytes" or
+  "items"; total 0 means not known yet. It is called from the worker thread.
+
+Speed
+  * Folders are read once with os.scandir, which returns sizes and times with the listing
+    (on Windows without opening each file). Empty folders are found in the same pass.
+  * Duplicates are narrowed step by step (size, then both ends of large files, then a full
+    SHA-256) and files are read on HASH_WORKERS threads at once.
+  * A backup lists source and target once and compares them in memory.
 
 Usage
   python storage_manager.py              open the window
   python storage_manager.py --selftest   run the built-in checks and exit
   python storage_manager.py --version
   python storage_manager.py --smoke FILE open the window, write a JSON report to FILE, close
+  python storage_manager.py --folder PATH [--view KEY]
+                                         analyze PATH straight away (KEY: a sidebar entry, e.g. duplicates)
 """
 
+import concurrent.futures
 import hashlib
+import heapq
 import json
 import os
 import shutil
@@ -42,7 +61,7 @@ import tempfile
 import threading
 import time
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 APP_NAME = "Generic Company Storage Manager"
 APP_ID = "GenericCompany.Storage"
 ICON_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "app.ico")
@@ -51,10 +70,15 @@ ICON_CREDIT = ("Icon: drive_network.png from the Silk icon set by Mark James (fa
 
 TRASH_DIR_NAME = "_storage_manager_trash"
 UNDO_LOG_NAME = "_storage_manager_undo.json"
-CHUNK_SIZE = 1024 * 1024
+CHUNK_SIZE = 1024 * 1024      # bytes read at a time when hashing a whole file
+SAMPLE_SIZE = 64 * 1024       # bytes read from each end of a large file before hashing all of it
+HASH_WORKERS = 8              # files read at once; hides disk, antivirus and network latency
+PROGRESS_EVERY = 500          # files between progress reports
+LARGEST_COUNT = 100           # files listed under "Largest files"
+MAX_ROWS = 2000               # rows a list shows; actions still apply to every row
 SECONDS_PER_DAY = 86400
 
-# Extension (lower case, with dot) -> folder name used by organize_by_type.
+# Extension (lower case, with dot) -> folder name used by organize and the type summary.
 TYPE_FOLDERS = {
     ".jpg": "Images", ".jpeg": "Images", ".png": "Images", ".gif": "Images", ".bmp": "Images",
     ".webp": "Images", ".svg": "Images", ".heic": "Images", ".tif": "Images", ".tiff": "Images",
@@ -94,69 +118,125 @@ def is_cancelled(cancel_flag):
     return cancel_flag[0]
 
 
+def report_progress(progress, text, done, total, unit):
+    if progress is not None:
+        progress(text, done, total, unit)
+
+
+def error_text(error):
+    """The OS message for an OSError, without the path Python appends (callers add the path)."""
+    if error.strerror:
+        return error.strerror
+    return str(error)
+
+
 def is_own_folder(name):
     return name == TRASH_DIR_NAME
 
 
+def relative_path(root, path):
+    """path below root, without a leading separator."""
+    if not path.startswith(root):
+        return os.path.relpath(path, root)
+    rest = path[len(root):]
+    while rest.startswith(os.sep) or rest.startswith("/"):
+        rest = rest[1:]
+    return rest
+
+
 # ---- walking ------------------------------------------------------------------------------------
 
-def list_files(root, cancel_flag):
-    """Every file under root (skipping our trash folder) -> (list of FileInfo, list of error strings)."""
+def is_link_entry(entry):
+    """Symbolic links and Windows junctions are not followed (they can loop or leave the drive)."""
+    if entry.is_symlink():
+        return True
+    if hasattr(entry, "is_junction") and entry.is_junction():
+        return True
+    return False
+
+
+def walk_tree(root, cancel_flag, progress):
+    """Read every folder under root once -> Result(Walk).
+
+    Our trash folder and undo log are skipped. A folder is empty when it holds no files, links
+    or unreadable entries, and every folder inside it is empty too.
+    """
     files = []
     errors = []
-    pending = [root]
+    dir_paths = [root]      # every folder seen; index 0 is root
+    dir_parent = [-1]       # index of each folder's parent
+    has_content = [False]   # folder holds something other than folders
+    pending = [0]
     while len(pending) > 0:
         if is_cancelled(cancel_flag):
-            break
-        folder = pending.pop()
+            return failure("cancelled")
+        index = pending.pop()
+        folder = dir_paths[index]
         try:
-            names = os.listdir(folder)
+            iterator = os.scandir(folder)
         except OSError as e:
-            errors.append(folder + ": " + str(e))
+            errors.append(folder + ": " + error_text(e))
+            has_content[index] = True
             continue
-        for name in names:
-            path = os.path.join(folder, name)
-            if os.path.islink(path):
-                continue
-            if os.path.isdir(path):
-                if not is_own_folder(name):
-                    pending.append(path)
-                continue
-            if name == UNDO_LOG_NAME:
-                continue
-            try:
-                info = os.stat(path)
-            except OSError as e:
-                errors.append(path + ": " + str(e))
-                continue
-            files.append({"path": path, "size": info.st_size, "modified": info.st_mtime})
-    return files, errors
+        try:
+            for entry in iterator:
+                try:
+                    if is_link_entry(entry):
+                        has_content[index] = True
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if is_own_folder(entry.name):
+                            has_content[index] = True
+                            continue
+                        dir_paths.append(entry.path)
+                        dir_parent.append(index)
+                        has_content.append(False)
+                        pending.append(len(dir_paths) - 1)
+                        continue
+                    has_content[index] = True
+                    if entry.name == UNDO_LOG_NAME:
+                        continue
+                    info = entry.stat(follow_symlinks=False)
+                except OSError as e:
+                    errors.append(entry.path + ": " + error_text(e))
+                    has_content[index] = True
+                    continue
+                files.append({"path": entry.path, "size": info.st_size, "modified": info.st_mtime})
+                if len(files) % PROGRESS_EVERY == 0:
+                    report_progress(progress, "Reading folders", len(files), 0, "files")
+        except OSError as e:
+            errors.append(folder + ": " + error_text(e))
+            has_content[index] = True
+        finally:
+            iterator.close()
+    # Children always come after their parent, so walking backwards settles each folder
+    # before its parent, and the list comes out deepest first (the order they can be removed in).
+    nonempty = list(has_content)
+    empty_dirs = []
+    index = len(dir_paths) - 1
+    while index > 0:
+        if nonempty[index]:
+            nonempty[dir_parent[index]] = True
+        else:
+            empty_dirs.append(dir_paths[index])
+        index = index - 1
+    return success({"files": files, "empty_dirs": empty_dirs, "errors": errors, "dir_count": len(dir_paths)})
 
 
 def find_empty_dirs(root):
     """Folders under root (not root itself) that contain nothing, deepest first."""
-    empty = []
-    walk = []
-    for folder, subdirs, names in os.walk(root, topdown=False):
-        walk.append((folder, subdirs, names))
-    empty_set = {}
-    for entry in walk:
-        folder = entry[0]
-        subdirs = entry[1]
-        names = entry[2]
-        if folder == root or is_own_folder(os.path.basename(folder)):
-            continue
-        if len(names) > 0:
-            continue
-        all_children_empty = True
-        for sub in subdirs:
-            if os.path.join(folder, sub) not in empty_set:
-                all_children_empty = False
-                break
-        if all_children_empty:
-            empty_set[folder] = True
-            empty.append(folder)
-    return empty
+    walked = walk_tree(root, None, None)
+    if not walked["ok"]:
+        return []
+    return walked["value"]["empty_dirs"]
+
+
+def file_size(info):
+    return info["size"]
+
+
+def file_path(info):
+    return info["path"]
 
 
 def sort_by_size_desc(files):
@@ -165,116 +245,336 @@ def sort_by_size_desc(files):
     return result
 
 
-def file_size(info):
-    return info["size"]
+def total_size(files):
+    total = 0
+    for info in files:
+        total = total + info["size"]
+    return total
+
+
+def largest_files(files, count):
+    """The count biggest files, biggest first (a partial sort: port as a top-N / priority queue)."""
+    return heapq.nlargest(count, files, key=file_size)
+
+
+def stale_files(files, days, now):
+    """Files not changed for `days` days, biggest first."""
+    cutoff = now - days * SECONDS_PER_DAY
+    stale = []
+    for info in files:
+        if info["modified"] < cutoff:
+            stale.append(info)
+    stale.sort(key=file_size, reverse=True)
+    return stale
+
+
+def summarize_types(files):
+    """File count and bytes per type folder (Images, Video, ... Other)."""
+    by_type = {}
+    for info in files:
+        kind = type_folder_for(info["path"])
+        if kind not in by_type:
+            by_type[kind] = {"files": 0, "bytes": 0}
+        by_type[kind]["files"] = by_type[kind]["files"] + 1
+        by_type[kind]["bytes"] = by_type[kind]["bytes"] + info["size"]
+    return by_type
+
+
+def drive_usage(path):
+    """(free, total) bytes of the drive holding path, or (0, 0) when unknown."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return (0, 0)
+    return (usage.free, usage.total)
 
 
 # ---- scan ---------------------------------------------------------------------------------------
 
-def scan(root, largest_count, stale_days, now, cancel_flag):
-    """Summarize a folder -> Result(ScanReport)."""
-    if not os.path.isdir(root):
-        return failure("not a folder: " + root)
-    files, errors = list_files(root, cancel_flag)
-    total = 0
-    stale = []
-    cutoff = now - stale_days * SECONDS_PER_DAY
-    for info in files:
-        total = total + info["size"]
-        if info["modified"] < cutoff:
-            stale.append(info)
-    by_size = sort_by_size_desc(files)
-    report = {
+def build_report(root, files, empty_dirs, errors, dir_count, largest_count, stale_days, now):
+    return {
         "root": root,
         "file_count": len(files),
-        "total_bytes": total,
-        "largest": by_size[:largest_count],
-        "stale": sort_by_size_desc(stale),
-        "empty_dirs": find_empty_dirs(root),
+        "dir_count": dir_count,
+        "total_bytes": total_size(files),
+        "drive_free": 0,
+        "drive_total": 0,
+        "by_type": summarize_types(files),
+        "largest": largest_files(files, largest_count),
+        "stale": stale_files(files, stale_days, now),
+        "empty_dirs": empty_dirs,
         "errors": errors,
+        "files": files,
     }
+
+
+def scan(root, largest_count, stale_days, now, cancel_flag, progress):
+    """Summarize a folder in one pass -> Result(ScanReport)."""
+    if not os.path.isdir(root):
+        return failure("not a folder: " + root)
+    walked = walk_tree(root, cancel_flag, progress)
+    if not walked["ok"]:
+        return walked
+    found = walked["value"]
+    report = build_report(root, found["files"], found["empty_dirs"], found["errors"], found["dir_count"],
+                          largest_count, stale_days, now)
+    usage = drive_usage(root)
+    report["drive_free"] = usage[0]
+    report["drive_total"] = usage[1]
     return success(report)
+
+
+def remove_from_report(report, gone, largest_count, stale_days, now):
+    """The report without the paths in gone (dict path -> True), e.g. after moving them to the trash."""
+    files = []
+    for info in report["files"]:
+        if info["path"] not in gone:
+            files.append(info)
+    empty_dirs = []
+    for folder in report["empty_dirs"]:
+        if folder not in gone:
+            empty_dirs.append(folder)
+    dir_count = report["dir_count"] - (len(report["empty_dirs"]) - len(empty_dirs))
+    updated = build_report(report["root"], files, empty_dirs, report["errors"], dir_count,
+                           largest_count, stale_days, now)
+    updated["drive_free"] = report["drive_free"]
+    updated["drive_total"] = report["drive_total"]
+    return updated
 
 
 # ---- duplicates ---------------------------------------------------------------------------------
 
-def hash_file(path):
-    """SHA-256 hex of a file -> Result(str)."""
+def hash_file(path, size):
+    """SHA-256 hex of a whole file -> Result(str).
+
+    A small file is read in one go with a buffer of its own size: allocating a large buffer for
+    each small file costs more than reading it. The loop still finishes a file that has grown.
+    """
+    digest = hashlib.sha256()
+    block_size = CHUNK_SIZE
+    if size < CHUNK_SIZE:
+        block_size = size + 1
+    try:
+        handle = open(path, "rb", buffering=0)
+    except OSError as e:
+        return failure(error_text(e))
+    try:
+        while True:
+            block = handle.read(block_size)
+            if not block:
+                break
+            digest.update(block)
+    except OSError as e:
+        return failure(error_text(e))
+    finally:
+        handle.close()
+    return success(digest.hexdigest())
+
+
+def hash_sample(path, size):
+    """SHA-256 hex of the first and last SAMPLE_SIZE bytes of a file -> Result(str)."""
     digest = hashlib.sha256()
     try:
         handle = open(path, "rb")
     except OSError as e:
-        return failure(str(e))
+        return failure(error_text(e))
     try:
-        while True:
-            block = handle.read(CHUNK_SIZE)
-            if len(block) == 0:
-                break
-            digest.update(block)
+        digest.update(handle.read(SAMPLE_SIZE))
+        handle.seek(size - SAMPLE_SIZE)
+        digest.update(handle.read(SAMPLE_SIZE))
     except OSError as e:
+        return failure(error_text(e))
+    finally:
         handle.close()
-        return failure(str(e))
-    handle.close()
     return success(digest.hexdigest())
 
 
-def find_duplicates(root, cancel_flag):
-    """Groups of identical files (2+ each, empty files ignored) -> Result(list of list of FileInfo).
+def hash_job(info, mode, cancel_flag):
+    if is_cancelled(cancel_flag):
+        return failure("cancelled")
+    if mode == "sample":
+        return hash_sample(info["path"], info["size"])
+    return hash_file(info["path"], info["size"])
 
-    Files are grouped by size first, and only same-size files are hashed.
+
+def bytes_to_read(info, mode):
+    if mode == "sample":
+        return 2 * SAMPLE_SIZE
+    return info["size"]
+
+
+def hash_many(files, mode, cancel_flag, progress, text):
+    """Hash files on HASH_WORKERS threads -> Result(dict path -> hex). Unreadable files are left out.
+
+    mode is "sample" (both ends) or "full". Port with any thread pool or parallel-for.
     """
+    total = 0
+    for info in files:
+        total = total + bytes_to_read(info, mode)
+    digests = {}
+    done = 0
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=HASH_WORKERS)
+    try:
+        jobs = []
+        for info in files:
+            jobs.append(pool.submit(hash_job, info, mode, cancel_flag))
+        index = 0
+        while index < len(jobs):
+            hashed = jobs[index].result()
+            if hashed["ok"]:
+                digests[files[index]["path"]] = hashed["value"]
+            done = done + bytes_to_read(files[index], mode)
+            if index % 50 == 0 or index == len(jobs) - 1:
+                report_progress(progress, text, done, total, "bytes")
+            index = index + 1
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    if is_cancelled(cancel_flag):
+        return failure("cancelled")
+    return success(digests)
+
+
+def group_savings(group):
+    return group[0]["size"] * (len(group) - 1)
+
+
+def first_path(group):
+    return group[0]["path"]
+
+
+def find_duplicates(root, cancel_flag, progress):
+    """Walk root, then find_duplicates_in its files."""
     if not os.path.isdir(root):
         return failure("not a folder: " + root)
-    files, _ = list_files(root, cancel_flag)
+    walked = walk_tree(root, cancel_flag, progress)
+    if not walked["ok"]:
+        return walked
+    return find_duplicates_in(walked["value"]["files"], cancel_flag, progress)
+
+
+def find_duplicates_in(files, cancel_flag, progress):
+    """Groups of identical files (2+ each, empty files ignored), biggest savings first.
+
+    Each step only looks at files that may still be equal:
+      1. same size (nothing read),
+      2. large files: same first and last SAMPLE_SIZE bytes,
+      3. same SHA-256 of the whole file.
+    -> Result(list of list of FileInfo)
+    """
     by_size = {}
     for info in files:
         if info["size"] == 0:
             continue
-        key = info["size"]
-        if key not in by_size:
-            by_size[key] = []
-        by_size[key].append(info)
-    groups = []
-    for size in sorted(by_size.keys(), reverse=True):
-        candidates = by_size[size]
-        if len(candidates) < 2:
+        if info["size"] not in by_size:
+            by_size[info["size"]] = []
+        by_size[info["size"]].append(info)
+    small = []
+    large = []
+    for size in by_size:
+        group = by_size[size]
+        if len(group) < 2:
             continue
-        by_hash = {}
-        for info in candidates:
-            if is_cancelled(cancel_flag):
-                return failure("cancelled")
-            hashed = hash_file(info["path"])
-            if not hashed["ok"]:
-                continue
-            if hashed["value"] not in by_hash:
-                by_hash[hashed["value"]] = []
-            by_hash[hashed["value"]].append(info)
-        for digest in sorted(by_hash.keys()):
-            group = by_hash[digest]
-            if len(group) > 1:
-                group.sort(key=file_path)
-                groups.append(group)
+        for info in group:
+            if size <= 2 * SAMPLE_SIZE:
+                small.append(info)
+            else:
+                large.append(info)
+
+    sampled = hash_many(large, "sample", cancel_flag, progress, "Comparing file ends")
+    if not sampled["ok"]:
+        return sampled
+    by_sample = {}
+    for info in large:
+        if info["path"] not in sampled["value"]:
+            continue
+        key = str(info["size"]) + ":" + sampled["value"][info["path"]]
+        if key not in by_sample:
+            by_sample[key] = []
+        by_sample[key].append(info)
+    candidates = list(small)
+    for key in by_sample:
+        if len(by_sample[key]) > 1:
+            for info in by_sample[key]:
+                candidates.append(info)
+
+    hashed = hash_many(candidates, "full", cancel_flag, progress, "Comparing files")
+    if not hashed["ok"]:
+        return hashed
+    by_digest = {}
+    for info in candidates:
+        if info["path"] not in hashed["value"]:
+            continue
+        key = str(info["size"]) + ":" + hashed["value"][info["path"]]
+        if key not in by_digest:
+            by_digest[key] = []
+        by_digest[key].append(info)
+    groups = []
+    for key in by_digest:
+        group = by_digest[key]
+        if len(group) > 1:
+            group.sort(key=file_path)
+            groups.append(group)
+    groups.sort(key=first_path)
+    groups.sort(key=group_savings, reverse=True)
     return success(groups)
 
 
-def file_path(info):
-    return info["path"]
+def duplicate_savings(groups):
+    """{"copies": extra copies, "bytes": space they take}."""
+    copies = 0
+    total = 0
+    for group in groups:
+        copies = copies + len(group) - 1
+        total = total + group_savings(group)
+    return {"copies": copies, "bytes": total}
 
 
-def plan_duplicate_removal(root, groups):
-    """Keep the first file of each group, send the rest to the trash -> list of Move."""
+def keeper_index(group, keep):
+    """Index of the copy to keep: the first one listed in keep (dict path -> True), else the first."""
+    index = 0
+    while index < len(group):
+        if group[index]["path"] in keep:
+            return index
+        index = index + 1
+    return 0
+
+
+def plan_duplicate_removal(root, groups, keep):
+    """Keep one copy per group and send the rest to the trash -> list of Move."""
     moves = []
     for group in groups:
-        index = 1
+        keeper = keeper_index(group, keep)
+        index = 0
         while index < len(group):
-            moves.append({"source": group[index]["path"], "target": trash_target(root, group[index]["path"])})
+            if index != keeper:
+                moves.append({"source": group[index]["path"], "target": trash_target(root, group[index]["path"])})
             index = index + 1
     return moves
 
 
+def remove_from_groups(groups, gone):
+    """Duplicate groups without the paths in gone; groups left with one file are dropped."""
+    result = []
+    for group in groups:
+        kept = []
+        for info in group:
+            if info["path"] not in gone:
+                kept.append(info)
+        if len(kept) > 1:
+            result.append(kept)
+    return result
+
+
 def trash_target(root, path):
-    relative = os.path.relpath(path, root)
-    return os.path.join(root, TRASH_DIR_NAME, relative)
+    return os.path.join(root, TRASH_DIR_NAME, relative_path(root, path))
+
+
+def plan_trash(root, files):
+    """Moves that send files (FileInfo) to the trash folder inside root, keeping their relative paths."""
+    moves = []
+    for info in files:
+        moves.append({"source": info["path"], "target": trash_target(root, info["path"])})
+    return moves
 
 
 def plan_empty_dir_removal(empty_dirs):
@@ -283,6 +583,25 @@ def plan_empty_dir_removal(empty_dirs):
     for folder in empty_dirs:
         moves.append({"source": folder, "target": ""})
     return moves
+
+
+def select_empty_dirs(all_empty, chosen, root):
+    """The chosen empty folders plus the empty folders inside them, deepest first, so all can be removed."""
+    result = []
+    for folder in all_empty:
+        if folder in chosen:
+            result.append(folder)
+            continue
+        parent = os.path.dirname(folder)
+        while len(parent) > len(root):
+            if parent in chosen:
+                result.append(folder)
+                break
+            above = os.path.dirname(parent)
+            if above == parent:
+                break
+            parent = above
+    return result
 
 
 # ---- organize -----------------------------------------------------------------------------------
@@ -298,6 +617,10 @@ def date_folder_for(modified):
     return time.strftime("%Y-%m", time.localtime(modified))
 
 
+def entry_name(item):
+    return item["name"]
+
+
 def plan_organize(root, mode, cancel_flag):
     """Moves that sort the files directly inside root into subfolders.
 
@@ -308,25 +631,37 @@ def plan_organize(root, mode, cancel_flag):
         return failure("not a folder: " + root)
     if mode != "type" and mode != "date":
         return failure("unknown mode: " + mode)
+    try:
+        iterator = os.scandir(root)
+    except OSError as e:
+        return failure(error_text(e))
+    items = []
+    try:
+        for entry in iterator:
+            if entry.name == UNDO_LOG_NAME:
+                continue
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                modified = entry.stat(follow_symlinks=False).st_mtime
+            except OSError:
+                continue
+            items.append({"name": entry.name, "path": entry.path, "modified": modified})
+    finally:
+        iterator.close()
+    items.sort(key=entry_name)
     moves = []
     taken = {}
-    try:
-        names = sorted(os.listdir(root))
-    except OSError as e:
-        return failure(str(e))
-    for name in names:
+    for item in items:
         if is_cancelled(cancel_flag):
             return failure("cancelled")
-        source = os.path.join(root, name)
-        if not os.path.isfile(source) or name == UNDO_LOG_NAME:
-            continue
         if mode == "type":
-            folder = type_folder_for(source)
+            folder = type_folder_for(item["path"])
         else:
-            folder = date_folder_for(os.path.getmtime(source))
-        target = unique_target(os.path.join(root, folder, name), taken)
+            folder = date_folder_for(item["modified"])
+        target = unique_target(os.path.join(root, folder, item["name"]), taken)
         taken[target.lower()] = True
-        moves.append({"source": source, "target": target})
+        moves.append({"source": item["path"], "target": target})
     return success(moves)
 
 
@@ -370,17 +705,18 @@ def write_undo_log(root, batches):
         json.dump(batches, handle, indent=1)
         handle.close()
     except OSError as e:
-        return failure(str(e))
+        return failure(error_text(e))
     return success(None)
 
 
-def apply_moves(root, moves, cancel_flag):
+def apply_moves(root, moves, cancel_flag, progress):
     """Carry out a list of Move; record what was done so undo_last can reverse it.
 
-    -> Result({"done": int, "errors": [str]})
+    -> Result({"done": int, "errors": [str], "moved": [Move]})
     """
     done = []
     errors = []
+    made = {}  # folders already created
     for move in moves:
         if is_cancelled(cancel_flag):
             break
@@ -391,26 +727,30 @@ def apply_moves(root, moves, cancel_flag):
                 os.rmdir(source)
             else:
                 parent = os.path.dirname(target)
-                if not os.path.isdir(parent):
-                    os.makedirs(parent)
+                if parent not in made:
+                    os.makedirs(parent, exist_ok=True)
+                    made[parent] = True
                 if os.path.exists(target):
                     errors.append("already exists: " + target)
                     continue
                 shutil.move(source, target)
             done.append(move)
         except OSError as e:
-            errors.append(source + ": " + str(e))
+            errors.append(source + ": " + error_text(e))
+        count = len(done) + len(errors)
+        if count % 100 == 0:
+            report_progress(progress, "Moving", count, len(moves), "items")
     if len(done) > 0:
         batches = read_undo_log(root)
         batches.append({"time": time.time(), "moves": done})
         written = write_undo_log(root, batches)
         if not written["ok"]:
             errors.append("undo log: " + written["error"])
-    return success({"done": len(done), "errors": errors})
+    return success({"done": len(done), "errors": errors, "moved": done})
 
 
 def undo_last(root):
-    """Reverse the most recent applied batch -> Result({"done": int, "errors": [str]})."""
+    """Reverse the most recent applied batch -> Result({"done": int, "errors": [str], "moved": []})."""
     batches = read_undo_log(root)
     if len(batches) == 0:
         return failure("nothing to undo")
@@ -424,72 +764,86 @@ def undo_last(root):
         index = index - 1
         try:
             if move["target"] == "":
-                if not os.path.isdir(move["source"]):
-                    os.makedirs(move["source"])
+                os.makedirs(move["source"], exist_ok=True)
             else:
-                parent = os.path.dirname(move["source"])
-                if not os.path.isdir(parent):
-                    os.makedirs(parent)
+                os.makedirs(os.path.dirname(move["source"]), exist_ok=True)
                 shutil.move(move["target"], move["source"])
             count = count + 1
         except OSError as e:
-            errors.append(move["target"] + ": " + str(e))
+            errors.append(move["target"] + ": " + error_text(e))
     write_undo_log(root, batches)
-    return success({"done": count, "errors": errors})
+    return success({"done": count, "errors": errors, "moved": []})
 
 
 # ---- backup sync --------------------------------------------------------------------------------
-
-def plan_sync(source_root, target_root, cancel_flag):
-    """One-way copy plan: files that are missing or differ (size or newer time) in target.
-
-    -> Result(list of Move) where each Move is a copy, not a move.
-    """
-    if not os.path.isdir(source_root):
-        return failure("not a folder: " + source_root)
-    files, _ = list_files(source_root, cancel_flag)
-    copies = []
-    for info in files:
-        relative = os.path.relpath(info["path"], source_root)
-        target = os.path.join(target_root, relative)
-        if needs_copy(info, target):
-            copies.append({"source": info["path"], "target": target})
-    copies.sort(key=move_source)
-    return success(copies)
-
 
 def move_source(move):
     return move["source"]
 
 
-def needs_copy(info, target):
-    try:
-        existing = os.stat(target)
-    except OSError:
+def plan_sync(source_root, target_root, cancel_flag, progress):
+    """One-way copy plan: files missing in the target, or different there (size, or newer by > 2 s).
+
+    Source and target are each listed once and compared in memory, so a network share is not
+    asked about every file separately. -> Result(list of Copy)
+    """
+    if not os.path.isdir(source_root):
+        return failure("not a folder: " + source_root)
+    source = walk_tree(source_root, cancel_flag, progress)
+    if not source["ok"]:
+        return source
+    existing = {}
+    if os.path.isdir(target_root):
+        target = walk_tree(target_root, cancel_flag, progress)
+        if not target["ok"]:
+            return target
+        for info in target["value"]["files"]:
+            existing[os.path.normcase(relative_path(target_root, info["path"]))] = info
+    copies = []
+    for info in source["value"]["files"]:
+        relative = relative_path(source_root, info["path"])
+        key = os.path.normcase(relative)
+        have = None
+        if key in existing:
+            have = existing[key]
+        if needs_copy(info, have):
+            copies.append({"source": info["path"], "target": os.path.join(target_root, relative), "size": info["size"]})
+    copies.sort(key=move_source)
+    return success(copies)
+
+
+def needs_copy(info, existing):
+    if existing is None:
         return True
-    if existing.st_size != info["size"]:
+    if existing["size"] != info["size"]:
         return True
-    return info["modified"] > existing.st_mtime + 2  # 2 s slack for FAT/SMB time rounding
+    return info["modified"] > existing["modified"] + 2  # 2 s slack for FAT/SMB time rounding
 
 
 def apply_copies(copies, cancel_flag, progress):
-    """Copy files (keeping times). progress(done, total) is called after each file, may be None."""
+    """Copy files, keeping their times -> Result({"done": int, "errors": [str], "moved": []})."""
     errors = []
     count = 0
+    total = 0
+    for copy in copies:
+        total = total + copy["size"]
+    done_bytes = 0
+    made = {}
     for copy in copies:
         if is_cancelled(cancel_flag):
             break
         try:
             parent = os.path.dirname(copy["target"])
-            if not os.path.isdir(parent):
-                os.makedirs(parent)
+            if parent not in made:
+                os.makedirs(parent, exist_ok=True)
+                made[parent] = True
             shutil.copy2(copy["source"], copy["target"])
             count = count + 1
         except OSError as e:
-            errors.append(copy["source"] + ": " + str(e))
-        if progress is not None:
-            progress(count + len(errors), len(copies))
-    return success({"done": count, "errors": errors})
+            errors.append(copy["source"] + ": " + error_text(e))
+        done_bytes = done_bytes + copy["size"]
+        report_progress(progress, "Copying", done_bytes, total, "bytes")
+    return success({"done": count, "errors": errors, "moved": []})
 
 
 # ---- network shares -----------------------------------------------------------------------------
@@ -582,13 +936,76 @@ def check_share(share):
     try:
         usage = shutil.disk_usage(path)
     except OSError as e:
-        state["error"] = str(e)
+        state["error"] = error_text(e)
         return state
     state["reachable"] = True
     state["total"] = usage.total
     state["used"] = usage.used
     state["free"] = usage.free
     return state
+
+
+# ---- the desktop --------------------------------------------------------------------------------
+
+def list_drives():
+    """Drive roots on this machine (C:\\, D:\\ ... on Windows, / elsewhere)."""
+    if os.name != "nt":
+        return ["/"]
+    if hasattr(os, "listdrives"):
+        try:
+            return os.listdrives()
+        except OSError:
+            return []
+    found = []
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        if os.path.exists(letter + ":\\"):
+            found.append(letter + ":\\")
+    return found
+
+
+def reveal_command(path):
+    """The command that shows a file selected in the system file manager."""
+    if os.name == "nt":
+        return ["explorer", "/select,", path]
+    if sys.platform == "darwin":
+        return ["open", "-R", path]
+    return ["xdg-open", os.path.dirname(path)]
+
+
+def open_folder_command(folder):
+    if os.name == "nt":
+        return ["explorer", folder]
+    if sys.platform == "darwin":
+        return ["open", folder]
+    return ["xdg-open", folder]
+
+
+def launch(arguments):
+    """Start a program without waiting for it -> Result(None)."""
+    try:
+        subprocess.Popen(arguments)
+    except OSError as e:
+        return failure(error_text(e))
+    return success(None)
+
+
+def normalize_folder(text):
+    """What the user typed -> a folder path ("D:" becomes "D:\\", surrounding quotes and spaces go)."""
+    folder = text.strip()
+    if len(folder) >= 2 and folder[0] == '"' and folder[len(folder) - 1] == '"':
+        folder = folder[1:len(folder) - 1]
+    if len(folder) == 2 and folder[1] == ":":
+        folder = folder + os.sep
+    return folder
+
+
+def add_recent(recent, folder, limit):
+    """recent with folder moved to the front, at most limit entries."""
+    result = [folder]
+    for item in recent:
+        if os.path.normcase(item) != os.path.normcase(folder) and len(result) < limit:
+            result.append(item)
+    return result
 
 
 # ---- settings -----------------------------------------------------------------------------------
@@ -601,7 +1018,7 @@ def settings_path():
 
 
 def default_settings():
-    return {"shares": [], "last_folder": "", "stale_days": 365, "largest_count": 50}
+    return {"shares": [], "last_folder": "", "recent": [], "stale_days": 365, "geometry": ""}
 
 
 def load_settings(path):
@@ -631,7 +1048,7 @@ def save_settings(path, settings):
         json.dump(settings, handle, indent=1)
         handle.close()
     except OSError as e:
-        return failure(str(e))
+        return failure(error_text(e))
     return success(None)
 
 
@@ -649,8 +1066,22 @@ def human_size(count):
     return "%.1f %s" % (value, units[index])
 
 
+def human_count(count):
+    """1234567 -> "1,234,567"."""
+    return format(count, ",")
+
+
 def human_date(seconds):
     return time.strftime("%Y-%m-%d", time.localtime(seconds))
+
+
+def plural(count, word):
+    """plural(1, "file") -> "1 file", plural(3, "copy") -> "3 copies"."""
+    if count == 1:
+        return "1 " + word
+    if len(word) > 1 and word[len(word) - 1] == "y" and word[len(word) - 2] not in "aeiou":
+        return human_count(count) + " " + word[:len(word) - 1] + "ies"
+    return human_count(count) + " " + word + "s"
 
 
 # =================================================================================================
@@ -665,6 +1096,15 @@ def write_file(path, text, modified):
     handle.write(text)
     handle.close()
     os.utime(path, (modified, modified))
+
+
+def write_bytes(path, data):
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        os.makedirs(parent)
+    handle = open(path, "wb")
+    handle.write(data)
+    handle.close()
 
 
 def check(condition, message, failures):
@@ -688,28 +1128,60 @@ def selftest():
         write_file(os.path.join(root, "song.mp3"), "la la", now)
         write_file(os.path.join(root, "notes.unknownext"), "?", now)
         os.makedirs(os.path.join(root, "empty1", "empty2"))
+        os.makedirs(os.path.join(root, "mixed", "hollow"))
+        write_file(os.path.join(root, "mixed", "keep.txt"), "x", now)
 
         print("scan")
-        report = scan(root, 10, 365, now, None)
+        report = scan(root, 10, 365, now, None, None)
         check(report["ok"], "scan succeeds", failures)
-        check(report["value"]["file_count"] == 5, "counts 5 files", failures)
+        check(report["value"]["file_count"] == 6, "counts 6 files", failures)
         check(len(report["value"]["stale"]) == 1, "finds 1 stale file", failures)
-        check(len(report["value"]["empty_dirs"]) == 2, "finds 2 empty folders (nested)", failures)
-        check(scan(os.path.join(work, "missing"), 10, 365, now, None)["ok"] == False, "missing folder fails", failures)
+        check(len(report["value"]["empty_dirs"]) == 3, "finds 3 empty folders (nested and beside a file)", failures)
+        check(report["value"]["empty_dirs"].index(os.path.join(root, "empty1", "empty2"))
+              < report["value"]["empty_dirs"].index(os.path.join(root, "empty1")), "empty folders deepest first", failures)
+        check(report["value"]["by_type"]["Images"]["files"] == 1, "type summary counts images", failures)
+        check(report["value"]["largest"][0]["path"].endswith("photo.jpg"), "largest file first", failures)
+        check(scan(os.path.join(work, "missing"), 10, 365, now, None, None)["ok"] == False, "missing folder fails", failures)
+        cancelled = scan(root, 10, 365, now, [True], None)
+        check(not cancelled["ok"] and cancelled["error"] == "cancelled", "scan can be cancelled", failures)
+        smaller = remove_from_report(report["value"], {os.path.join(root, "song.mp3"): True}, 10, 365, now)
+        check(smaller["file_count"] == 5 and "Audio" not in smaller["by_type"], "remove_from_report drops a file", failures)
 
         print("duplicates")
-        dupes = find_duplicates(root, None)
+        dupes = find_duplicates(root, None, None)
         check(dupes["ok"] and len(dupes["value"]) == 1, "one duplicate group", failures)
-        moves = plan_duplicate_removal(root, dupes["value"])
-        check(len(moves) == 1, "one file planned for trash", failures)
-        applied = apply_moves(root, moves, None)
-        check(applied["value"]["done"] == 1, "duplicate moved to trash", failures)
+        moves = plan_duplicate_removal(root, dupes["value"], {})
+        check(len(moves) == 1 and moves[0]["source"].endswith("b.txt"), "first copy is kept by default", failures)
+        chosen = plan_duplicate_removal(root, dupes["value"], {os.path.join(root, "sub", "b.txt"): True})
+        check(chosen[0]["source"].endswith("a.txt"), "chosen copy is kept", failures)
+        applied = apply_moves(root, moves, None, None)
+        check(applied["value"]["done"] == 1 and len(applied["value"]["moved"]) == 1, "duplicate moved to trash", failures)
         check(os.path.isfile(os.path.join(root, TRASH_DIR_NAME, "sub", "b.txt")), "trash keeps relative path", failures)
+        check(scan(root, 10, 365, now, None, None)["value"]["file_count"] == 5, "trash folder is not scanned", failures)
         undone = undo_last(root)
         check(undone["ok"] and os.path.isfile(os.path.join(root, "sub", "b.txt")), "undo restores duplicate", failures)
+        check(len(remove_from_groups(dupes["value"], {moves[0]["source"]: True})) == 0, "group of one is dropped", failures)
+
+        print("large duplicates")
+        big = os.path.join(work, "big")
+        body = bytes(range(256)) * (3 * SAMPLE_SIZE // 256)
+        changed_end = body[:len(body) - 1] + b"!"
+        middle = bytearray(body)
+        middle[len(middle) // 2] = (middle[len(middle) // 2] + 1) % 256
+        write_bytes(os.path.join(big, "same1.bin"), body)
+        write_bytes(os.path.join(big, "same2.bin"), body)
+        write_bytes(os.path.join(big, "end.bin"), changed_end)
+        write_bytes(os.path.join(big, "middle.bin"), bytes(middle))
+        big_dupes = find_duplicates(big, None, None)
+        check(big_dupes["ok"] and len(big_dupes["value"]) == 1 and len(big_dupes["value"][0]) == 2,
+              "only true copies match (ends and middle checked)", failures)
+        check(hash_many([], "full", None, None, "")["ok"], "nothing to hash is fine", failures)
 
         print("empty folders")
-        applied = apply_moves(root, plan_empty_dir_removal(find_empty_dirs(root)), None)
+        all_empty = find_empty_dirs(root)
+        picked = select_empty_dirs(all_empty, {os.path.join(root, "empty1"): True}, root)
+        check(len(picked) == 2 and picked[0].endswith("empty2"), "choosing a folder takes its empty insides first", failures)
+        apply_moves(root, plan_empty_dir_removal(picked), None, None)
         check(not os.path.exists(os.path.join(root, "empty1")), "empty folders removed", failures)
         undo_last(root)
         check(os.path.isdir(os.path.join(root, "empty1", "empty2")), "undo recreates empty folders", failures)
@@ -717,7 +1189,7 @@ def selftest():
         print("organize")
         planned = plan_organize(root, "type", None)
         check(planned["ok"] and len(planned["value"]) == 4, "4 top-level files planned", failures)
-        apply_moves(root, planned["value"], None)
+        apply_moves(root, planned["value"], None, None)
         check(os.path.isfile(os.path.join(root, "Images", "photo.jpg")), "jpg goes to Images", failures)
         check(os.path.isfile(os.path.join(root, "Other", "notes.unknownext")), "unknown goes to Other", failures)
         again = plan_organize(root, "type", None)
@@ -731,29 +1203,40 @@ def selftest():
                 photo_target = move["target"]
         check(photo_target.find(date_folder_for(old)) >= 0, "date mode uses year-month", failures)
 
-        print("names")
-        taken = {}
-        first = unique_target(os.path.join(root, "a.txt"), taken)
+        print("names and paths")
+        first = unique_target(os.path.join(root, "a.txt"), {})
         check(first.endswith("a (2).txt"), "clash gets (2)", failures)
+        check(relative_path(root, os.path.join(root, "sub", "b.txt")) == os.path.join("sub", "b.txt"), "relative path", failures)
+        check(relative_path("D:" + os.sep, "D:" + os.sep + "x") == "x", "relative path from a drive root", failures)
+        check(normalize_folder(' "D:" ') == "D:" + os.sep, "typed drive becomes its root", failures)
+        check(add_recent(["a", "b", "c"], "b", 2) == ["b", "a"], "recent folders", failures)
 
         print("sync")
         target = os.path.join(work, "backup")
-        copies = plan_sync(root, target, None)
-        check(copies["ok"] and len(copies["value"]) == 5, "5 files to copy", failures)
+        copies = plan_sync(root, target, None, None)
+        check(copies["ok"] and len(copies["value"]) == 6, "6 files to copy", failures)
+        check(copies["value"][0]["size"] > 0, "copies carry their size", failures)
         apply_copies(copies["value"], None, None)
-        check(len(plan_sync(root, target, None)["value"]) == 0, "nothing to copy after sync", failures)
+        check(len(plan_sync(root, target, None, None)["value"]) == 0, "nothing to copy after sync", failures)
+        write_file(os.path.join(root, "song.mp3"), "la la la, longer now", now + 60)
+        write_file(os.path.join(root, "new.txt"), "new", now)
+        changed = plan_sync(root, target, None, None)["value"]
+        check(len(changed) == 2, "changed and new files found", failures)
 
-        print("shares and settings")
+        print("shares, settings, desktop")
         check(unc_host("\\\\nas01\\media\\x") == "nas01", "host from UNC", failures)
         check(unc_host("C:\\x") == "", "non-UNC has no host", failures)
         check(valid_letter("Z:") and not valid_letter("C:") and not valid_letter("ZZ"), "drive letter rules", failures)
         check(map_command({"name": "n", "unc": "\\\\h\\s", "letter": "Z:"})[2] == "Z:", "map command", failures)
+        check(reveal_command(os.path.join(root, "a.txt"))[0] in ("explorer", "open", "xdg-open"), "reveal command", failures)
         settings_file = os.path.join(work, "settings", "settings.json")
         saved = default_settings()
         saved["shares"].append({"name": "NAS", "unc": "\\\\nas\\share", "letter": "Y:"})
         save_settings(settings_file, saved)
         check(load_settings(settings_file)["shares"][0]["letter"] == "Y:", "settings round trip", failures)
-        check(human_size(1536) == "1.5 KB", "human size", failures)
+        check(human_size(1536) == "1.5 KB" and human_count(1234567) == "1,234,567", "human size and count", failures)
+        check(plural(1, "file") == "1 file" and plural(2000, "file") == "2,000 files", "plural", failures)
+        check(plural(3, "extra copy") == "3 extra copies" and plural(2, "day") == "2 days", "plural of -y words", failures)
         check(option_value(["--smoke", "r.json"], "--smoke") == "r.json", "option value", failures)
         check(option_value([], "--smoke") == "" and option_value(["--smoke"], "--smoke") is None, "option absent / missing", failures)
     finally:
@@ -793,357 +1276,738 @@ def set_icon(window):
     return True
 
 
-def run_gui(smoke_path):
+# Sidebar: (key, label, section). Sections group the entries; "" is top level.
+VIEWS = [
+    ("overview", "Overview", ""),
+    ("largest", "Largest files", "Clean up"),
+    ("old", "Old files", "Clean up"),
+    ("duplicates", "Duplicates", "Clean up"),
+    ("empty", "Empty folders", "Clean up"),
+    ("errors", "Unreadable", "Clean up"),
+    ("organize", "Organize", "Tools"),
+    ("network", "Network shares", "Tools"),
+    ("activity", "Activity", "Tools"),
+]
+
+
+def run_gui(smoke_path, start_folder, start_view):
+    import queue
     import tkinter as tk
+    import tkinter.font as tkfont
     from tkinter import ttk, filedialog, messagebox
 
     path_to_settings = settings_path()
     settings = load_settings(path_to_settings)
-    state = {"busy": False, "cancel": [False], "moves": [], "copies": [], "root": "", "sync_target": ""}
+    state = {
+        "busy": False,
+        "cancel": [False],
+        "root": "",          # folder the results below belong to
+        "report": None,      # ScanReport of the last analysis
+        "groups": None,      # duplicate groups; None until compared
+        "dup_note": "",      # shown instead of duplicate counts while comparing or after a cancel
+        "keep": {},          # path -> True: copies the user chose to keep
+        "org_moves": [],
+        "org_root": "",
+        "old_days": settings["stale_days"],
+        "view": "overview",
+    }
+    buttons = []        # (button, predicate): enabled when idle and predicate() is true
+    views = {}
+    primary = {}        # view key -> action for the Delete key
 
     windows_identity()
     window = tk.Tk()
     window.title("Generic Company Inc. \u2014 Storage Manager " + __version__)
-    window.geometry("980x640")
-    window.minsize(760, 480)
+    if settings["geometry"] != "":
+        window.geometry(settings["geometry"])
+    else:
+        window.geometry("1120x700")
+    window.minsize(880, 540)
     icon_set = set_icon(window)
 
-    # --- shared: folder bar, status bar, log -----------------------------------------------------
-    top = ttk.Frame(window, padding=6)
+    base_font = tkfont.nametofont("TkDefaultFont")
+    line_height = base_font.metrics("linespace")
+    size = base_font.cget("size")
+    title_font = base_font.copy()
+    if size < 0:
+        title_font.configure(size=size - 5, weight="bold")
+    else:
+        title_font.configure(size=size + 5, weight="bold")
+    strong_font = base_font.copy()
+    strong_font.configure(weight="bold")
+    style = ttk.Style(window)
+    style.configure("Treeview", rowheight=line_height + 8)
+    style.configure("Side.Treeview", rowheight=line_height + 14)
+    style.configure("Title.TLabel", font=title_font)
+    style.configure("Strong.TLabel", font=strong_font)
+    style.configure("Muted.TLabel", foreground="#6b6b6b")
+    style.configure("Primary.TButton", font=strong_font)
+
+    # --- top bar: what to look at ----------------------------------------------------------------
+    top = ttk.Frame(window, padding=(10, 10, 10, 6))
     top.pack(fill="x")
-    ttk.Label(top, text="Folder:").pack(side="left")
+    ttk.Label(top, text="Folder or drive").pack(side="left")
     folder_var = tk.StringVar(value=settings["last_folder"])
-    ttk.Entry(top, textvariable=folder_var).pack(side="left", fill="x", expand=True, padx=4)
+    folder_box = ttk.Combobox(top, textvariable=folder_var)
+    folder_box.pack(side="left", fill="x", expand=True, padx=8)
+    browse_button = ttk.Button(top, text="Browse\u2026", command=lambda: browse())
+    browse_button.pack(side="left")
+    analyze_button = ttk.Button(top, text="Analyze", style="Primary.TButton", command=lambda: analyze())
+    analyze_button.pack(side="left", padx=6)
+    undo_button = ttk.Button(top, text="Undo last change", command=lambda: undo())
+    undo_button.pack(side="left")
 
-    def browse():
-        chosen = filedialog.askdirectory(initialdir=folder_var.get() or None)
-        if chosen:
-            folder_var.set(os.path.normpath(chosen))
-
-    ttk.Button(top, text="Browse\u2026", command=browse).pack(side="left")
-
-    bottom = ttk.Frame(window, padding=6)
+    # --- bottom bar: what is happening -----------------------------------------------------------
+    bottom = ttk.Frame(window, padding=(10, 4, 10, 8))
     bottom.pack(side="bottom", fill="x")
-    status_var = tk.StringVar(value="Ready")
-    ttk.Label(bottom, textvariable=status_var).pack(side="left", fill="x", expand=True)
-    progress = ttk.Progressbar(bottom, mode="indeterminate", length=160)
-    progress.pack(side="left", padx=6)
-    cancel_button = ttk.Button(bottom, text="Cancel", state="disabled")
-    cancel_button.pack(side="left")
+    status_var = tk.StringVar(value="Pick a folder or drive and press Analyze (or Enter).")
+    # Right-hand widgets are packed first so a long status line is cut, not the buttons.
+    ttk.Button(bottom, text="About", command=lambda: about()).pack(side="right", padx=(6, 0))
+    cancel_button = ttk.Button(bottom, text="Cancel", state="disabled", command=lambda: cancel())
+    cancel_button.pack(side="right")
+    progress = ttk.Progressbar(bottom, length=220, mode="determinate", maximum=100)
+    progress.pack(side="right", padx=8)
+    ttk.Label(bottom, textvariable=status_var, width=1).pack(side="left", fill="x", expand=True)
 
-    def about():
-        messagebox.showinfo("About", APP_NAME + " " + __version__ + "\n\nGeneric Company Inc. is fictional.\n"
-                            "License: AGPL-3.0.\n\n" + ICON_CREDIT)
+    # --- body: sidebar and the selected view ---------------------------------------------------
+    body = ttk.PanedWindow(window, orient="horizontal")
+    body.pack(fill="both", expand=True, padx=10)
+    side = ttk.Frame(body)
+    main = ttk.Frame(body, padding=(14, 0, 0, 0))
+    body.add(side, weight=0)
+    body.add(main, weight=1)
+    main.rowconfigure(0, weight=1)
+    main.columnconfigure(0, weight=1)
 
-    ttk.Button(bottom, text="About", command=about).pack(side="left", padx=(6, 0))
+    sidebar = ttk.Treeview(side, columns=("info",), show="tree", selectmode="browse", style="Side.Treeview")
+    sidebar.column("#0", width=170, stretch=True)
+    sidebar.column("info", width=150, anchor="e", stretch=False)
+    sidebar.pack(fill="both", expand=True)
+    sidebar.tag_configure("section", font=strong_font)
+    for entry in VIEWS:
+        parent = ""
+        if entry[2] != "":
+            parent = "section-" + entry[2].lower().replace(" ", "-")
+            if not sidebar.exists(parent):
+                sidebar.insert("", "end", iid=parent, text=entry[2], open=True, tags=("section",))
+        sidebar.insert(parent, "end", iid=entry[0], text=entry[1], values=("",))
 
-    tabs = ttk.Notebook(window)
-    tabs.pack(fill="both", expand=True, padx=6)
-
-    log_text = tk.Text(tabs, wrap="none", height=10)
+    # --- small helpers ---------------------------------------------------------------------------
+    log_text = None  # set when the Activity view is built
 
     def log(message):
+        if log_text is None:
+            return
+        log_text.configure(state="normal")
         log_text.insert("end", time.strftime("%H:%M:%S") + "  " + message + "\n")
         log_text.see("end")
+        log_text.configure(state="disabled")
 
-    def remember_folder():
-        settings["last_folder"] = folder_var.get()
-        save_settings(path_to_settings, settings)
+    def wrapping(label):
+        """Let a label wrap to whatever width it is given instead of being cut off."""
+        label.bind("<Configure>", lambda event: label.configure(wraplength=max(event.width - 4, 100)))
+        return label
 
-    def current_folder():
-        folder = folder_var.get().strip()
-        if folder == "" or not os.path.isdir(folder):
-            messagebox.showwarning(APP_NAME, "Choose an existing folder first.")
-            return ""
-        remember_folder()
-        return folder
+    def rel(path):
+        if state["root"] == "":
+            return path
+        return relative_path(state["root"], path)
 
-    def run_job(label, work, finish):
-        """Run work() on a worker thread, then finish(result) on the GUI thread."""
+    def ask(question):
+        return messagebox.askyesno(APP_NAME, question, parent=window)
+
+    def refresh_buttons():
+        busy = state["busy"]
+        for pair in buttons:
+            enabled = False
+            if not busy:
+                try:
+                    enabled = pair[1]()
+                except Exception:
+                    enabled = False
+            if enabled:
+                pair[0].configure(state="normal")
+            else:
+                pair[0].configure(state="disabled")
+        idle = "disabled" if busy else "normal"
+        analyze_button.configure(state=idle)
+        browse_button.configure(state=idle)
+        if not busy and state["root"] != "" and os.path.isfile(undo_log_path(state["root"])):
+            undo_button.configure(state="normal")
+        else:
+            undo_button.configure(state="disabled")
+        cancel_button.configure(state="normal" if busy else "disabled")
+
+    def show_progress(item):
+        text = item[0]
+        done = item[1]
+        total = item[2]
+        unit = item[3]
+        if total > 0:
+            if str(progress.cget("mode")) != "determinate":
+                progress.stop()
+                progress.configure(mode="determinate")
+            progress.configure(value=100.0 * done / total)
+            if unit == "bytes":
+                amount = human_size(done) + " of " + human_size(total)
+            else:
+                amount = human_count(done) + " of " + human_count(total)
+            status_var.set(text + "\u2026 " + amount)
+        else:
+            if str(progress.cget("mode")) != "indeterminate":
+                progress.configure(mode="indeterminate")
+                progress.start(15)
+            status_var.set(text + "\u2026 " + human_count(done) + " " + unit)
+
+    def run_job(label, work, finish, on_message, on_fail):
+        """Run work(post) on a worker thread. post(kind, value) sends messages back; the window polls
+        for them, so Tk is only touched from its own thread. finish(result) runs on success."""
         if state["busy"]:
             return
         state["busy"] = True
         state["cancel"][0] = False
-        status_var.set(label + "\u2026")
-        progress.start(12)
-        cancel_button.configure(state="normal")
-        log(label)
-        holder = [None]
+        messages = queue.Queue()
+        holder = {"result": None, "done": False}
+
+        def post(kind, value):
+            messages.put((kind, value))
 
         def worker():
             try:
-                holder[0] = work()
+                result = work(post)
             except Exception as e:  # keep the window alive whatever happens in a job
-                holder[0] = failure("unexpected error: " + str(e))
-            window.after(0, done)
+                result = failure("unexpected error: " + str(e))
+            holder["result"] = result
+            holder["done"] = True
 
-        def done():
+        def poll():
+            finished = holder["done"]
+            latest = None
+            while True:
+                try:
+                    item = messages.get_nowait()
+                except queue.Empty:
+                    break
+                if item[0] == "progress":
+                    latest = item[1]
+                elif on_message is not None:
+                    on_message(item[0], item[1])
+            if not finished:
+                if latest is not None:
+                    show_progress(latest)
+                window.after(100, poll)
+                return
             state["busy"] = False
             progress.stop()
-            cancel_button.configure(state="disabled")
-            result = holder[0]
-            if isinstance(result, dict) and "ok" in result and not result["ok"]:
-                status_var.set(label + " failed: " + result["error"])
-                log("  failed: " + result["error"])
-                return
-            status_var.set(label + " done")
-            finish(result)
+            progress.configure(mode="determinate", value=0)
+            result = holder["result"]
+            if result["ok"]:
+                status_var.set(label + " \u2014 done")
+                finish(result)
+            else:
+                status_var.set(label + " \u2014 " + result["error"])
+                log("  " + result["error"])
+                if on_fail is not None:
+                    on_fail(result)
+            refresh_buttons()
 
+        status_var.set(label + "\u2026")
+        log(label)
+        progress.configure(mode="indeterminate")
+        progress.start(15)
+        refresh_buttons()
         threading.Thread(target=worker, daemon=True).start()
+        window.after(100, poll)
+
+    def progress_sender(post):
+        def send(text, done, total, unit):
+            post("progress", (text, done, total, unit))
+        return send
 
     def cancel():
         state["cancel"][0] = True
+        status_var.set("Cancelling\u2026")
         log("cancel requested")
-
-    cancel_button.configure(command=cancel)
-
-    def make_tree(parent, columns, widths):
-        frame = ttk.Frame(parent)
-        tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="extended")
-        index = 0
-        while index < len(columns):
-            tree.heading(columns[index], text=columns[index])
-            tree.column(columns[index], width=widths[index], anchor="w", stretch=(index == 0))
-            index = index + 1
-        bar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=bar.set)
-        tree.pack(side="left", fill="both", expand=True)
-        bar.pack(side="left", fill="y")
-        return frame, tree
-
-    def clear(tree):
-        for item in tree.get_children():
-            tree.delete(item)
 
     def report_apply(result, verb):
         info = result["value"]
-        log("  " + verb + " " + str(info["done"]) + " item(s)")
+        log("  " + verb + " " + plural(info["done"], "item"))
         for error in info["errors"]:
             log("  error: " + error)
-        status_var.set(verb + " " + str(info["done"]) + " item(s), " + str(len(info["errors"])) + " error(s)")
+        message = verb + " " + plural(info["done"], "item")
+        if len(info["errors"]) > 0:
+            message = message + ", " + plural(len(info["errors"]), "error") + " (see Activity)"
+        status_var.set(message)
 
-    # --- Scan tab ---------------------------------------------------------------------------------
-    scan_tab = ttk.Frame(tabs, padding=6)
-    tabs.add(scan_tab, text="Scan")
-    scan_bar = ttk.Frame(scan_tab)
-    scan_bar.pack(fill="x")
-    ttk.Label(scan_bar, text="Stale after (days):").pack(side="left")
-    stale_var = tk.IntVar(value=settings["stale_days"])
-    ttk.Spinbox(scan_bar, from_=1, to=10000, textvariable=stale_var, width=6).pack(side="left", padx=4)
-    summary_var = tk.StringVar(value="")
-    ttk.Label(scan_bar, textvariable=summary_var).pack(side="right")
-    scan_view = ttk.Combobox(scan_bar, state="readonly", width=18,
-                             values=["Largest files", "Stale files", "Empty folders", "Read errors"])
-    scan_view.current(0)
-    scan_frame, scan_tree = make_tree(scan_tab, ("Path", "Size", "Modified"), (560, 90, 100))
-    last_report = [None]
+    # --- views ---------------------------------------------------------------------------------
+    def make_view(key, title):
+        frame = ttk.Frame(main)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text=title, style="Title.TLabel").pack(anchor="w")
+        subtitle = tk.StringVar(value="")
+        wrapping(ttk.Label(frame, textvariable=subtitle, style="Muted.TLabel")).pack(fill="x", pady=(2, 8))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(0, 8))
+        view = {"frame": frame, "subtitle": subtitle, "actions": actions}
+        views[key] = view
+        return view
 
-    def show_scan(_event=None):
-        clear(scan_tree)
-        report = last_report[0]
-        if report is None:
-            return
-        choice = scan_view.get()
-        if choice == "Largest files" or choice == "Stale files":
-            rows = report["largest"] if choice == "Largest files" else report["stale"]
-            for info in rows:
-                scan_tree.insert("", "end", values=(info["path"], human_size(info["size"]), human_date(info["modified"])))
-        elif choice == "Empty folders":
-            for folder in report["empty_dirs"]:
-                scan_tree.insert("", "end", values=(folder, "", ""))
+    def add_button(view, text, command, predicate, primary_style):
+        style_name = "Primary.TButton" if primary_style else "TButton"
+        button = ttk.Button(view["actions"], text=text, command=command, style=style_name)
+        button.pack(side="left", padx=(0, 6))
+        buttons.append((button, predicate))
+        return button
+
+    def make_table(parent, columns, values, sort_keys):
+        """columns: list of (key, heading, width, anchor, stretch). values(row) -> tuple for a row."""
+        holder = ttk.Frame(parent)
+        keys = []
+        for column in columns:
+            keys.append(column[0])
+        tree = ttk.Treeview(holder, columns=keys, show="headings", selectmode="extended")
+        table = {"tree": tree, "frame": holder, "rows": [], "values": values, "sort_keys": sort_keys,
+                 "sorted_by": "", "descending": False, "note": tk.StringVar(value="")}
+        for column in columns:
+            tree.heading(column[0], text=column[1], anchor=column[3], command=lambda key=column[0]: sort_table(table, key))
+            tree.column(column[0], width=column[2], anchor=column[3], stretch=column[4])
+        bar = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=bar.set)
+        wrapping(ttk.Label(holder, textvariable=table["note"], style="Muted.TLabel")).pack(side="bottom", fill="x", pady=(4, 0))
+        tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="left", fill="y")
+        tree.bind("<<TreeviewSelect>>", lambda event: refresh_buttons())
+        return table
+
+    def fill_table(table, rows):
+        tree = table["tree"]
+        tree.delete(*tree.get_children())
+        table["rows"] = rows
+        shown = len(rows)
+        if shown > MAX_ROWS:
+            shown = MAX_ROWS
+        index = 0
+        while index < shown:
+            tree.insert("", "end", iid=str(index), values=table["values"](rows[index]))
+            index = index + 1
+        if len(rows) > shown:
+            table["note"].set("Showing the first " + human_count(shown) + " of " + human_count(len(rows))
+                              + ". With nothing selected, actions apply to all of them.")
         else:
-            for error in report["errors"]:
-                scan_tree.insert("", "end", values=(error, "", ""))
+            table["note"].set("")
 
-    def start_scan():
-        folder = current_folder()
-        if folder == "":
+    def sort_table(table, key):
+        if key not in table["sort_keys"]:
             return
-        days = stale_var.get()
+        if table["sorted_by"] == key:
+            table["descending"] = not table["descending"]
+        else:
+            table["descending"] = key == "size" or key == "modified" or key == "files"
+        table["sorted_by"] = key
+        rows = list(table["rows"])
+        rows.sort(key=table["sort_keys"][key], reverse=table["descending"])
+        fill_table(table, rows)
+
+    def picked_rows(table):
+        """Selected rows, or every row when nothing is selected."""
+        chosen = table["tree"].selection()
+        if len(chosen) == 0:
+            return list(table["rows"])
+        rows = []
+        for iid in chosen:
+            rows.append(table["rows"][int(iid)])
+        return rows
+
+    def has_rows(table):
+        return len(table["rows"]) > 0
+
+    def has_selection(table):
+        return len(table["tree"].selection()) > 0
+
+    def path_key(row):
+        return row["path"].lower()
+
+    def text_key(row):
+        return row.lower()
+
+    def file_values(row):
+        return (rel(row["path"]), human_size(row["size"]), human_date(row["modified"]))
+
+    file_columns = [("path", "File", 340, "w", True), ("size", "Size", 100, "e", False),
+                    ("modified", "Changed", 110, "e", False)]
+    file_sorts = {"path": path_key, "size": file_size, "modified": lambda row: row["modified"]}
+
+    def reveal_first(table):
+        rows = picked_rows(table)
+        if len(rows) > 0:
+            target = rows[0]
+            if isinstance(target, dict):
+                target = target["path"]
+            launch(reveal_command(target))
+
+    # Overview
+    ov = make_view("overview", "Overview")
+    ov_files = tk.StringVar(value="No folder analyzed yet.")
+    ov_drive = tk.StringVar(value="Choose a folder or drive above and press Analyze. Nothing is changed without asking.")
+    ov_reclaim = tk.StringVar(value="")
+    ttk.Label(ov["frame"], textvariable=ov_files, style="Strong.TLabel").pack(anchor="w")
+    ttk.Label(ov["frame"], textvariable=ov_drive).pack(anchor="w", pady=(2, 0))
+    ttk.Label(ov["frame"], textvariable=ov_reclaim).pack(anchor="w", pady=(2, 10))
+    ov["actions"].pack_forget()
+    ov["actions"].pack(fill="x", pady=(0, 8))
+    ttk.Label(ov["frame"], text="What takes space, by type", style="Strong.TLabel").pack(anchor="w", pady=(4, 4))
+    type_table = make_table(
+        ov["frame"],
+        [("type", "Type", 200, "w", True), ("files", "Files", 110, "e", False),
+         ("size", "Size", 110, "e", False), ("share", "Share", 90, "e", False)],
+        lambda row: (row["type"], human_count(row["files"]), human_size(row["bytes"]), row["share"]),
+        {"type": lambda row: row["type"].lower(), "files": lambda row: row["files"], "size": lambda row: row["bytes"]})
+    type_table["frame"].pack(fill="both", expand=True)
+
+    def trash_folder():
+        if state["root"] == "":
+            return ""
+        return os.path.join(state["root"], TRASH_DIR_NAME)
+
+    add_button(ov, "Open trash folder", lambda: launch(open_folder_command(trash_folder())),
+               lambda: trash_folder() != "" and os.path.isdir(trash_folder()), False)
+
+    # Largest files
+    lg = make_view("largest", "Largest files")
+    lg_table = make_table(lg["frame"], file_columns, file_values, file_sorts)
+    add_button(lg, "Move to trash", lambda: trash_rows(lg_table), lambda: has_rows(lg_table), True)
+    add_button(lg, "Show in folder", lambda: reveal_first(lg_table), lambda: has_selection(lg_table), False)
+    lg_table["frame"].pack(fill="both", expand=True)
+    primary["largest"] = lambda: trash_rows(lg_table)
+
+    # Old files
+    od = make_view("old", "Old files")
+    old_table = make_table(od["frame"], file_columns, file_values, file_sorts)
+    add_button(od, "Move to trash", lambda: trash_rows(old_table), lambda: has_rows(old_table), True)
+    add_button(od, "Show in folder", lambda: reveal_first(old_table), lambda: has_selection(old_table), False)
+    ttk.Label(od["actions"], text="Not changed for").pack(side="left", padx=(12, 4))
+    days_var = tk.IntVar(value=state["old_days"])
+    days_box = ttk.Spinbox(od["actions"], from_=1, to=20000, increment=30, textvariable=days_var, width=7,
+                           command=lambda: change_days())
+    days_box.pack(side="left")
+    ttk.Label(od["actions"], text="days").pack(side="left", padx=(4, 0))
+    days_box.bind("<Return>", lambda event: change_days())
+    days_box.bind("<FocusOut>", lambda event: change_days())
+    old_table["frame"].pack(fill="both", expand=True)
+    primary["old"] = lambda: trash_rows(old_table)
+
+    def change_days():
+        try:
+            days = int(days_var.get())
+        except (ValueError, tk.TclError):
+            days_var.set(state["old_days"])
+            return
+        if days < 1 or days == state["old_days"]:
+            return
+        state["old_days"] = days
         settings["stale_days"] = days
         save_settings(path_to_settings, settings)
+        if state["report"] is not None:
+            state["report"]["stale"] = stale_files(state["report"]["files"], days, time.time())
+            refresh_all()
 
-        def work():
-            return scan(folder, settings["largest_count"], days, time.time(), state["cancel"])
+    # Duplicates
+    dp = make_view("duplicates", "Duplicates")
+    dup_holder = ttk.Frame(dp["frame"])
+    dup_tree = ttk.Treeview(dup_holder, columns=("size", "modified", "action"), show="tree headings",
+                            selectmode="extended")
+    dup_tree.heading("#0", text="File", anchor="w")
+    dup_tree.column("#0", width=340, stretch=True)
+    dup_tree.heading("size", text="Size", anchor="e")
+    dup_tree.column("size", width=100, anchor="e", stretch=False)
+    dup_tree.heading("modified", text="Changed", anchor="e")
+    dup_tree.column("modified", width=110, anchor="e", stretch=False)
+    dup_tree.heading("action", text="")
+    dup_tree.column("action", width=90, anchor="w", stretch=False)
+    dup_tree.tag_configure("group", font=strong_font)
+    dup_tree.tag_configure("keep", foreground="#2e7d32")
+    dup_tree.tag_configure("trash", foreground="#a33a1a")
+    dup_bar = ttk.Scrollbar(dup_holder, orient="vertical", command=dup_tree.yview)
+    dup_tree.configure(yscrollcommand=dup_bar.set)
+    dup_note = tk.StringVar(value="")
+    wrapping(ttk.Label(dup_holder, textvariable=dup_note, style="Muted.TLabel")).pack(side="bottom", fill="x", pady=(4, 0))
+    dup_tree.pack(side="left", fill="both", expand=True)
+    dup_bar.pack(side="left", fill="y")
+    dup_tree.bind("<<TreeviewSelect>>", lambda event: refresh_buttons())
 
-        def finish(result):
-            report = result["value"]
-            last_report[0] = report
-            summary_var.set(str(report["file_count"]) + " files, " + human_size(report["total_bytes"]) + ", "
-                            + str(len(report["empty_dirs"])) + " empty folders")
-            log("  " + summary_var.get())
-            show_scan()
+    def has_groups():
+        return state["groups"] is not None and len(state["groups"]) > 0
 
-        run_job("Scanning " + folder, work, finish)
+    def selected_group_numbers():
+        numbers = {}
+        for iid in dup_tree.selection():
+            numbers[int(iid.split(":")[0][1:])] = True
+        return numbers
 
-    def remove_empty():
-        report = last_report[0]
-        if report is None or len(report["empty_dirs"]) == 0:
-            messagebox.showinfo(APP_NAME, "Scan first; no empty folders found yet.")
-            return
-        count = len(report["empty_dirs"])
-        if not messagebox.askyesno(APP_NAME, "Remove " + str(count) + " empty folder(s)? (Undo is available.)"):
-            return
-        root = report["root"]
-        run_job("Removing empty folders", lambda: apply_moves(root, plan_empty_dir_removal(report["empty_dirs"]), state["cancel"]),
-                lambda result: report_apply(result, "Removed"))
+    def selected_copies():
+        """(group number, index) of each selected file row."""
+        pairs = []
+        for iid in dup_tree.selection():
+            if ":" in iid:
+                parts = iid.split(":")
+                pairs.append((int(parts[0][1:]), int(parts[1])))
+        return pairs
 
-    scan_view.bind("<<ComboboxSelected>>", show_scan)
-    ttk.Button(scan_bar, text="Scan", command=start_scan).pack(side="left", padx=4)
-    scan_view.pack(side="left", padx=4)
-    ttk.Button(scan_bar, text="Remove empty folders", command=remove_empty).pack(side="left", padx=4)
-    scan_frame.pack(fill="both", expand=True, pady=6)
-
-    # --- Duplicates tab ---------------------------------------------------------------------------
-    dup_tab = ttk.Frame(tabs, padding=6)
-    tabs.add(dup_tab, text="Duplicates")
-    dup_bar = ttk.Frame(dup_tab)
-    dup_bar.pack(fill="x")
-    dup_frame, dup_tree = make_tree(dup_tab, ("Path", "Size", "Action"), (600, 90, 110))
-
-    def start_duplicates():
-        folder = current_folder()
-        if folder == "":
-            return
-
-        def finish(result):
-            clear(dup_tree)
-            groups = result["value"]
-            state["moves"] = plan_duplicate_removal(folder, groups)
-            state["root"] = folder
-            wasted = 0
-            number = 1
-            for group in groups:
-                parent = dup_tree.insert("", "end", values=("Group " + str(number), human_size(group[0]["size"]), ""))
-                index = 0
-                for info in group:
-                    action = "keep" if index == 0 else "to trash"
-                    if index > 0:
-                        wasted = wasted + info["size"]
-                    dup_tree.insert("", "end", values=("    " + info["path"], "", action))
-                    index = index + 1
-                number = number + 1
-            log("  " + str(len(groups)) + " group(s), " + human_size(wasted) + " reclaimable")
-            status_var.set(str(len(groups)) + " duplicate group(s), " + human_size(wasted) + " reclaimable")
-
-        run_job("Finding duplicates in " + folder, lambda: find_duplicates(folder, state["cancel"]), finish)
+    def keep_selected():
+        groups = state["groups"]
+        for pair in selected_copies():
+            group = groups[pair[0]]
+            for info in group:
+                if info["path"] in state["keep"]:
+                    del state["keep"][info["path"]]
+            state["keep"][group[pair[1]]["path"]] = True
+        refresh_duplicates()
 
     def trash_duplicates():
-        if len(state["moves"]) == 0:
-            messagebox.showinfo(APP_NAME, "Find duplicates first.")
+        groups = state["groups"]
+        numbers = selected_group_numbers()
+        chosen = []
+        index = 0
+        while index < len(groups):
+            if len(numbers) == 0 or index in numbers:
+                chosen.append(groups[index])
+            index = index + 1
+        moves = plan_duplicate_removal(state["root"], chosen, state["keep"])
+        savings = duplicate_savings(chosen)
+        scope = "selected groups" if len(numbers) > 0 else "all groups"
+        if not ask("Move " + plural(len(moves), "extra copy") + " (" + human_size(savings["bytes"]) + ") from "
+                   + scope + " to the trash folder?\n\nOne copy of each file stays. Undo is available."):
             return
-        count = len(state["moves"])
-        if not messagebox.askyesno(APP_NAME, "Move " + str(count) + " duplicate(s) to " + TRASH_DIR_NAME + "? (Undo is available.)"):
+        apply_and_forget("Moving duplicates to the trash", moves, "Moved")
+
+    add_button(dp, "Move extra copies to trash", lambda: trash_duplicates(), has_groups, True)
+    add_button(dp, "Keep selected copy", lambda: keep_selected(), lambda: len(selected_copies()) > 0, False)
+    add_button(dp, "Show in folder", lambda: reveal_copy(), lambda: len(selected_copies()) > 0, False)
+    dup_holder.pack(fill="both", expand=True)
+    primary["duplicates"] = lambda: trash_duplicates()
+
+    def reveal_copy():
+        pairs = selected_copies()
+        if len(pairs) > 0:
+            launch(reveal_command(state["groups"][pairs[0][0]][pairs[0][1]]["path"]))
+
+    # Empty folders
+    em = make_view("empty", "Empty folders")
+    empty_table = make_table(em["frame"], [("path", "Folder", 700, "w", True)], lambda row: (rel(row),),
+                             {"path": text_key})
+    add_button(em, "Remove", lambda: remove_empty(), lambda: has_rows(empty_table), True)
+    add_button(em, "Show in folder", lambda: reveal_first(empty_table), lambda: has_selection(empty_table), False)
+    empty_table["frame"].pack(fill="both", expand=True)
+    primary["empty"] = lambda: remove_empty()
+
+    def remove_empty():
+        chosen = {}
+        for folder in picked_rows(empty_table):
+            chosen[folder] = True
+        folders = select_empty_dirs(state["report"]["empty_dirs"], chosen, state["root"])
+        if not ask("Remove " + plural(len(folders), "empty folder") + "?\n\nThey hold no files. Undo is available."):
             return
-        root = state["root"]
-        moves = state["moves"]
-        state["moves"] = []
-        run_job("Moving duplicates to trash", lambda: apply_moves(root, moves, state["cancel"]),
-                lambda result: report_apply(result, "Moved"))
+        apply_and_forget("Removing empty folders", plan_empty_dir_removal(folders), "Removed")
 
-    ttk.Button(dup_bar, text="Find duplicates", command=start_duplicates).pack(side="left")
-    ttk.Button(dup_bar, text="Move extras to trash", command=trash_duplicates).pack(side="left", padx=4)
-    dup_frame.pack(fill="both", expand=True, pady=6)
+    # Unreadable
+    er = make_view("errors", "Unreadable")
+    error_table = make_table(er["frame"], [("path", "Path and problem", 700, "w", True)], lambda row: (row,),
+                             {"path": text_key})
+    error_table["frame"].pack(fill="both", expand=True)
 
-    # --- Organize tab -----------------------------------------------------------------------------
-    org_tab = ttk.Frame(tabs, padding=6)
-    tabs.add(org_tab, text="Organize")
-    org_bar = ttk.Frame(org_tab)
-    org_bar.pack(fill="x")
-    mode_var = tk.StringVar(value="type")
-    ttk.Radiobutton(org_bar, text="By type", variable=mode_var, value="type").pack(side="left")
-    ttk.Radiobutton(org_bar, text="By year-month", variable=mode_var, value="date").pack(side="left", padx=4)
-    org_frame, org_tree = make_tree(org_tab, ("From", "To"), (420, 420))
-    org_moves = [[], ""]
+    # Organize
+    og = make_view("organize", "Organize")
+    org_mode = tk.StringVar(value="type")
+    org_table = make_table(og["frame"], [("from", "File", 360, "w", True), ("to", "Moves to", 360, "w", True)],
+                           lambda row: (os.path.basename(row["source"]), relative_path(state["org_root"], row["target"])),
+                           {"from": lambda row: row["source"].lower(), "to": lambda row: row["target"].lower()})
+    add_button(og, "Preview", lambda: preview_organize(), lambda: True, False)
+    add_button(og, "Apply", lambda: apply_organize(), lambda: len(state["org_moves"]) > 0, True)
+    ttk.Radiobutton(og["actions"], text="By type", variable=org_mode, value="type",
+                    command=lambda: clear_organize()).pack(side="left", padx=(12, 4))
+    ttk.Radiobutton(og["actions"], text="By year-month", variable=org_mode, value="date",
+                    command=lambda: clear_organize()).pack(side="left")
+    org_table["frame"].pack(fill="both", expand=True)
+
+    def clear_organize():
+        state["org_moves"] = []
+        fill_table(org_table, [])
+        og["subtitle"].set("Sorts the files directly inside the folder into subfolders. Folders are left alone.")
+        refresh_buttons()
 
     def preview_organize():
         folder = current_folder()
         if folder == "":
             return
-        mode = mode_var.get()
+        mode = org_mode.get()
 
         def finish(result):
-            clear(org_tree)
-            org_moves[0] = result["value"]
-            org_moves[1] = folder
+            state["org_moves"] = result["value"]
+            state["org_root"] = folder
+            fill_table(org_table, result["value"])
+            targets = {}
             for move in result["value"]:
-                org_tree.insert("", "end", values=(os.path.basename(move["source"]), os.path.relpath(move["target"], folder)))
-            status_var.set(str(len(result["value"])) + " file(s) would move")
+                targets[os.path.dirname(move["target"])] = True
+            og["subtitle"].set(plural(len(result["value"]), "file") + " would move into "
+                               + plural(len(targets), "folder") + " in " + folder)
 
-        run_job("Planning organize", lambda: plan_organize(folder, mode, state["cancel"]), finish)
+        run_job("Planning", lambda post: plan_organize(folder, mode, state["cancel"]), finish, None, None)
 
     def apply_organize():
-        if len(org_moves[0]) == 0:
-            messagebox.showinfo(APP_NAME, "Preview first.")
+        moves = state["org_moves"]
+        root = state["org_root"]
+        if not ask("Move " + plural(len(moves), "file") + " into subfolders of " + root + "?\n\nUndo is available."):
             return
-        if not messagebox.askyesno(APP_NAME, "Move " + str(len(org_moves[0])) + " file(s)? (Undo is available.)"):
-            return
-        moves = org_moves[0]
-        root = org_moves[1]
-        org_moves[0] = []
-        clear(org_tree)
-        run_job("Organizing", lambda: apply_moves(root, moves, state["cancel"]), lambda result: report_apply(result, "Moved"))
 
-    def undo():
-        folder = current_folder()
-        if folder == "":
-            return
-        if not messagebox.askyesno(APP_NAME, "Undo the last change made in this folder?"):
-            return
-        run_job("Undoing last change", lambda: undo_last(folder), lambda result: report_apply(result, "Restored"))
+        def finish(result):
+            report_apply(result, "Moved")
+            clear_organize()
+            if state["report"] is not None and os.path.normcase(state["root"]) == os.path.normcase(root):
+                window.after(10, analyze)
 
-    ttk.Button(org_bar, text="Preview", command=preview_organize).pack(side="left", padx=4)
-    ttk.Button(org_bar, text="Apply", command=apply_organize).pack(side="left")
-    ttk.Button(org_bar, text="Undo last change", command=undo).pack(side="right")
-    org_frame.pack(fill="both", expand=True, pady=6)
+        run_job("Organizing", lambda post: apply_moves(root, moves, state["cancel"], progress_sender(post)),
+                finish, None, None)
 
-    # --- Network tab ------------------------------------------------------------------------------
-    net_tab = ttk.Frame(tabs, padding=6)
-    tabs.add(net_tab, text="Network")
-    form = ttk.Frame(net_tab)
-    form.pack(fill="x")
-    name_var = tk.StringVar()
-    unc_var = tk.StringVar()
-    letter_var = tk.StringVar()
-    ttk.Label(form, text="Name").grid(row=0, column=0, sticky="w")
-    ttk.Entry(form, textvariable=name_var, width=16).grid(row=0, column=1, padx=4)
-    ttk.Label(form, text="\\\\host\\share").grid(row=0, column=2, sticky="w")
-    ttk.Entry(form, textvariable=unc_var, width=32).grid(row=0, column=3, padx=4)
-    ttk.Label(form, text="Letter").grid(row=0, column=4, sticky="w")
-    ttk.Entry(form, textvariable=letter_var, width=4).grid(row=0, column=5, padx=4)
-    net_frame, net_tree = make_tree(net_tab, ("Name", "Share", "Letter", "Status", "Free", "Total"),
-                                    (140, 260, 60, 280, 90, 90))
+    # Network shares
+    nw = make_view("network", "Network shares")
+    nw["subtitle"].set("Saved shares. Passwords are never stored; Windows asks for them when mapping if needed.")
+    net_rows = []
+    net_table = make_table(
+        nw["frame"],
+        [("name", "Name", 140, "w", False), ("unc", "Share", 240, "w", True), ("letter", "Letter", 60, "center", False),
+         ("status", "Status", 260, "w", True), ("free", "Free", 90, "e", False), ("total", "Total", 90, "e", False)],
+        lambda row: (row["share"]["name"], row["share"]["unc"], row["share"]["letter"] or "\u2014",
+                     row["status"], row["free"], row["total"]),
+        {})
+    add_button(nw, "Add share\u2026", lambda: add_share_dialog(), lambda: True, True)
+    add_button(nw, "Check all", lambda: check_shares(), lambda: len(net_rows) > 0, False)
+    add_button(nw, "Analyze", lambda: analyze_share(), lambda: has_selection(net_table), False)
+    add_button(nw, "Map", lambda: map_selected(), lambda: has_selection(net_table), False)
+    add_button(nw, "Disconnect", lambda: unmap_selected(), lambda: has_selection(net_table), False)
+    add_button(nw, "Back up a folder here\u2026", lambda: backup_to_share(), lambda: has_selection(net_table), False)
+    add_button(nw, "Remove", lambda: remove_share(), lambda: has_selection(net_table), False)
+    net_table["frame"].pack(fill="both", expand=True)
 
-    def refresh_shares():
-        clear(net_tree)
-        index = 0
+    def rebuild_shares():
+        old_rows = {}
+        for row in net_rows:
+            old_rows[row["share"]["unc"].lower()] = row
+        del net_rows[:]
         for share in settings["shares"]:
-            net_tree.insert("", "end", iid=str(index), values=(share["name"], share["unc"], share["letter"], "", "", ""))
-            index = index + 1
+            key = share["unc"].lower()
+            if key in old_rows:
+                old_rows[key]["share"] = share
+                net_rows.append(old_rows[key])
+            else:
+                net_rows.append({"share": share, "status": "not checked", "free": "", "total": ""})
+        fill_table(net_table, list(net_rows))
+        refresh_buttons()
 
     def selected_share():
-        chosen = net_tree.selection()
+        chosen = net_table["tree"].selection()
         if len(chosen) == 0:
-            messagebox.showinfo(APP_NAME, "Select a share first.")
             return None
-        return settings["shares"][int(chosen[0])]
+        return net_table["rows"][int(chosen[0])]["share"]
 
-    def add_share():
-        unc = unc_var.get().strip()
-        letter = letter_var.get().strip().upper()
-        if len(letter) == 1:
-            letter = letter + ":"
-        if unc_host(unc) == "":
-            messagebox.showwarning(APP_NAME, "Share must look like \\\\host\\share.")
+    def add_share_dialog():
+        dialog = tk.Toplevel(window)
+        dialog.title("Add network share")
+        dialog.transient(window)
+        dialog.resizable(False, False)
+        form = ttk.Frame(dialog, padding=14)
+        form.pack(fill="both", expand=True)
+        unc_var = tk.StringVar()
+        name_var = tk.StringVar()
+        letter_var = tk.StringVar()
+        problem = tk.StringVar(value="")
+        ttk.Label(form, text="Share path").grid(row=0, column=0, sticky="w", pady=3)
+        unc_entry = ttk.Entry(form, textvariable=unc_var, width=36)
+        unc_entry.grid(row=0, column=1, sticky="we", pady=3)
+        ttk.Label(form, text="e.g. \\\\nas01\\media", style="Muted.TLabel").grid(row=1, column=1, sticky="w")
+        ttk.Label(form, text="Name").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(form, textvariable=name_var, width=36).grid(row=2, column=1, sticky="we", pady=3)
+        ttk.Label(form, text="Drive letter").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Entry(form, textvariable=letter_var, width=6).grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Label(form, textvariable=problem, foreground="#a33a1a").grid(row=4, column=0, columnspan=2, sticky="w")
+        row = ttk.Frame(form)
+        row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
+
+        def save():
+            unc = unc_var.get().strip()
+            letter = letter_var.get().strip().upper()
+            if len(letter) == 1:
+                letter = letter + ":"
+            if unc_host(unc) == "":
+                problem.set("The share path must look like \\\\host\\share.")
+                return
+            if not valid_letter(letter):
+                problem.set("The drive letter must be D: to Z:, or empty.")
+                return
+            name = name_var.get().strip()
+            if name == "":
+                name = unc_host(unc)
+            settings["shares"].append({"name": name, "unc": unc, "letter": letter})
+            save_settings(path_to_settings, settings)
+            log("added share " + name + " (" + unc + ")")
+            dialog.destroy()
+            rebuild_shares()
+
+        ttk.Button(row, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(row, text="Add", style="Primary.TButton", command=save).pack(side="right", padx=6)
+        dialog.bind("<Return>", lambda event: save())
+        dialog.bind("<Escape>", lambda event: dialog.destroy())
+        unc_entry.focus_set()
+        dialog.grab_set()
+
+    def check_shares():
+        rows = list(net_rows)
+
+        def work(post):
+            results = []
+            for row in rows:
+                if is_cancelled(state["cancel"]):
+                    break
+                results.append((row, check_share(row["share"])))
+            return success(results)
+
+        def finish(result):
+            for pair in result["value"]:
+                row = pair[0]
+                found = pair[1]
+                if found["reachable"]:
+                    row["status"] = "online"
+                    row["free"] = human_size(found["free"])
+                    row["total"] = human_size(found["total"])
+                else:
+                    row["status"] = found["error"]
+                    row["free"] = ""
+                    row["total"] = ""
+                log("  " + row["share"]["name"] + ": " + row["status"])
+            fill_table(net_table, list(net_rows))
+
+        run_job("Checking shares", work, finish, None, None)
+
+    def analyze_share():
+        share = selected_share()
+        if share is not None:
+            folder_var.set(share_path(share))
+            analyze()
+
+    def map_selected():
+        share = selected_share()
+        if share is None:
             return
-        if not valid_letter(letter):
-            messagebox.showwarning(APP_NAME, "Letter must be D: to Z:, or empty.")
+        run_job("Mapping " + share["unc"], lambda post: map_share(share), lambda result: check_shares_later(), None, None)
+
+    def unmap_selected():
+        share = selected_share()
+        if share is None or not ask("Disconnect " + share_path(share) + "?"):
             return
-        name = name_var.get().strip() or unc_host(unc)
-        settings["shares"].append({"name": name, "unc": unc, "letter": letter})
-        save_settings(path_to_settings, settings)
-        refresh_shares()
-        log("added share " + name)
+        run_job("Disconnecting " + share["unc"], lambda post: unmap_share(share), lambda result: check_shares_later(),
+                None, None)
+
+    def check_shares_later():
+        window.after(10, check_shares)
 
     def remove_share():
         share = selected_share()
@@ -1151,112 +2015,361 @@ def run_gui(smoke_path):
             return
         settings["shares"].remove(share)
         save_settings(path_to_settings, settings)
-        refresh_shares()
         log("removed share " + share["name"] + " from the list")
+        rebuild_shares()
 
-    def check_selected():
-        chosen = net_tree.selection()
-        if len(chosen) == 0:
-            chosen = net_tree.get_children()
-        targets = []
-        for iid in chosen:
-            targets.append((iid, settings["shares"][int(iid)]))
-
-        def work():
-            results = []
-            for pair in targets:
-                if is_cancelled(state["cancel"]):
-                    break
-                results.append((pair[0], check_share(pair[1])))
-            return results
-
-        def finish(results):
-            for pair in results:
-                share_state = pair[1]
-                values = list(net_tree.item(pair[0], "values"))
-                if share_state["reachable"]:
-                    values[3] = "online"
-                    values[4] = human_size(share_state["free"])
-                    values[5] = human_size(share_state["total"])
-                else:
-                    values[3] = share_state["error"]
-                    values[4] = ""
-                    values[5] = ""
-                net_tree.item(pair[0], values=values)
-                log("  " + values[0] + ": " + values[3])
-
-        run_job("Checking shares", work, finish)
-
-    def map_selected():
+    def backup_to_share():
         share = selected_share()
         if share is None:
             return
-        run_job("Mapping " + share["unc"], lambda: map_share(share), lambda result: log("  mapped"))
-
-    def unmap_selected():
-        share = selected_share()
-        if share is None:
+        start = settings["last_folder"] if settings["last_folder"] != "" else None
+        folder = filedialog.askdirectory(parent=window, initialdir=start, title="Folder to back up to " + share["name"])
+        if not folder:
             return
-        if not messagebox.askyesno(APP_NAME, "Disconnect " + share_path(share) + "?"):
-            return
-        run_job("Disconnecting " + share["unc"], lambda: unmap_share(share), lambda result: log("  disconnected"))
-
-    def use_as_folder():
-        share = selected_share()
-        if share is not None:
-            folder_var.set(share_path(share))
-
-    def plan_backup():
-        folder = current_folder()
-        share = selected_share()
-        if folder == "" or share is None:
-            return
-        target = os.path.join(share_path(share), os.path.basename(os.path.normpath(folder)))
+        folder = os.path.normpath(folder)
+        target = os.path.join(share_path(share), os.path.basename(folder))
 
         def finish(result):
-            state["copies"] = result["value"]
-            state["sync_target"] = target
+            copies = result["value"]
             total = 0
-            for copy in result["value"]:
-                total = total + os.path.getsize(copy["source"])
-            status_var.set(str(len(result["value"])) + " file(s), " + human_size(total) + " to copy to " + target)
-            log("  " + status_var.get())
-            if len(result["value"]) > 0 and messagebox.askyesno(APP_NAME, status_var.get() + ". Copy now?"):
-                copies = state["copies"]
-                progress.configure(mode="determinate")
+            for copy in copies:
+                total = total + copy["size"]
+            if len(copies) == 0:
+                status_var.set(target + " is already up to date")
+                log("  up to date")
+                return
+            if not ask("Copy " + plural(len(copies), "new or changed file") + " (" + human_size(total) + ") to "
+                       + target + "?\n\nNothing in the target is deleted."):
+                return
+            run_job("Backing up to " + target,
+                    lambda post: apply_copies(copies, state["cancel"], progress_sender(post)),
+                    lambda copy_result: report_apply(copy_result, "Copied"), None, None)
 
-                def update(done_count, total_count):
-                    window.after(0, lambda: progress.configure(value=100.0 * done_count / max(total_count, 1)))
+        run_job("Comparing " + folder + " with " + target,
+                lambda post: plan_sync(folder, target, state["cancel"], progress_sender(post)), finish, None, None)
 
-                def done_copy(copy_result):
-                    progress.configure(mode="indeterminate", value=0)
-                    report_apply(copy_result, "Copied")
+    # Activity
+    ac = make_view("activity", "Activity")
+    ac["subtitle"].set("Everything done in this session.")
+    log_holder = ttk.Frame(ac["frame"])
+    log_text = tk.Text(log_holder, wrap="none", height=10, state="disabled", relief="flat", padx=6, pady=6)
+    log_bar = ttk.Scrollbar(log_holder, orient="vertical", command=log_text.yview)
+    log_text.configure(yscrollcommand=log_bar.set)
+    log_text.pack(side="left", fill="both", expand=True)
+    log_bar.pack(side="left", fill="y")
 
-                run_job("Backing up", lambda: apply_copies(copies, state["cancel"], update), done_copy)
+    def clear_log():
+        log_text.configure(state="normal")
+        log_text.delete("1.0", "end")
+        log_text.configure(state="disabled")
 
-        run_job("Planning backup of " + folder, lambda: plan_sync(folder, target, state["cancel"]), finish)
+    add_button(ac, "Clear", clear_log, lambda: True, False)
+    log_holder.pack(fill="both", expand=True)
 
-    buttons = ttk.Frame(net_tab)
-    buttons.pack(fill="x", pady=4)
-    ttk.Button(form, text="Add", command=add_share).grid(row=0, column=6, padx=4)
-    for label, command in (("Check", check_selected), ("Map", map_selected), ("Disconnect", unmap_selected),
-                           ("Use as folder", use_as_folder), ("Back up folder to share", plan_backup),
-                           ("Remove from list", remove_share)):
-        ttk.Button(buttons, text=label, command=command).pack(side="left", padx=2)
-    net_frame.pack(fill="both", expand=True)
-    ttk.Label(net_tab, text="Passwords are never stored; Windows asks for them when mapping if needed.").pack(anchor="w")
-    refresh_shares()
+    # --- refreshing the views from state ---------------------------------------------------------
+    def set_side(key, text):
+        sidebar.set(key, "info", text)
 
-    # --- Log tab ----------------------------------------------------------------------------------
-    tabs.add(log_text, text="Log")
+    def refresh_all():
+        report = state["report"]
+        if report is None:
+            for entry in VIEWS:
+                set_side(entry[0], "")
+            refresh_buttons()
+            return
+        stale_total = total_size(report["stale"])
+        set_side("overview", human_size(report["total_bytes"]))
+        set_side("largest", human_size(report["largest"][0]["size"]) if len(report["largest"]) > 0 else "")
+        set_side("old", human_count(len(report["stale"])) + " \u00b7 " + human_size(stale_total))
+        set_side("empty", human_count(len(report["empty_dirs"])))
+        set_side("errors", human_count(len(report["errors"])))
+        if state["groups"] is None:
+            set_side("duplicates", state["dup_note"])
+        else:
+            savings = duplicate_savings(state["groups"])
+            set_side("duplicates", human_count(savings["copies"]) + " \u00b7 " + human_size(savings["bytes"]))
+
+        # Overview
+        ov_files.set(plural(report["file_count"], "file") + " \u00b7 " + human_size(report["total_bytes"])
+                     + " in " + plural(report["dir_count"], "folder"))
+        if report["drive_total"] > 0:
+            ov_drive.set("Drive: " + human_size(report["drive_free"]) + " free of " + human_size(report["drive_total"]))
+        else:
+            ov_drive.set("")
+        parts = []
+        if state["groups"] is not None:
+            savings = duplicate_savings(state["groups"])
+            if savings["copies"] > 0:
+                parts.append(human_size(savings["bytes"]) + " in " + plural(savings["copies"], "duplicate copy"))
+        if len(report["stale"]) > 0:
+            parts.append(human_size(stale_total) + " in " + plural(len(report["stale"]), "old file"))
+        if len(report["empty_dirs"]) > 0:
+            parts.append(plural(len(report["empty_dirs"]), "empty folder"))
+        if len(parts) > 0:
+            ov_reclaim.set("Worth a look: " + "  \u00b7  ".join(parts))
+        else:
+            ov_reclaim.set("Nothing obvious to clean up.")
+        type_rows = []
+        for name in report["by_type"]:
+            entry = report["by_type"][name]
+            share = 0.0
+            if report["total_bytes"] > 0:
+                share = 100.0 * entry["bytes"] / report["total_bytes"]
+            type_rows.append({"type": name, "files": entry["files"], "bytes": entry["bytes"], "share": "%.1f %%" % share})
+        type_rows.sort(key=lambda row: row["bytes"], reverse=True)
+        fill_table(type_table, type_rows)
+        ov["subtitle"].set(report["root"])
+
+        # Lists
+        fill_table(lg_table, list(report["largest"]))
+        lg["subtitle"].set("The " + plural(len(report["largest"]), "biggest file") + ". Select some, or act on all.")
+        fill_table(old_table, list(report["stale"]))
+        od["subtitle"].set(plural(len(report["stale"]), "file") + " (" + human_size(stale_total)
+                           + ") not changed for " + plural(state["old_days"], "day") + ".")
+        empty_rows = list(report["empty_dirs"])
+        empty_rows.sort(key=text_key)
+        fill_table(empty_table, empty_rows)
+        em["subtitle"].set(plural(len(report["empty_dirs"]), "folder") + " with nothing in them, including nested ones.")
+        fill_table(error_table, list(report["errors"]))
+        er["subtitle"].set(plural(len(report["errors"]), "path") + " could not be read (no rights, in use, or gone).")
+        refresh_duplicates()
+        refresh_buttons()
+
+    def refresh_duplicates():
+        dup_tree.delete(*dup_tree.get_children())
+        groups = state["groups"]
+        if groups is None:
+            dp["subtitle"].set(state["dup_note"] if state["dup_note"] != "" else "Analyze a folder to compare its files.")
+            dup_note.set("")
+            refresh_buttons()
+            return
+        savings = duplicate_savings(groups)
+        dp["subtitle"].set(plural(len(groups), "file") + " stored more than once; " + human_size(savings["bytes"])
+                           + " in extra copies. Green is kept, red goes to the trash.")
+        rows = 0
+        number = 0
+        while number < len(groups) and rows < MAX_ROWS:
+            group = groups[number]
+            keeper = keeper_index(group, state["keep"])
+            parent = "g" + str(number)
+            dup_tree.insert("", "end", iid=parent, open=True, tags=("group",),
+                            text=os.path.basename(group[0]["path"]) + "  \u00b7  " + plural(len(group), "copy")
+                            + "  \u00b7  " + human_size(group_savings(group)) + " in extra copies",
+                            values=(human_size(group[0]["size"]), "", ""))
+            index = 0
+            while index < len(group):
+                info = group[index]
+                tag = "keep" if index == keeper else "trash"
+                dup_tree.insert(parent, "end", iid=parent + ":" + str(index), text=rel(info["path"]), tags=(tag,),
+                                values=(human_size(info["size"]), human_date(info["modified"]),
+                                        "keep" if index == keeper else "to trash"))
+                index = index + 1
+            rows = rows + len(group) + 1
+            number = number + 1
+        if number < len(groups):
+            dup_note.set("Showing the " + human_count(number) + " groups that save the most, of " + human_count(len(groups))
+                         + ". With nothing selected, actions apply to all of them.")
+        else:
+            dup_note.set("Select rows to act on some groups only. \u201cKeep selected copy\u201d changes which one stays.")
+        refresh_buttons()
+
+    def show_view(key):
+        state["view"] = key
+        views[key]["frame"].tkraise()
+        if tuple(sidebar.selection()) != (key,):
+            sidebar.selection_set(key)
+
+    def on_sidebar(event):
+        chosen = sidebar.selection()
+        if len(chosen) == 0:
+            return
+        key = chosen[0]
+        if key not in views:
+            children = sidebar.get_children(key)
+            if len(children) > 0:
+                sidebar.selection_set(children[0])
+            return
+        if key != state["view"]:
+            show_view(key)
+
+    sidebar.bind("<<TreeviewSelect>>", on_sidebar)
+
+    # --- the main actions --------------------------------------------------------------------------
+    def folder_choices():
+        choices = []
+        seen = {}
+        candidates = list(settings["recent"])
+        for drive in list_drives():
+            candidates.append(drive)
+        for share in settings["shares"]:
+            candidates.append(share_path(share))
+        for item in candidates:
+            key = os.path.normcase(item)
+            if key not in seen:
+                seen[key] = True
+                choices.append(item)
+        return choices
+
+    folder_box.configure(postcommand=lambda: folder_box.configure(values=folder_choices()))
+
+    def browse():
+        start = folder_var.get().strip()
+        chosen = filedialog.askdirectory(parent=window, initialdir=start if start != "" else None)
+        if chosen:
+            folder_var.set(os.path.normpath(chosen))
+            analyze()
+
+    def current_folder():
+        folder = normalize_folder(folder_var.get())
+        if folder == "" or not os.path.isdir(folder):
+            status_var.set("Choose an existing folder or drive first.")
+            folder_box.focus_set()
+            return ""
+        folder_var.set(folder)
+        settings["last_folder"] = folder
+        settings["recent"] = add_recent(settings["recent"], folder, 10)
+        save_settings(path_to_settings, settings)
+        return folder
+
+    def analyze():
+        if state["busy"]:
+            return
+        root = current_folder()
+        if root == "":
+            return
+        days = state["old_days"]
+        cancel_flag = state["cancel"]
+
+        def work(post):
+            send = progress_sender(post)
+            scanned = scan(root, LARGEST_COUNT, days, time.time(), cancel_flag, send)
+            if not scanned["ok"]:
+                return scanned
+            post("scan", scanned["value"])
+            return find_duplicates_in(scanned["value"]["files"], cancel_flag, send)
+
+        def on_message(kind, value):
+            if kind == "scan":
+                state["root"] = root
+                state["report"] = value
+                state["groups"] = None
+                state["keep"] = {}
+                state["dup_note"] = "comparing\u2026"
+                refresh_all()
+                log("  " + plural(value["file_count"], "file") + ", " + human_size(value["total_bytes"]))
+                if state["view"] in ("network", "organize", "activity"):
+                    show_view("overview")
+
+        def finish(result):
+            state["groups"] = result["value"]
+            state["dup_note"] = ""
+            refresh_all()
+            savings = duplicate_savings(result["value"])
+            log("  " + plural(savings["copies"], "duplicate copy") + ", " + human_size(savings["bytes"]))
+            status_var.set("Analyzed " + root + " \u2014 " + plural(state["report"]["file_count"], "file") + ", "
+                           + human_size(savings["bytes"]) + " in duplicate copies")
+
+        def on_fail(result):
+            if state["report"] is not None and state["root"] == root:
+                state["dup_note"] = "not compared (" + result["error"] + ")"
+                refresh_all()
+
+        run_job("Analyzing " + root, work, finish, on_message, on_fail)
+
+    def apply_and_forget(label, moves, verb):
+        """Apply moves, then drop the moved paths from the results instead of analyzing again."""
+        root = state["root"]
+
+        def finish(result):
+            report_apply(result, verb)
+            gone = {}
+            for move in result["value"]["moved"]:
+                gone[move["source"]] = True
+            state["report"] = remove_from_report(state["report"], gone, LARGEST_COUNT, state["old_days"], time.time())
+            if state["groups"] is not None:
+                state["groups"] = remove_from_groups(state["groups"], gone)
+            refresh_all()
+
+        run_job(label, lambda post: apply_moves(root, moves, state["cancel"], progress_sender(post)), finish, None, None)
+
+    def trash_rows(table):
+        rows = picked_rows(table)
+        if len(rows) == 0:
+            return
+        scope = "selected " if has_selection(table) else ""
+        if not ask("Move " + plural(len(rows), scope + "file") + " (" + human_size(total_size(rows))
+                   + ") to the trash folder in " + state["root"] + "?\n\nUndo is available."):
+            return
+        apply_and_forget("Moving files to the trash", plan_trash(state["root"], rows), "Moved")
+
+    def undo():
+        root = state["root"]
+        if state["busy"] or root == "" or not os.path.isfile(undo_log_path(root)):
+            return
+        if not ask("Undo the last change made in " + root + "?"):
+            return
+
+        def finish(result):
+            report_apply(result, "Restored")
+            window.after(10, analyze)
+
+        run_job("Undoing the last change", lambda post: undo_last(root), finish, None, None)
+
+    def about():
+        messagebox.showinfo("About", APP_NAME + " " + __version__ + "\n\nGeneric Company Inc. is fictional.\n"
+                            "License: AGPL-3.0.\n\n" + ICON_CREDIT, parent=window)
+
+    def on_delete(event):
+        if isinstance(event.widget, (ttk.Entry, ttk.Combobox, ttk.Spinbox, tk.Entry, tk.Text)):
+            return
+        if state["busy"] or state["report"] is None:
+            return
+        if state["view"] in primary:
+            primary[state["view"]]()
+
+    def double_click(table):
+        table["tree"].bind("<Double-1>", lambda event: reveal_first(table))
+
+    for table in (lg_table, old_table, empty_table):
+        double_click(table)
+    dup_tree.bind("<Double-1>", lambda event: reveal_copy())
+
+    def close():
+        state["cancel"][0] = True
+        settings["geometry"] = window.geometry()
+        save_settings(path_to_settings, settings)
+        window.destroy()
+
+    folder_box.bind("<Return>", lambda event: analyze())
+    window.bind("<F5>", lambda event: analyze())
+    window.bind("<Control-z>", lambda event: undo())
+    window.bind("<Delete>", on_delete)
+    window.protocol("WM_DELETE_WINDOW", close)
+
+    rebuild_shares()
+    clear_organize()
+    show_view("overview")
+    refresh_all()
     log(APP_NAME + " " + __version__ + " started")
+    folder_box.focus_set()
+
+    if start_view in views:
+        show_view(start_view)
+    if start_folder != "":
+        folder_var.set(start_folder)
+        window.after(100, analyze)
 
     if smoke_path != "":
         def write_smoke_report():
+            if state["busy"]:
+                window.after(200, write_smoke_report)
+                return
             report = {"app_id": APP_ID, "version": __version__, "title": window.title(), "icon_set": icon_set,
-                      "tabs": [], "shares": len(settings["shares"])}
-            for tab_id in tabs.tabs():
-                report["tabs"].append(tabs.tab(tab_id, "text"))
+                      "views": [], "shares": len(settings["shares"]), "folder": state["root"],
+                      "view": state["view"], "status": status_var.get(), "sidebar": {}}
+            for entry in VIEWS:
+                report["views"].append(entry[1])
+                report["sidebar"][entry[0]] = sidebar.set(entry[0], "info")
             handle = open(smoke_path, "w", encoding="utf-8")
             json.dump(report, handle, indent=2)
             handle.close()
@@ -1287,13 +2400,15 @@ def main(arguments):
     if "--selftest" in arguments:
         return selftest()
     smoke_path = option_value(arguments, "--smoke")
-    if smoke_path is None:
-        print("--smoke needs a file")
+    start_folder = option_value(arguments, "--folder")
+    start_view = option_value(arguments, "--view")
+    if smoke_path is None or start_folder is None or start_view is None:
+        print("--smoke, --folder and --view each need a value")
         return 2
-    return run_gui(smoke_path)
+    return run_gui(smoke_path, start_folder, start_view)
 
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=6d6408580cf4835960694e88033b402665fcaef57ce0447e6cc6c29e2c8d39ae ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=4b9f63f495d910d72e7a2881c26304f122a166bcb7aa5b4c2a998a79b879f6f8 ====

@@ -145,6 +145,11 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Every change is previewed and confirmed. Nothing is deleted: extra duplicates go to a trash folder inside the scanned folder, and each change can be undone. Passwords are never stored.
 - Written to port easily: plain functions and records, explicit loops, errors returned as records, and the core kept apart from the GUI.
 - `--version`, `--smoke FILE` and `--selftest` (29 checks, all pass). Added to the Dev Console's `programs.ini`.
+
+**drive_and_network_storage_manager 0.2.0** (faster, simpler window)
+- One `os.scandir` pass finds sizes, dates and empty folders (no per-file `stat`, no second walk); duplicates reuse it and are narrowed by size, then both ends of large files, then SHA-256, read on 8 threads; a backup lists source and share once and compares in memory. On 40,000 files: scan 9.6 s to 0.3 s, duplicates 38.0 s to 4.2 s, backup planning 13.5 s to 0.6 s.
+- New window: one Analyze button and a sidebar (Overview, Largest, Old, Duplicates, Empty, Unreadable, Organize, Network shares, Activity) with counts; actions work on the selection or on everything; lists sort, cap at 2,000 rows and update after a change without a new scan; choose which duplicate to keep; show in folder; recent folders and drives in the folder box; Delete, Ctrl+Z, F5.
+- `--folder PATH [--view KEY]`; `--selftest` now 49 checks, all pass; an in-process window test pressed every action and checked the disk.
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

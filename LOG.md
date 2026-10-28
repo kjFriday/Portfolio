@@ -166,6 +166,11 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Builds for Linux too (`internal/desktop/window_other.go`, `internal/install/hide_*.go`): there only `-serve` and `-public` work.
 - Checked: `go vet` and `go test` (new `TestPublic`), `GOOS=linux` vet and build, and the `cms-public` preview in a browser.
 
+**dev_console: live-production view** (Ctrl+4)
+- Starts and stops a program's live site from its new `production` command in `programs.ini` (the Journal: `go run . -public -addr 127.0.0.1:8722`), opens it, and checks `production_url`: each `production_checks` entry (`GET / 200, … POST /about 405, GET /api/health 404`), the four security headers on every 200 answer, and no user or portfolio folder path in any answer. Checks go through Windows' `curl.exe`, so a deployed `https://` URL works too; "Keep checking" repeats them (`settings.ini [production]`).
+- Jobs can now be stopped: `Event::Started` carries the process id, Stop runs `taskkill /T` (the server `go run` starts dies with it) and the job ends as Stopped, not as a failure. Closing the console stops a running live site.
+- Checked: `cargo test` (47), and `cargo test -- --ignored`: the Journal started on a free port passed all 7 checks and its port was closed after Stop, both through `production.rs` and through the view's own Start and Stop. `--smoke` lists the four views. The window itself was not looked at.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

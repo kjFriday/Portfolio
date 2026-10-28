@@ -39,12 +39,15 @@ impl Lang {
 }
 
 /// The editable command fields, in the order the editor shows them: (key, label, help).
-pub const FIELDS: [(&str, &str, &str); 5] = [
+pub const FIELDS: [(&str, &str, &str); 8] = [
     ("launch", "Launch", "Starts the program. Run uses it as is; Version and Smoke add --version / --smoke FILE after it."),
     ("test", "Test", "Runs the program's tests (Test, Test all, live tests)."),
     ("build", "Build", "Builds the program (Build button). Leave empty when there is nothing to build."),
     ("desktop_build", "Desktop build", "Steps the Desktop shortcuts button runs before placing the shortcut, separated by &&."),
     ("desktop_run", "Desktop run", "What the desktop shortcut starts: an exe relative to the project folder, or \"pythonw <args>\"."),
+    ("production", "Production", "Serves the live site (live-production view, Start). Leave empty for a program with no site."),
+    ("production_url", "Production URL", "Where the live site answers, such as http://127.0.0.1:8722 or a deployed https:// address."),
+    ("production_checks", "Production checks", "What live-production checks: METHOD /path STATUS, separated by commas, such as GET / 200, POST /about 405."),
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +62,9 @@ pub struct Program {
     pub build: String,
     pub desktop_build: String,
     pub desktop_run: String,
+    pub production: String,
+    pub production_url: String,
+    pub production_checks: String,
     pub version_files: Vec<String>,
 }
 
@@ -70,6 +76,9 @@ impl Program {
             "build" => &self.build,
             "desktop_build" => &self.desktop_build,
             "desktop_run" => &self.desktop_run,
+            "production" => &self.production,
+            "production_url" => &self.production_url,
+            "production_checks" => &self.production_checks,
             _ => "",
         }
     }
@@ -81,8 +90,16 @@ impl Program {
             "build" => Some(&mut self.build),
             "desktop_build" => Some(&mut self.desktop_build),
             "desktop_run" => Some(&mut self.desktop_run),
+            "production" => Some(&mut self.production),
+            "production_url" => Some(&mut self.production_url),
+            "production_checks" => Some(&mut self.production_checks),
             _ => None,
         }
+    }
+
+    /// Whether the live-production view lists this program: it has a site to start or to check.
+    pub fn has_production(&self) -> bool {
+        !self.production.trim().is_empty() || !self.production_url.trim().is_empty()
     }
 }
 
@@ -115,6 +132,9 @@ pub fn load(ini: &Ini) -> (Vec<Program>, Vec<String>) {
             build: get("build"),
             desktop_build: get("desktop_build"),
             desktop_run: get("desktop_run"),
+            production: get("production"),
+            production_url: get("production_url"),
+            production_checks: get("production_checks"),
             version_files: get("version_files").split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect(),
         });
     }
@@ -328,6 +348,17 @@ mod tests {
     }
 
     #[test]
+    fn journal_has_a_live_site() {
+        let ps = defaults();
+        let j = by_name(&ps, "Journal");
+        assert!(j.has_production());
+        assert!(j.production.contains("-public"), "{}", j.production);
+        assert!(j.production_url.starts_with("http://127.0.0.1:"), "{}", j.production_url);
+        assert!(crate::production::parse_checks(&j.production_checks).unwrap().len() >= 5);
+        assert!(!by_name(&ps, "Data Dash").has_production());
+    }
+
+    #[test]
     fn find_root_walks_up() {
         let dir = std::env::temp_dir().join(format!("gc-console-root-{}", std::process::id()));
         let deep = dir.join("a").join("b");
@@ -338,4 +369,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=4ef2f2939af740802b9469d1565194b810b7e99fbbcde8dac8bdfbfa149c9574 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=193e5904b52218d8f8d59f31cf62ceba3ddff74ddb5853f58404ea94080158ac ====

@@ -20,9 +20,13 @@ pub enum Status {
     Running,
     Exited(i32),
     Failed(String),
+    /// Ended from the console (Stop), whatever exit code the kill left.
+    Stopped,
 }
 
 pub enum Event {
+    /// The job's process is running, with this process id.
+    Started(usize, u32),
     Line(usize, String),
     Done(usize, Status),
 }
@@ -69,6 +73,7 @@ pub fn run(id: usize, cmd: &Cmd, tx: &Sender<Event>, wake: &(impl Fn() + Send + 
         Ok(ch) => ch,
         Err(e) => return Status::Failed(format!("{}: {e}", cmd.program)),
     };
+    let _ = tx.send(Event::Started(id, child.id()));
     let readers = [pipe(child.stdout.take(), id, tx, wake), pipe(child.stderr.take(), id, tx, wake)];
     for r in readers.into_iter().flatten() {
         let _ = r.join();
@@ -76,6 +81,23 @@ pub fn run(id: usize, cmd: &Cmd, tx: &Sender<Event>, wake: &(impl Fn() + Send + 
     match child.wait() {
         Ok(s) => Status::Exited(s.code().unwrap_or(-1)),
         Err(e) => Status::Failed(e.to_string()),
+    }
+}
+
+/// End process `pid` and every process it started (`go run` starts the real server as a child).
+pub fn stop(pid: u32) -> Result<(), String> {
+    let mut c = Command::new("taskkill");
+    c.args(["/PID", &pid.to_string(), "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    let out = c.output().map_err(|e| format!("taskkill: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
 }
 
@@ -121,9 +143,10 @@ mod tests {
             cwd: std::env::temp_dir(),
         };
         spawn(7, cmd, tx, || {});
-        let mut lines = vec![];
+        let (mut lines, mut pid) = (vec![], None);
         let status = loop {
             match rx.recv().unwrap() {
+                Event::Started(7, p) => pid = Some(p),
                 Event::Line(7, l) => lines.push(l),
                 Event::Done(7, s) => break s,
                 _ => panic!("wrong id"),
@@ -131,6 +154,24 @@ mod tests {
         };
         assert_eq!(lines, ["hello"]);
         assert_eq!(status, Status::Exited(3));
+        assert!(pid.is_some_and(|p| p > 0));
+    }
+
+    #[test]
+    fn stop_ends_the_process_and_its_children() {
+        let (tx, rx) = channel();
+        // cmd starts ping as a child: stopping cmd must take the child with it
+        let cmd = Cmd { program: "cmd".into(), args: vec!["/C".into(), "ping -n 60 127.0.0.1 >nul".into()], cwd: std::env::temp_dir() };
+        spawn(2, cmd, tx, || {});
+        let Event::Started(2, pid) = rx.recv().unwrap() else { panic!("expected Started first") };
+        stop(pid).unwrap();
+        let done = loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(10)).expect("job did not end after stop") {
+                Event::Done(2, s) => break s,
+                _ => {}
+            }
+        };
+        assert_ne!(done, Status::Running);
     }
 
     #[test]
@@ -145,4 +186,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=8fb0f3010dc5069548d6e9d80d81ae98db6ea811045391e93223563bf74b25a2 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=86e722fd2536c7b44fe786688d6fd17f0b5900fa6e070d6f64379c300cb3ee61 ====

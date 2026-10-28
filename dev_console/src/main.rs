@@ -15,11 +15,13 @@ mod desktop;
 mod install;
 mod jobs;
 mod live;
+mod production;
 mod registry;
 mod seed;
 mod versions;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -40,13 +42,15 @@ enum View {
     Run,
     Versions,
     Seed,
+    Production,
 }
 
 impl View {
-    const ALL: [(View, &'static str, &'static str, &'static str); 3] = [
+    const ALL: [(View, &'static str, &'static str, &'static str); 4] = [
         (View::Run, "Run", "view_run", "Build, test, run and smoke-check the selected program, and read its output."),
         (View::Versions, "Versions & commands", "view_versions", "Change the selected program's version (in every file that holds it) and the commands the console runs for it."),
         (View::Seed, "Seed data", "view_seed", "The CRUD Hub's shared database: row counts, backups, reseeding and mock snapshots."),
+        (View::Production, "live-production", "view_production", "Start and stop a program's live site from its production command, open it, and check what it answers."),
     ];
 }
 
@@ -57,7 +61,23 @@ enum Kind {
     Desktop,
     Seed(seed::Op),
     Stamp,
+    /// A program's live site (its production command).
+    Production(usize),
 }
+
+/// A job's process, once it runs.
+#[derive(Default)]
+struct Proc {
+    pid: Option<u32>,
+    started: Option<Instant>,
+    /// Stop was pressed: the job ends as Stopped, not as a failure.
+    stopped: bool,
+    /// Cleared when the job ends, so a thread waiting for its port gives up.
+    alive: Option<Arc<AtomicBool>>,
+}
+
+/// Results from a checks thread: the URL checked and its outcomes.
+type Checked = (String, Vec<production::Outcome>);
 
 struct App {
     root: Option<PathBuf>,
@@ -70,6 +90,7 @@ struct App {
     /// Smoke report file per job, read when the job ends.
     smoke: Vec<Option<PathBuf>>,
     kind: Vec<Kind>,
+    procs: Vec<Proc>,
     shown: Option<usize>,
     /// Last finished status per (program, action).
     last: Vec<[Option<Status>; Action::ALL.len()]>,
@@ -84,6 +105,23 @@ struct App {
     notes: Vec<(bool, String)>,
     ver: Versions,
     seed: SeedView,
+    prod: ProdView,
+}
+
+/// live-production view state.
+struct ProdView {
+    /// The program shown (an index into `programs`).
+    pick: Option<usize>,
+    outcomes: Vec<production::Outcome>,
+    /// When the outcomes were taken, and the URL they were taken from.
+    checked: Option<(Instant, String)>,
+    checking: bool,
+    /// The address a check is waiting on, while a just-started server comes up.
+    waiting: Option<String>,
+    keep_checking: bool,
+    note: Option<(bool, String)>,
+    tx: Sender<Checked>,
+    rx: Receiver<Checked>,
 }
 
 /// Versions & commands editor state.
@@ -117,6 +155,7 @@ impl App {
         let n = programs.len();
         let env = |k: &str| std::env::var(k).ok();
         let db = seed::default_db(&env).map(|p| p.display().to_string()).unwrap_or_default();
+        let (ptx, prx) = channel();
         App {
             root,
             cfg,
@@ -126,6 +165,7 @@ impl App {
             jobs: vec![],
             smoke: vec![],
             kind: vec![],
+            procs: vec![],
             shown: None,
             last: vec![Default::default(); n],
             tx,
@@ -137,6 +177,17 @@ impl App {
             notes: vec![],
             ver: Versions { for_program: None, spots: vec![], new_version: String::new(), edit: programs.clone() },
             seed: SeedView { db, counts: None, counts_error: None, backups: vec![], pick: None, armed: None, loaded: false },
+            prod: ProdView {
+                pick: None,
+                outcomes: vec![],
+                checked: None,
+                checking: false,
+                waiting: None,
+                keep_checking: false,
+                note: None,
+                tx: ptx,
+                rx: prx,
+            },
             programs,
         }
     }
@@ -183,6 +234,7 @@ impl App {
         self.jobs.push(job);
         self.smoke.push(smoke);
         self.kind.push(kind);
+        self.procs.push(Proc::default());
         self.shown = Some(id);
         id
     }
@@ -209,8 +261,21 @@ impl App {
     fn drain(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                Event::Started(id, pid) => {
+                    self.procs[id].pid = Some(pid);
+                    self.procs[id].started.get_or_insert_with(Instant::now);
+                }
                 Event::Line(id, l) => self.jobs[id].push(l),
                 Event::Done(id, s) => {
+                    let s = if self.procs[id].stopped {
+                        self.jobs[id].push("stopped from the console".into());
+                        Status::Stopped
+                    } else {
+                        s
+                    };
+                    if let Some(alive) = &self.procs[id].alive {
+                        alive.store(false, Ordering::Relaxed);
+                    }
                     if let Some(path) = self.smoke[id].take() {
                         match std::fs::read_to_string(&path) {
                             Ok(t) => t.lines().for_each(|l| self.jobs[id].push(format!("report: {l}"))),
@@ -238,8 +303,22 @@ impl App {
                             let ok = s == Status::Exited(0);
                             self.notes.push((ok, if ok { "Stamps renewed.".into() } else { "stamp.py --restamp failed; see its log.".into() }));
                         }
-                        Kind::Desktop => {}
+                        Kind::Desktop | Kind::Production(_) => {}
                     }
+                }
+            }
+        }
+        while let Ok((url, outcomes)) = self.prod.rx.try_recv() {
+            self.prod.outcomes = outcomes;
+            self.prod.checked = Some((Instant::now(), url));
+            self.prod.checking = false;
+            self.prod.waiting = None;
+        }
+        if self.prod.keep_checking && !self.prod.checking {
+            let every = Duration::from_secs_f32(self.cfg.number("production", "interval_s", 30.0).max(5.0));
+            if let Some(p) = self.prod.pick {
+                if self.prod.checked.as_ref().is_none_or(|(t, _)| t.elapsed() >= every) {
+                    self.check_production(ctx, p, None);
                 }
             }
         }
@@ -272,6 +351,95 @@ impl App {
             desktop::make(id, self.programs.clone(), root, user, None, self.tx.clone(), Self::wake(ctx));
         } else {
             desktop::remove(id, user, self.tx.clone(), Self::wake(ctx));
+        }
+    }
+
+    // ---- live production ---------------------------------------------------------------------
+
+    /// The running live-site job of program `p`, if any.
+    fn production_job(&self, p: usize) -> Option<usize> {
+        (0..self.jobs.len()).rev().find(|&id| self.kind[id] == Kind::Production(p) && self.jobs[id].status == Status::Running)
+    }
+
+    /// The last live-site job of program `p`, running or not.
+    fn last_production_job(&self, p: usize) -> Option<usize> {
+        (0..self.jobs.len()).rev().find(|&id| self.kind[id] == Kind::Production(p))
+    }
+
+    /// Folders whose paths a public page must never show: the user's own and the portfolio's.
+    fn local_paths(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = ["USERPROFILE", "LOCALAPPDATA"].iter().filter_map(|k| std::env::var_os(k)).map(PathBuf::from).collect();
+        v.extend(self.root.clone());
+        v
+    }
+
+    /// Start program `p`'s live site, then check it once its address answers.
+    fn start_production(&mut self, ctx: &egui::Context, p: usize) {
+        let Some(root) = self.root.clone() else { return };
+        if self.production_job(p).is_some() {
+            return;
+        }
+        let prog = self.programs[p].clone();
+        let Some(cmd) = registry::Cmd::new(registry::split_args(&prog.production), root.join(&prog.dir)) else { return };
+        let addr = production::host_port(&prog.production_url);
+        if let Some(a) = addr.as_deref().filter(|a| production::answers(a, Duration::from_millis(300))) {
+            self.prod.note = Some((false, format!("Something already answers on {a}. Stop it first, so the checks reach the server started here.")));
+            return;
+        }
+        self.prod.note = None;
+        let header = format!("> {} {}", cmd.program, cmd.args.join(" "));
+        let id = self.add_job(format!("{} · live-production", prog.name), header, Kind::Production(p), None);
+        let alive = Arc::new(AtomicBool::new(true));
+        self.procs[id].alive = Some(alive.clone());
+        jobs::spawn(id, cmd, self.tx.clone(), Self::wake(ctx));
+        if let Some(a) = addr {
+            let wait = Duration::from_secs_f32(self.cfg.number("production", "start_wait_s", 120.0).max(1.0));
+            self.check_production(ctx, p, Some((a, wait, alive)));
+        }
+    }
+
+    /// Check program `p`'s site on a thread; with `wait`, first wait for its address to answer.
+    fn check_production(&mut self, ctx: &egui::Context, p: usize, wait: Option<(String, Duration, Arc<AtomicBool>)>) {
+        let url = self.programs[p].production_url.trim().to_string();
+        if url.is_empty() || self.prod.checking {
+            return;
+        }
+        let checks = match production::parse_checks(&self.programs[p].production_checks) {
+            Ok(c) => c,
+            Err(e) => {
+                self.prod.note = Some((false, format!("production_checks: {e}")));
+                return;
+            }
+        };
+        let leaks = production::leak_patterns(&self.local_paths());
+        let timeout = Duration::from_secs_f32(self.cfg.number("production", "timeout_s", 10.0).max(1.0));
+        let (tx, wake) = (self.prod.tx.clone(), Self::wake(ctx));
+        self.prod.checking = true;
+        self.prod.waiting = wait.as_ref().map(|(a, _, _)| a.clone());
+        std::thread::spawn(move || {
+            let outcomes = match wait {
+                Some((addr, limit, alive)) if !production::wait_for(&addr, limit, &alive) => {
+                    let detail = if alive.load(Ordering::Relaxed) {
+                        format!("not answering after {} s", limit.as_secs())
+                    } else {
+                        "ended before it answered; see its log".to_string()
+                    };
+                    vec![production::Outcome { label: format!("Server on {addr}"), ok: false, detail, ms: None }]
+                }
+                _ => production::run(&url, &checks, &leaks, timeout),
+            };
+            let _ = tx.send((url, outcomes));
+            wake();
+        });
+    }
+
+    /// Stop job `id`'s process and everything it started.
+    fn stop_job(&mut self, id: usize) {
+        let Some(pid) = self.procs[id].pid else { return };
+        self.procs[id].stopped = true;
+        if let Err(e) = jobs::stop(pid) {
+            self.procs[id].stopped = false;
+            self.jobs[id].push(format!("stop: {e}"));
         }
     }
 
@@ -473,13 +641,16 @@ impl App {
 
     fn write_self_smoke(&mut self, ctx: &egui::Context) {
         let Some(path) = self.self_smoke.take() else { return };
+        let views: Vec<String> = View::ALL.iter().map(|(_, label, _, _)| format!("\"{label}\"")).collect();
+        let sites = self.programs.iter().filter(|p| p.has_production()).count();
         let report = format!(
-            "{{\"title\": \"{}\", \"version\": \"{VERSION}\", \"programs\": {}, \"root_found\": {}, \"controls\": {}, \"warnings\": {}}}\n",
+            "{{\"title\": \"{}\", \"version\": \"{VERSION}\", \"programs\": {}, \"root_found\": {}, \"controls\": {}, \"warnings\": {}, \"views\": [{}], \"live_sites\": {sites}}}\n",
             TITLE,
             self.programs.len(),
             self.root.is_some(),
             self.cfg.controls.len(),
-            self.cfg.warnings.len()
+            self.cfg.warnings.len(),
+            views.join(", ")
         );
         let _ = std::fs::write(path, report);
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -641,6 +812,7 @@ impl App {
                 Status::Exited(0) => ui.colored_label(GREEN, "finished"),
                 Status::Exited(c) => ui.colored_label(RED, format!("exited with code {c}")),
                 Status::Failed(e) => ui.colored_label(RED, e.to_string()),
+                Status::Stopped => ui.weak("stopped"),
             };
             if ui.small_button("Copy").on_hover_text("Copy this job's whole output to the clipboard.").clicked() {
                 ui.ctx().copy_text(job.lines.join("\n"));
@@ -848,6 +1020,146 @@ impl App {
             }
         });
     }
+
+    fn production_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let sites: Vec<usize> = (0..self.programs.len()).filter(|&i| self.programs[i].has_production()).collect();
+        ui.heading("live-production")
+            .on_hover_text("Programs with a production command or URL in programs.ini: their live site, started from here, and what it answers.");
+        let Some(&first) = sites.first() else {
+            ui.weak("No program has a live site yet: give one production, production_url and production_checks (Versions & commands).");
+            return;
+        };
+        let p = self.prod.pick.filter(|p| sites.contains(p)).unwrap_or(first);
+        self.prod.pick = Some(p);
+        if sites.len() > 1 {
+            ui.horizontal(|ui| {
+                for &i in &sites {
+                    if ui.selectable_label(i == p, &self.programs[i].name).clicked() {
+                        self.prod.pick = Some(i);
+                    }
+                }
+            });
+        }
+        let prog = self.programs[p].clone();
+        let running = self.production_job(p);
+        egui::Grid::new("site").num_columns(2).show(ui, |ui| {
+            ui.label("Program");
+            ui.strong(&prog.name);
+            ui.end_row();
+            ui.label("Command").on_hover_text("production in programs.ini; it runs in the program's folder.");
+            ui.monospace(if prog.production.is_empty() { "(none: checks only)" } else { prog.production.as_str() });
+            ui.end_row();
+            ui.label("Address").on_hover_text("production_url in programs.ini: where the checks go.");
+            ui.monospace(if prog.production_url.is_empty() { "(no production_url)" } else { prog.production_url.as_str() });
+            ui.end_row();
+            ui.label("Server");
+            match (running, &self.prod.waiting) {
+                (Some(_), Some(addr)) => {
+                    ui.colored_label(Color32::LIGHT_BLUE, format!("starting: waiting for {addr} to answer"));
+                }
+                (Some(id), None) => {
+                    let up = self.procs[id].started.map(|t| ago(t.elapsed())).unwrap_or_default();
+                    let pid = self.procs[id].pid.map(|n| format!(" (PID {n})")).unwrap_or_default();
+                    ui.colored_label(GREEN, format!("running for {up}{pid}"));
+                }
+                (None, _) => match self.last_production_job(p) {
+                    Some(id) => {
+                        ui.weak(status_text(&self.jobs[id].status));
+                    }
+                    None => {
+                        ui.weak("not started from the console");
+                    }
+                },
+            }
+            ui.end_row();
+        });
+        ui.horizontal_wrapped(|ui| {
+            let can_start = running.is_none() && !prog.production.trim().is_empty() && self.root.is_some();
+            if ui
+                .add_enabled(can_start, egui::Button::new("Start"))
+                .on_hover_text(format!("Run {} in {}, then check the site once it answers.", prog.production, prog.dir))
+                .on_disabled_hover_text(if running.is_some() { "It is running already." } else { "This program has no production command." })
+                .clicked()
+            {
+                self.start_production(ctx, p);
+            }
+            let can_stop = running.is_some_and(|id| self.procs[id].pid.is_some());
+            if ui.add_enabled(can_stop, egui::Button::new("Stop")).on_hover_text("End the live site and every process it started.").clicked() {
+                if let Some(id) = running {
+                    self.stop_job(id);
+                }
+            }
+            let has_url = !prog.production_url.trim().is_empty();
+            if ui.add_enabled(has_url, egui::Button::new("Open in browser")).on_hover_text(format!("Open {} in your browser.", prog.production_url)).clicked() {
+                ctx.open_url(egui::OpenUrl::new_tab(prog.production_url.trim()));
+            }
+            if ui
+                .add_enabled(has_url && !self.prod.checking, egui::Button::new("Check now"))
+                .on_hover_text("Send production_checks to the address now, whether or not the console started the server.")
+                .clicked()
+            {
+                self.check_production(ctx, p, None);
+            }
+            let every = self.cfg.number("production", "interval_s", 30.0).max(5.0);
+            ui.checkbox(&mut self.prod.keep_checking, format!("Keep checking every {every:.0} s"))
+                .on_hover_text("Run the checks again on a timer while this is ticked (interval_s in settings.ini).");
+        });
+        if let Some((ok, text)) = &self.prod.note {
+            ui.colored_label(if *ok { GREEN } else { RED }, text);
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.strong("Checks").on_hover_text(format!(
+                "Each production_checks entry, then the {} security headers on every 200 answer, and that no answer shows your user folder or the portfolio folder.",
+                production::HEADERS.len()
+            ));
+            if self.prod.checking {
+                ui.spinner();
+            }
+        });
+        match &self.prod.checked {
+            None => {
+                ui.weak(if self.prod.checking { "Checking…" } else { "Not checked yet: Start the site, or Check now." });
+            }
+            Some((when, url)) => {
+                let passed = self.prod.outcomes.iter().filter(|o| o.ok).count();
+                let n = self.prod.outcomes.len();
+                ui.colored_label(if passed == n { GREEN } else { RED }, format!("{passed} of {n} passed, {} ago, at {url}", ago(when.elapsed())));
+                egui::Grid::new("checks").num_columns(4).striped(true).show(ui, |ui| {
+                    for o in &self.prod.outcomes {
+                        ui.colored_label(if o.ok { GREEN } else { RED }, if o.ok { "✔" } else { "✖" });
+                        ui.monospace(&o.label);
+                        ui.label(&o.detail);
+                        ui.weak(o.ms.map(|m| format!("{m} ms")).unwrap_or_default());
+                        ui.end_row();
+                    }
+                });
+            }
+        }
+    }
+}
+
+impl Drop for App {
+    /// Closing the console must not leave a live site running with no console to stop it.
+    fn drop(&mut self) {
+        for id in 0..self.jobs.len() {
+            if matches!(self.kind[id], Kind::Production(_)) && self.jobs[id].status == Status::Running {
+                if let Some(pid) = self.procs[id].pid {
+                    let _ = jobs::stop(pid);
+                }
+            }
+        }
+    }
+}
+
+/// 75 s -> "1 m 15 s".
+fn ago(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=59 => format!("{s} s"),
+        60..=3599 => format!("{} m {} s", s / 60, s % 60),
+        _ => format!("{} h {} m", s / 3600, s % 3600 / 60),
+    }
 }
 
 fn status_text(s: &Status) -> String {
@@ -856,6 +1168,7 @@ fn status_text(s: &Status) -> String {
         Status::Exited(0) => "passed / finished".into(),
         Status::Exited(c) => format!("failed (exit code {c})"),
         Status::Failed(e) => format!("could not start: {e}"),
+        Status::Stopped => "stopped from the console".into(),
     }
 }
 
@@ -886,6 +1199,7 @@ fn badge(s: &Option<Status>) -> (&'static str, Color32) {
         None => ("·", Color32::GRAY),
         Some(Status::Running) => ("…", Color32::LIGHT_BLUE),
         Some(Status::Exited(0)) => ("✔", GREEN),
+        Some(Status::Stopped) => ("■", Color32::GRAY),
         Some(_) => ("✖", RED),
     }
 }
@@ -898,6 +1212,10 @@ impl eframe::App for App {
         }
         self.drain(ctx);
         self.keys(ctx);
+        let site_up = self.kind.iter().zip(&self.jobs).any(|(k, j)| matches!(k, Kind::Production(_)) && j.status == Status::Running);
+        if site_up || self.prod.keep_checking {
+            ctx.request_repaint_after(Duration::from_secs(1)); // uptime and the check timer
+        }
 
         egui::Panel::left("projects").resizable(false).min_size(260.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.sidebar(ui, ctx));
@@ -912,8 +1230,10 @@ impl eframe::App for App {
                 self.run_bar(ui, ctx);
             } else if self.view == View::Versions {
                 ui.weak(format!("Editing {}. Pick another program on the left.", self.programs[self.selected].name));
-            } else {
+            } else if self.view == View::Seed {
                 ui.weak("Seed data for the shared database (CRUD Hub).");
+            } else {
+                ui.weak("The live site: started from its production command, opened, and checked.");
             }
             ui.add_space(4.0);
         });
@@ -933,6 +1253,10 @@ impl eframe::App for App {
                 }
                 View::Seed => {
                     egui::ScrollArea::vertical().id_salt("seed").max_height(ui.available_height() * 0.6).show(ui, |ui| self.seed_view(ui, ctx));
+                    ui.separator();
+                }
+                View::Production => {
+                    egui::ScrollArea::vertical().id_salt("production").max_height(ui.available_height() * 0.6).show(ui, |ui| self.production_view(ui, ctx));
                     ui.separator();
                 }
                 _ => {}
@@ -1089,6 +1413,50 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn live_production_is_a_view_with_keys() {
+        let (_, label, key, _) = View::ALL.iter().find(|(v, ..)| *v == View::Production).unwrap();
+        assert_eq!((*label, *key), ("live-production", "view_production"));
+        let cfg = config::load(&[], None);
+        assert_eq!(cfg.controls.get("view_production").map(sc_text).as_deref(), Some("Ctrl+4"));
+        assert_eq!((ago(Duration::from_secs(9)), ago(Duration::from_secs(75)), ago(Duration::from_secs(3720))), ("9 s".into(), "1 m 15 s".into(), "1 h 2 m".into()));
+    }
+
+    /// The view's own Start, checks and Stop, on the Journal at a free port. Needs Go; slow.
+    #[test]
+    #[ignore]
+    fn app_starts_checks_and_stops_the_live_site() {
+        let root = registry::find_root(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let mut app = App::new(config::load(&[root.join("dev_console").join("config")], None), Some(root), None);
+        let p = app.programs.iter().position(|p| p.name == "Journal").unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let old = production::host_port(&app.programs[p].production_url).unwrap();
+        app.programs[p].production = app.programs[p].production.replace(&old, &addr);
+        app.programs[p].production_url = format!("http://{addr}");
+        let ctx = egui::Context::default();
+        app.start_production(&ctx, p);
+        let id = app.production_job(p).expect("Start made no job");
+        let started = Instant::now();
+        while app.prod.checked.is_none() {
+            assert!(started.elapsed() < Duration::from_secs(180), "no check results");
+            std::thread::sleep(Duration::from_millis(200));
+            app.drain(&ctx);
+        }
+        let failed: Vec<_> = app.prod.outcomes.iter().filter(|o| !o.ok).collect();
+        assert!(failed.is_empty() && app.prod.outcomes.len() >= 7, "{:#?}", app.prod.outcomes);
+        assert!(app.procs[id].pid.is_some());
+        app.stop_job(id);
+        let stopping = Instant::now();
+        while app.jobs[id].status == Status::Running {
+            assert!(stopping.elapsed() < Duration::from_secs(20), "still running after Stop");
+            std::thread::sleep(Duration::from_millis(100));
+            app.drain(&ctx);
+        }
+        assert_eq!(app.jobs[id].status, Status::Stopped);
+        assert!(!production::answers(&addr, Duration::from_millis(500)), "{addr} still answers after Stop");
+    }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=6c0d8fce49119333dac1d9c92b48836b1521dd90acf3afacd7558708306e8a60 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=72b5ebef464441c8314a28503beb4d2f778d75290b4d4c134f37e363422fab24 ====

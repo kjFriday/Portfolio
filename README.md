@@ -33,6 +33,8 @@ them is the **path to the shared SQLite file**.
 
 **Dev Console** (`dev_console`, Rust/egui) is a tool for working on the portfolio rather than part of the company: one window that builds, tests, runs and smoke-checks all seven programs, with live re-testing on save and rebindable controls. See [dev_console/README.md](dev_console/README.md).
 
+**Storage Manager** (`drive_and_network_storage_manager`, Python/tkinter) is a stand-alone utility that doesn't use the database. It organizes and cleans folders on local drives (scan, duplicates, sort by type or date, with preview and undo) and handles network shares (check, map, back up to a share). It is one standard-library file, written so it ports easily to other languages. Run it with `python storage_manager.py`. See [its README](drive_and_network_storage_manager/README.md).
+
 ## Desktop apps
 
 Every program uses the same conventions:
@@ -135,6 +137,7 @@ python export_mock.py
 | `document_mover_and_changer` | `python -m unittest discover -s tests` |
 | `content_management_system`, `notification_and_message_hub`, `install_wizard_maker` | `go test ./...` |
 | `simple_ticket_tracker`, `data_dash` | `cargo test`, then `cargo test --features desktop` |
+| `drive_and_network_storage_manager` | `python storage_manager.py --selftest` |
 | the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
 | the portfolio folder (stamps) | `python -m unittest test_stamp` |
 

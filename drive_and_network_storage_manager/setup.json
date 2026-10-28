@@ -1,0 +1,21 @@
+{
+  "id": "GenericCompany.Storage",
+  "name": "Generic Company Storage Manager",
+  "version": "0.1.0",
+  "publisher": "Generic Company Inc. (fictional)",
+  "group": "Generic Company Inc",
+  "icon": "icon/app.ico",
+  "license": "LICENSE",
+  "files": [
+    {"from": "storage_manager.py"},
+    {"from": "icon", "to": "icon"},
+    {"from": "README.md"}
+  ],
+  "exclude": ["__pycache__", "*.pyc"],
+  "run": {"program": "{python}", "args": ["{app}\\storage_manager.py"], "appUserModelId": "GenericCompany.Storage"},
+  "requires": {"python": "3.10"},
+  "askFolder": true,
+  "shortcuts": {"ask": true, "startMenu": true, "desktop": false},
+  "purge": ["{localappdata}\\Generic Company Inc\\GenericCompany.Storage"],
+  "output": "dist/{name}-{version}-setup.exe"
+}

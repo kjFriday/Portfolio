@@ -16,7 +16,7 @@
 
 """Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
 
-    python tools/pixel_icons.py            # write icon/ into all eight projects
+    python tools/pixel_icons.py            # write icon/ into all nine projects
     python tools/pixel_icons.py data_dash  # just one
 
 Every size is the original enlarged by whole pixels (nearest-neighbour), so the icons stay pixelated.
@@ -48,6 +48,7 @@ PROJECTS = {
     "data_dash": ("chart_bar.png", "GenericCompany.Dash", "Generic Company Data Dash", ("rgba", "favicon")),
     "install_wizard_maker": ("wand.png", "GenericCompany.Wizard", "Generic Company Wizard Maker", ("controls",)),
     "dev_console": ("application_xp_terminal.png", "GenericCompany.DevConsole", "Generic Company Dev Console", ("rgba",)),
+    "drive_and_network_storage_manager": ("drive_network.png", "GenericCompany.Storage", "Generic Company Storage Manager", ()),
 }
 
 CREDIT = ("Icon: Silk by Mark James (famfamfam.com/lab/icons/silk), CC BY 2.5 "
@@ -415,4 +416,4 @@ def main(argv):
 if __name__ == "__main__":
     main(sys.argv[1:])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ef2a2bf696c38b3b37499779399a5a7681371e0cf5d725f8b2da059b6a07218a ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ce1fba4c65a61d871b0d66bf998f647bd730a54887b584c85a6f4bea12e06dcb ====

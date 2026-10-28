@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# Created by the program inside folders it works on
+_storage_manager_trash/
+_storage_manager_undo.json
+storage_manager_test_*/

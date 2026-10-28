@@ -150,6 +150,12 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - One `os.scandir` pass finds sizes, dates and empty folders (no per-file `stat`, no second walk); duplicates reuse it and are narrowed by size, then both ends of large files, then SHA-256, read on 8 threads; a backup lists source and share once and compares in memory. On 40,000 files: scan 9.6 s to 0.3 s, duplicates 38.0 s to 4.2 s, backup planning 13.5 s to 0.6 s.
 - New window: one Analyze button and a sidebar (Overview, Largest, Old, Duplicates, Empty, Unreadable, Organize, Network shares, Activity) with counts; actions work on the selection or on everything; lists sort, cap at 2,000 rows and update after a change without a new scan; choose which duplicate to keep; show in folder; recent folders and drives in the folder box; Delete, Ctrl+Z, F5.
 - `--folder PATH [--view KEY]`; `--selftest` now 49 checks, all pass; an in-process window test pressed every action and checked the disk.
+
+**qr_code_studio** (new, Python/tkinter)
+- Generic Company QR Studio: reads QR codes from pictures and makes new ones. One file, standard library only; the codec is written from scratch (Reed-Solomon, encoder for versions 1-40 and levels L/M/Q/H, finder and alignment search, perspective sampling).
+- Read tab (open or paste a picture), Make tab (live preview, save PNG or SVG, copy the picture) and a local History tab. Links open only after confirmation.
+- `--read`, `--make`, `--version`, `--smoke FILE` and `--selftest`; `test_qr_studio.py` (24 tests, all pass) covers the ISO/IEC 18004 annex example, every version and mask, and turned, mirrored, scaled, noisy, tilted and unevenly lit pictures. Added to the Dev Console's `programs.ini`.
+- Icon: a self-drawn 16×16 QR glyph, enlarged with `tools/pixel_icons.py`.
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

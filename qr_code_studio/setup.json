@@ -1,0 +1,21 @@
+{
+  "id": "GenericCompany.QRStudio",
+  "name": "Generic Company QR Studio",
+  "version": "0.1.0",
+  "publisher": "Generic Company Inc. (fictional)",
+  "group": "Generic Company Inc",
+  "icon": "icon/app.ico",
+  "license": "LICENSE",
+  "files": [
+    {"from": "qr_studio.py"},
+    {"from": "icon", "to": "icon"},
+    {"from": "README.md"}
+  ],
+  "exclude": ["__pycache__", "*.pyc"],
+  "run": {"program": "{python}", "args": ["{app}\\qr_studio.py"], "appUserModelId": "GenericCompany.QRStudio"},
+  "requires": {"python": "3.10"},
+  "askFolder": true,
+  "shortcuts": {"ask": true, "startMenu": true, "desktop": false},
+  "purge": ["{localappdata}\\Generic Company Inc\\GenericCompany.QRStudio"],
+  "output": "dist/{name}-{version}-setup.exe"
+}

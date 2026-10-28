@@ -35,6 +35,8 @@ them is the **path to the shared SQLite file**.
 
 **Storage Manager** (`drive_and_network_storage_manager`, Python/tkinter) is a stand-alone utility that doesn't use the database. It organizes and cleans folders on local drives (scan, duplicates, sort by type or date, with preview and undo) and handles network shares (check, map, back up to a share). It is one standard-library file, written so it ports easily to other languages. Run it with `python storage_manager.py`. See [its README](drive_and_network_storage_manager/README.md).
 
+**QR Studio** (`qr_code_studio`, Python/tkinter) is a stand-alone utility that reads QR codes from pictures (open or paste; turned, tilted, noisy or mirrored pictures are fine) and makes new ones (PNG, SVG or clipboard). The QR codec is written from scratch in one standard-library file. Run it with `python qr_studio.py`. See [its README](qr_code_studio/README.md).
+
 ## Desktop apps
 
 Every program uses the same conventions:
@@ -138,6 +140,7 @@ python export_mock.py
 | `content_management_system`, `notification_and_message_hub`, `install_wizard_maker` | `go test ./...` |
 | `simple_ticket_tracker`, `data_dash` | `cargo test`, then `cargo test --features desktop` |
 | `drive_and_network_storage_manager` | `python storage_manager.py --selftest` |
+| `qr_code_studio` | `python -m unittest test_qr_studio` |
 | the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
 | the portfolio folder (stamps) | `python -m unittest test_stamp` |
 

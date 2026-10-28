@@ -1,0 +1,13 @@
+[package]
+name = "dev_console"
+version = "0.1.0"
+license = "AGPL-3.0-only"
+description = "Generic Company Inc. Dev Console: one egui window that builds, tests, runs and smoke-checks every portfolio program."
+edition = "2024"
+
+[[bin]]
+name = "generic-company-console"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.37.0"

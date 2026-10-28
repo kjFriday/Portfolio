@@ -1,0 +1,68 @@
+# Generic Company Dev Console
+
+One window for working on the whole Generic Company Inc. portfolio: build, test, run, version-check and
+smoke-check each of the seven programs, watch their output, and re-run tests as you save.
+
+The console runs each program's own commands as separate processes, so the programs still share no code
+at run time.
+
+## Run
+
+```
+cargo run --release
+```
+
+Start it from anywhere inside the portfolio folder; it finds the portfolio by looking upward for
+`RULES.md`.
+
+## What it does
+
+- **Programs** (left): the seven programs with their language and the result of their last test run.
+  **Test all** runs every suite at once.
+- **Actions** for the selected program: Build (Go and Rust only), Test, Run, Version (`--version`) and
+  Smoke (`--smoke FILE`; the report is added to the log).
+- **Live tests**: tick it, and the program's tests run again whenever a file in its folder is saved.
+- **Jobs and log**: a tab per job with its status; output appears as it is printed (last 5,000 lines).
+
+## Config fileset
+
+`config/` holds the defaults:
+
+| File | Sections | What |
+|---|---|---|
+| `controls.ini` | `[controls]` | every keyboard control; `action = Ctrl+Shift+Key`, empty turns it off |
+| `settings.ini` | `[view]`, `[live]` | text size and its limits, live-mode interval and skipped folders |
+
+Layers, lowest first: built-in defaults, `config/` in this project, `config/` beside the installed exe,
+then the user's own copies in `%LOCALAPPDATA%\Generic Company Inc\GenericCompany.DevConsole\`. A layer
+only needs the keys it changes. The console saves the text size to the user's `settings.ini`.
+
+Default controls:
+
+| Control | Keys |
+|---|---|
+| Text larger / smaller / reset | Ctrl+Plus (or Ctrl+=) / Ctrl+Minus / Ctrl+0 |
+| Build, Test, Run, Version, Smoke | F4, F5, F6, F7, F8 |
+| Test all | Ctrl+Shift+T |
+| Live tests on/off | Ctrl+L |
+| Next / previous program | Ctrl+Down / Ctrl+Up |
+
+## Install
+
+`--install` copies the program and its `config/` folder to
+`%LOCALAPPDATA%\Programs\Generic Company Inc\Generic Company Dev Console\`, adds a Start menu shortcut
+under **Generic Company Inc** and lists it in **Apps & features**. `--uninstall` removes all of that and
+keeps your settings. `--root DIR` does both inside DIR; `--quiet` shows no message box.
+
+## Dependency
+
+`eframe` (egui) draws the native window. The other Rust programs use a WebView page, but a dev tool that
+mostly shows buttons and scrolling text is simpler as an immediate-mode native UI, with no HTML or
+JavaScript to keep in step. Everything else (config parsing, file watching, process handling, install)
+uses the standard library.
+
+## Tests
+
+```
+cargo test
+```

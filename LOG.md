@@ -124,7 +124,19 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Checked: hub 63 tests pass; `--smoke` against a temporary database opens the window; `stamp.py
   --check` is clean after re-stamping `main.py`.
 
+## 2026-10-28
+
+**Rename**
+- ACME is now Generic Company everywhere: display names, app ids (`GenericCompany.*`), the `GENERIC_COMPANY_DB` variable, binaries (`generic-company-*.exe`), Go module paths and the shared `generic_company.db`. The wizard payload magic is now `GENCOWZ1`, so installers built before the rename need rebuilding.
+
+**dev_console** (new, Rust/egui)
+- One native window that builds, tests, runs, version-checks and smoke-checks all seven programs, with output streamed into a tab per job and a pass/fail mark per program.
+- Live tests: re-runs a program's tests when a file in its folder is saved.
+- Config fileset in `dev_console/config/`: `settings.ini` (text size, live interval, skipped folders) and `controls.ini` (every keyboard control, rebindable). The user's own copies under the app's settings folder override single keys.
+- Text size with Ctrl+Plus / Ctrl+Minus / Ctrl+0, saved between runs.
+- `--install`, `--uninstall`, `--root`, `--quiet`, `--version`, `--smoke FILE`, like the other programs.
 ## Open
+- dev_console: its own Silk icon (needs one more icon from the set).
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.
 - notification_and_message_hub: real channels behind the outbox; retry for held messages.

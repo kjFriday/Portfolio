@@ -31,6 +31,8 @@ them is the **path to the shared SQLite file**.
 | Generic Company Ticket Tracker | `simple_ticket_tracker` | note | tickets, customers, employees | tickets |
 | Generic Company Data Dash | `data_dash` | chart_bar | orders, products, customers, tickets | nothing |
 
+**Dev Console** (`dev_console`, Rust/egui) is a tool for working on the portfolio rather than part of the company: one window that builds, tests, runs and smoke-checks all seven programs, with live re-testing on save and rebindable controls. See [dev_console/README.md](dev_console/README.md).
+
 ## Desktop apps
 
 Every program uses the same conventions:

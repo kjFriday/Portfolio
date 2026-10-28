@@ -156,6 +156,16 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Read tab (open or paste a picture), Make tab (live preview, save PNG or SVG, copy the picture) and a local History tab. Links open only after confirmation.
 - `--read`, `--make`, `--version`, `--smoke FILE` and `--selftest`; `test_qr_studio.py` (24 tests, all pass) covers the ISO/IEC 18004 annex example, every version and mask, and turned, mirrored, scaled, noisy, tilted and unevenly lit pictures. Added to the Dev Console's `programs.ini`.
 - Icon: a self-drawn 16×16 QR glyph, enlarged with `tools/pixel_icons.py`.
+
+**Ticket tracker and Data Dash: every page request answered 400**
+- The rename made the window's protocol `generic_company://`. A URI scheme cannot hold `_`, so wry could not rebuild each request's URI and answered 400 before the program saw it: the page, the wasm and every `/api` call. The protocol is now `generic-company://` (`host::SCHEME`), with a test that the URI parses.
+- Checked: `cargo test`, with and without `desktop`, in both; `wasm-pack` and release builds; `--smoke` as the Dev Console runs it: Data Dash 15,000 orders and 2,000 tickets from the shared database, the tracker 2,000 tickets.
+
+**content_management_system: `-public`, to host the Journal as a website**
+- `-public -addr :8080` serves the pages and API read-only: no database form (`POST /about` gets 405), no local paths in the footer, About page or log, no `/api/health`. `-serve` and `-public` send CSP, `X-Frame-Options`, `nosniff` and `Referrer-Policy`, use read/write/idle timeouts and stop cleanly on Ctrl+C or SIGTERM.
+- Builds for Linux too (`internal/desktop/window_other.go`, `internal/install/hide_*.go`): there only `-serve` and `-public` work.
+- Checked: `go vet` and `go test` (new `TestPublic`), `GOOS=linux` vet and build, and the `cms-public` preview in a browser.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

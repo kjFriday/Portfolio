@@ -57,7 +57,7 @@ Every program uses the same conventions:
 - **Windows:** the Python programs use tkinter. The Go and Rust programs use Edge WebView2 (part of
   Windows 10/11), and their pages are served in-process to that window only:
   - Go uses a loopback server with a per-run token.
-  - Rust uses a custom `generic_company://` protocol.
+  - Rust uses a custom `generic-company://` protocol.
 
 | Program | Run | Install |
 |---|---|---|

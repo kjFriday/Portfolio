@@ -14,6 +14,12 @@
       "port": 8720
     },
     {
+      "name": "cms-public",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["-C", "content_management_system", "run", ".", "-public", "-addr", "127.0.0.1:8721"],
+      "port": 8721
+    },
+    {
       "name": "notify",
       "runtimeExecutable": "go",
       "runtimeArgs": ["-C", "notification_and_message_hub", "run", "./cmd/notify", "-serve"],

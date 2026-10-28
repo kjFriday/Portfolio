@@ -17,8 +17,10 @@ use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 pub const APP_ID: &str = "GenericCompany.DevConsole";
 pub const SETTINGS: &str = "settings.ini";
 pub const CONTROLS: &str = "controls.ini";
+pub const PROGRAMS: &str = "programs.ini";
 const DEFAULT_SETTINGS: &str = include_str!("../config/settings.ini");
 const DEFAULT_CONTROLS: &str = include_str!("../config/controls.ini");
+const DEFAULT_PROGRAMS: &str = include_str!("../config/programs.ini");
 
 /// section -> key -> value
 pub type Ini = BTreeMap<String, BTreeMap<String, String>>;
@@ -97,6 +99,10 @@ pub struct Config {
     /// Problems found while reading, shown in the window.
     pub warnings: Vec<String>,
     pub user_dir: Option<PathBuf>,
+    /// programs.ini from the highest layer that has one (the whole file, not merged key by key).
+    pub programs: Ini,
+    /// Where the programs editor saves: the file `programs` came from, or the first layer.
+    pub programs_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -135,7 +141,13 @@ pub fn user_dir(local_app_data: Option<&Path>) -> Option<PathBuf> {
 pub fn load(dirs: &[PathBuf], user: Option<PathBuf>) -> Config {
     let mut settings = parse(DEFAULT_SETTINGS);
     let mut controls_ini = parse(DEFAULT_CONTROLS);
+    let mut programs = parse(DEFAULT_PROGRAMS);
+    let mut programs_file = dirs.first().map(|d| d.join(PROGRAMS));
     for d in dirs.iter().chain(user.iter()) {
+        if let Ok(t) = std::fs::read_to_string(d.join(PROGRAMS)) {
+            programs = parse(&t);
+            programs_file = Some(d.join(PROGRAMS));
+        }
         if let Ok(t) = std::fs::read_to_string(d.join(SETTINGS)) {
             merge(&mut settings, parse(&t));
         }
@@ -154,7 +166,7 @@ pub fn load(dirs: &[PathBuf], user: Option<PathBuf>) -> Config {
             Err(e) => warnings.push(format!("controls.ini {action}: {e}")),
         }
     }
-    Config { settings, controls, warnings, user_dir: user }
+    Config { settings, controls, warnings, user_dir: user, programs, programs_file }
 }
 
 #[cfg(test)]
@@ -218,4 +230,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=ffc62712c3edaeca8107a3e5aa2e987c10203bd96f94d5c2f601bc3486446814 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=b8f667f4335846f620df616656e29e429c708e439015a7e42f02d5aa8ae58116 ====

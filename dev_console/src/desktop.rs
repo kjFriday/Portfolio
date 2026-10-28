@@ -14,59 +14,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
 use crate::jobs::{self, Event, Status};
-use crate::registry::Cmd;
+use crate::registry::{self, Cmd, Program};
 
 /// The list of shortcuts placed last time, one full path per line.
 pub const MANIFEST: &str = "desktop-shortcuts.txt";
-
-pub enum Target {
-    /// A built exe, relative to the project folder.
-    Exe(&'static str),
-    /// Started with pythonw (no console window) and these arguments.
-    Python(&'static [&'static str]),
-}
-
-pub struct Recipe {
-    pub dir: &'static str,
-    pub steps: &'static [&'static [&'static str]],
-    pub target: Target,
-}
-
-const GO_GUI: &str = "-H windowsgui";
-const RUST_STEPS: &[&[&str]] = &[
-    &["wasm-pack", "build", "--target", "web", "--out-dir", "www/pkg", "--no-typescript"],
-    &["cargo", "build", "--release", "--features", "desktop"],
-];
-
-pub const RECIPES: &[Recipe] = &[
-    Recipe {
-        dir: "create_read_update_delete_simple_io_data_base",
-        steps: &[],
-        target: Target::Python(&["main.py"]),
-    },
-    Recipe { dir: "document_mover_and_changer", steps: &[], target: Target::Python(&["-m", "docpipe"]) },
-    Recipe {
-        dir: "content_management_system",
-        steps: &[&["go", "build", "-trimpath", "-ldflags", GO_GUI, "-o", "generic-company-cms.exe", "."]],
-        target: Target::Exe("generic-company-cms.exe"),
-    },
-    Recipe {
-        dir: "notification_and_message_hub",
-        steps: &[&["go", "build", "-trimpath", "-ldflags", GO_GUI, "-o", "generic-company-notify.exe", "./cmd/notify"]],
-        target: Target::Exe("generic-company-notify.exe"),
-    },
-    Recipe {
-        dir: "simple_ticket_tracker",
-        steps: RUST_STEPS,
-        target: Target::Exe(r"target\release\generic-company-tickets.exe"),
-    },
-    Recipe { dir: "data_dash", steps: RUST_STEPS, target: Target::Exe(r"target\release\generic-company-dash.exe") },
-    Recipe {
-        dir: "install_wizard_maker",
-        steps: &[&["go", "build", "-trimpath", "-ldflags", "-H windowsgui -s -w", "-o", "wizard-maker.exe", "."]],
-        target: Target::Exe("wizard-maker.exe"),
-    },
-];
 
 /// The string value of `"key": "..."` in a small JSON file (setup.json); enough for name and version.
 pub fn json_str(text: &str, key: &str) -> Option<String> {
@@ -92,19 +43,20 @@ pub enum TargetPath {
     Pythonw(Vec<String>),
 }
 
-/// Name and version from the project's setup.json, and where its shortcut points.
-pub fn shortcut(root: &Path, r: &Recipe) -> Result<Shortcut, String> {
-    let folder = root.join(r.dir);
-    let setup = std::fs::read_to_string(folder.join("setup.json")).map_err(|e| format!("{}: setup.json: {e}", r.dir))?;
-    let name = json_str(&setup, "name").ok_or_else(|| format!("{}: setup.json has no name", r.dir))?;
-    let version = json_str(&setup, "version").ok_or_else(|| format!("{}: setup.json has no version", r.dir))?;
-    let target = match &r.target {
-        Target::Exe(rel) => TargetPath::File(folder.join(rel)),
-        Target::Python(args) => TargetPath::Pythonw(args.iter().map(|s| s.to_string()).collect()),
+/// Name and version from the project's setup.json, and where its shortcut points (`desktop_run`).
+pub fn shortcut(root: &Path, p: &Program) -> Result<Shortcut, String> {
+    let folder = root.join(&p.dir);
+    let setup = std::fs::read_to_string(folder.join("setup.json")).map_err(|e| format!("{}: setup.json: {e}", p.dir))?;
+    let name = json_str(&setup, "name").ok_or_else(|| format!("{}: setup.json has no name", p.dir))?;
+    let version = json_str(&setup, "version").ok_or_else(|| format!("{}: setup.json has no version", p.dir))?;
+    let words = registry::split_args(&p.desktop_run);
+    let target = match words.split_first() {
+        None => return Err(format!("{}: desktop_run is empty", p.name)),
+        Some((first, rest)) if first.eq_ignore_ascii_case("pythonw") => TargetPath::Pythonw(rest.to_vec()),
+        Some(_) => TargetPath::File(folder.join(p.desktop_run.trim().trim_matches('"'))),
     };
     Ok(Shortcut { label: format!("{name} {version}"), icon: folder.join("icon").join("app.ico"), folder, target })
 }
-
 fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
@@ -135,7 +87,8 @@ pub fn script(set: &[Shortcut], old: &[PathBuf], desktop: Option<&Path>) -> Stri
         )
     };
     for sc in set {
-        let icon = format!("$k.IconLocation={};", q(&format!("{},0", sc.icon.display())));
+        // A program without icon/app.ico keeps the default icon of its target.
+        let icon = if sc.icon.is_file() { format!("$k.IconLocation={};", q(&format!("{},0", sc.icon.display()))) } else { String::new() };
         let (target, args) = match &sc.target {
             TargetPath::File(p) => (qp(p), String::new()),
             TargetPath::Pythonw(a) => ("(Get-Command 'pythonw').Source".to_string(), a.join(" ")),
@@ -180,6 +133,7 @@ fn powershell(id: usize, script: &str, tx: &Sender<Event>, wake: &(impl Fn() + S
 /// Build every program, then place shortcuts for the ones that built. Runs on its own thread as job `id`.
 pub fn make(
     id: usize,
+    programs: Vec<Program>,
     root: PathBuf,
     user_dir: PathBuf,
     desktop: Option<PathBuf>,
@@ -193,7 +147,7 @@ pub fn make(
         };
         let mut set = vec![];
         let mut failed = 0;
-        for r in RECIPES {
+        for r in &programs {
             let sc = match shortcut(&root, r) {
                 Ok(sc) => sc,
                 Err(e) => {
@@ -204,12 +158,8 @@ pub fn make(
             };
             say(format!("== {} ==", sc.label));
             let mut ok = true;
-            for step in r.steps {
-                let cmd = Cmd {
-                    program: step[0].into(),
-                    args: step[1..].iter().map(|s| s.to_string()).collect(),
-                    cwd: sc.folder.clone(),
-                };
+            for step in registry::steps(&r.desktop_build) {
+                let Some(cmd) = Cmd::new(step, sc.folder.clone()) else { continue };
                 say(format!("> {} {}", cmd.program, cmd.args.join(" ")));
                 let st = jobs::run(id, &cmd, &tx, &wake);
                 if st != Status::Exited(0) {
@@ -282,14 +232,12 @@ mod tests {
     }
 
     #[test]
-    fn every_recipe_is_a_known_program_with_setup_and_icon() {
-        assert_eq!(RECIPES.len(), crate::registry::PROJECTS.len());
-        for r in RECIPES {
-            assert!(crate::registry::PROJECTS.iter().any(|p| p.dir == r.dir), "{}", r.dir);
+    fn every_program_has_setup_icon_and_target() {
+        let (programs, _) = registry::load(&crate::config::parse(include_str!("../config/programs.ini")));
+        for r in &programs {
             let sc = shortcut(&root(), r).unwrap();
             assert!(sc.label.starts_with("Generic Company "), "{}", sc.label);
             assert!(sc.label.chars().last().unwrap().is_ascii_digit(), "{}", sc.label);
-            assert!(sc.icon.is_file(), "{}", sc.icon.display());
         }
     }
 
@@ -318,4 +266,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=c4bead5448eadf7ae85593bbed577c45f9a40d35ece69dd229174f310854ed20 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=5a33af3653fc1f91762d47c522856e2223e9ba7297c27c0c11bcad89972f046b ====

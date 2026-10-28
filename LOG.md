@@ -136,7 +136,15 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Text size with Ctrl+Plus / Ctrl+Minus / Ctrl+0, saved between runs.
 - `--install`, `--uninstall`, `--root`, `--quiet`, `--version`, `--smoke FILE`, like the other programs.
 - Desktop shortcuts button: builds all seven programs from source, then places a versioned shortcut to each build (with its icon) and a shortcut to each source folder on the desktop; re-running replaces old versions, and a Remove button takes them away.
+- Three views with hover tooltips on every control: Run; Versions & commands (version across all of a program's version files, with bump buttons and a restamp; commands editable and saved to the new `config/programs.ini`); Seed data (shared database counts, backups, reseed, fresh rebuild, restore and mock export, all through the CRUD Hub's own `seed.py` / `export_mock.py`).
 - Icon: Silk `application_xp_terminal.png` (CC BY 2.5), added to `icons/silk` and `tools/pixel_icons.py`.
+
+**drive_and_network_storage_manager** (new, Python/tkinter)
+- Generic Company Storage Manager: organizes and cleans folders on local drives and handles network shares. One file, standard library only.
+- Scan (size, largest and stale files, empty folders), duplicate finder (size, then SHA-256), organize by type or year-month, and a Network tab: saved shares, reachability and free space, map / disconnect (`net use`), one-way backup of a folder to a share.
+- Every change is previewed and confirmed. Nothing is deleted: extra duplicates go to a trash folder inside the scanned folder, and each change can be undone. Passwords are never stored.
+- Written to port easily: plain functions and records, explicit loops, errors returned as records, and the core kept apart from the GUI.
+- `--version`, `--smoke FILE` and `--selftest` (29 checks, all pass). Added to the Dev Console's `programs.ini`.
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

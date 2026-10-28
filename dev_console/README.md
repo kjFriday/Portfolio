@@ -25,6 +25,13 @@ Start it from anywhere inside the portfolio folder; it finds the portfolio by lo
 - **Desktop shortcuts** (Ctrl+Shift+D): builds every program from source (Go: `go build`; Rust: `wasm-pack` then `cargo build --release --features desktop`; Python needs no build), then puts two shortcuts per program on the desktop: `<name> <version>` (from its `setup.json`, with its own icon) that starts that build, and `<name> source` that opens its folder. A program that fails to build gets no shortcut. Running it again replaces the old set, so a new version replaces the old shortcut; **Remove desktop shortcuts** takes the set away. The list of what was placed is kept in the user's config folder.
 - **Jobs and log**: a tab per job with its status; output appears as it is printed (last 5,000 lines).
 
+## Views
+
+The window has three views (Ctrl+1, Ctrl+2, Ctrl+3). Every button, field and mark has a hover tooltip that says what it does, which command it runs, and its keys.
+
+- **Run**: the actions below for the selected program, and the output of the selected job.
+- **Versions & commands**: the selected program's version as written in each of its `version_files`, flagged when they disagree. Type a version, or bump the patch, minor or major part, then **Apply version** writes it into every file and renews the stamps of the source files it changed (`stamp.py --restamp`); nothing is committed. Below it, the program's commands (launch, test, build, desktop build, desktop run) can be edited; the tooltip shows how each line is split into words. **Save commands** writes `config/programs.ini`.
+- **Seed data**: the CRUD Hub's shared database (default `GENERIC_COMPANY_DB`, then `%LOCALAPPDATA%\Generic Company Inc\generic_company.db`): its size, rows per table and dated backups. **Refresh counts** reads it; **Back up now**, **Reseed** (backup, then refill in place), **Rebuild fresh** (delete and rebuild, no backup), **Restore selected** (backup, then copy the chosen backup over it) and **Export mock snapshots** all run the hub's own `seed.py` / `export_mock.py`, so the hub stays the only program that writes the schema. Reseed, Rebuild fresh and Restore ask for a second click.
 ## Config fileset
 
 `config/` holds the defaults:
@@ -32,6 +39,7 @@ Start it from anywhere inside the portfolio folder; it finds the portfolio by lo
 | File | Sections | What |
 |---|---|---|
 | `controls.ini` | `[controls]` | every keyboard control; `action = Ctrl+Shift+Key`, empty turns it off |
+| `programs.ini` | one per program | name, folder, language, launch/test/build/desktop commands and version files; edited in the Versions & commands view. The highest layer that has this file is used whole |
 | `settings.ini` | `[view]`, `[live]` | text size and its limits, live-mode interval and skipped folders |
 
 Layers, lowest first: built-in defaults, `config/` in this project, `config/` beside the installed exe,
@@ -47,6 +55,7 @@ Default controls:
 | Test all | Ctrl+Shift+T |
 | Live tests on/off | Ctrl+L |
 | Desktop shortcuts | Ctrl+Shift+D |
+| Run / Versions & commands / Seed data view | Ctrl+1 / Ctrl+2 / Ctrl+3 |
 | Next / previous program | Ctrl+Down / Ctrl+Up |
 
 ## Install

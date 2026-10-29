@@ -33,8 +33,11 @@ import time
 
 import swatch
 
-APPLICATION_ID = 0x51525041  # "QRPA" in the SQLite header: marks a QR Palette registry
-SCHEMA_VERSION = 1
+# "QRPA" in the SQLite header marks a QR Palette registry. Keep it in every schema, including a move to the
+# ECP spec's DDL (which sets only user_version): other programs, such as Data Bridge, find the registry by it
+# and by SCHEMA_VERSION, and refuse a file without it.
+APPLICATION_ID = 0x51525041
+SCHEMA_VERSION = 1  # those programs check it too: raise it only together with them
 BUSY_SECONDS = 5.0
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
@@ -568,4 +571,4 @@ def find_rows(rows, filters, limit):
             found.append(row)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4f9b59edf385a047ff334fb46ebb01ac93198fdd3b2a1c6ce98b97bd6b91da3a ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d742232bcd284582c6674995c6384e086e28a76e20783f9b23830d63a2bf5b4a ====

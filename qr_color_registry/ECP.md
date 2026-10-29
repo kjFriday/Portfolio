@@ -622,6 +622,7 @@ program, so some parts are different, and some are absent:
 | `ECPQueryPlan` (`target_family`, `hex_code`, `link_search`, `min_votes`, `sort_by`, `limit`) compiled into three fixed SQL templates | QR Palette's QueryPlan (§7.4), applied in Python to rows read with fixed statements | The registry's questions are by link, color, path and recommendation; in both, no SQL comes from the model |
 | Seven color families | Thirteen | The palette's own names, shared with Color Voats |
 | Tables `colors`, `links`, `qr_codes`, `voats`, `STRICT` | `colors`, `links`, `qr_codes`, `votes`, not `STRICT` | The registry's existing schema (`user_version` 1) |
+| The DDL sets only `user_version` | The registry also sets `application_id` 0x51525041 ("QRPA"), checked on every open | It tells a QR Palette registry apart from any other SQLite file, and other programs find the registry by it. It stays in any future schema. |
 | Open with read-only flags and `NOFOLLOW`, no URI | A `file:` URI with `mode=ro` | The only read-only open in Python's `sqlite3`, which has no `NOFOLLOW` |
 | Also `ENABLE_ATTACH_CREATE`, `ENABLE_ATTACH_WRITE`, `ENABLE_COMMENTS`; limits `PARSER_DEPTH`, `SCHEMA`, `LIKE_PATTERN_LENGTH` 80 | Not set; `LIKE_PATTERN_LENGTH` 50 | Python's `sqlite3` does not expose them; `ATTACHED` 0 and the authorizer cover attaching, and `LIKE` is never used |
 | A 2 s budget per statement | 2 s per visit | A call reads in one short visit |
@@ -653,7 +654,9 @@ prefix `ecp_` so the two are not confused in logs.
 
 ## 19. Future work
 
-- A `STRICT` registry schema (`user_version` 2), as the spec's DDL has it.
+- A `STRICT` registry schema (`user_version` 2), as the spec's DDL has it, keeping the `application_id` marker.
+  Programs that read the registry check `user_version` too, so they have to accept the new version at the same
+  time.
 - Anchoring the audit chain outside the file, so that cutting off the end shows.
 - Writes (making and registering codes) stay out of ECP; if they come, they come behind the window's own
   confirmation, never through MCP.

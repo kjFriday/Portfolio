@@ -107,7 +107,7 @@ def run_once(data_dir):
     if not result["ok"]:
         raise SystemExit("find_duplicates failed: " + str(result["error"]))
     paths = []
-    for group in result["value"]:
+    for group in result["value"]["groups"]:
         names = []
         for info in group:
             names.append(info["path"])
@@ -179,4 +179,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5d30b76ffd3cbd3d0cc32548805a03bc40ac44d96b6c69948de879b47ba01064 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=641d1706f30895edca1b4eed66201913cbd6c7223fe0398b57f0d1fbec8a823f ====

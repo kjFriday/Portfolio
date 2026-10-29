@@ -1,0 +1,6 @@
+# New ground first: colors far from everything voated, nudged toward colors like your upvoats.
+algo = "blend"
+
+[uses]
+explore = 0.7
+similar = 0.3

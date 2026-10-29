@@ -37,6 +37,8 @@ them is the **path to the shared SQLite file**.
 
 **QR Studio** (`qr_code_studio`, Python/tkinter) is a stand-alone utility that reads QR codes from pictures (open or paste; turned, tilted, noisy or mirrored pictures are fine) and makes new ones (PNG, SVG or clipboard). The QR codec is written from scratch in one standard-library file. Run it with `python qr_studio.py`. See [its README](qr_code_studio/README.md).
 
+**Color Voats** (`color_tile_recommender`, Python/tkinter) is a stand-alone utility that ranks the 216 colors of the 6×6×6 cube by your upvoats and downvoats ("voats"). The window holds nothing but color tiles: left-click upvoats, right-click downvoats, Ctrl+Z takes the last voat back. The ranking comes from an algo aggregation factory. Each algo (net voats, Wilson score, color similarity, exploration, and a mixer that hands on down a chain of algos when one stalls) has a TOML or JSON weights file. A named preset picks the algo and what it uses, and `factory.py` generates a standalone Python ranker for each preset. Run it with `python color_voats.py`. See [its README](color_tile_recommender/README.md).
+
 ## Desktop apps
 
 Every program uses the same conventions:
@@ -70,7 +72,7 @@ Every program uses the same conventions:
 
 Requirements:
 
-- Python 3.10+ (standard library only).
+- Python 3.10+ (standard library only); Color Voats needs 3.11+ for `tomllib`.
 - Go 1.24 (no cgo needed).
 - Rust with the MSVC toolchain, the `wasm32-unknown-unknown` target and `wasm-pack`.
 
@@ -141,6 +143,7 @@ python export_mock.py
 | `simple_ticket_tracker`, `data_dash` | `cargo test`, then `cargo test --features desktop` |
 | `drive_and_network_storage_manager` | `python storage_manager.py --selftest` |
 | `qr_code_studio` | `python -m unittest test_qr_studio` |
+| `color_tile_recommender` | `python -m unittest discover -p "test_*.py"` |
 | the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
 | the portfolio folder (stamps) | `python -m unittest test_stamp` |
 

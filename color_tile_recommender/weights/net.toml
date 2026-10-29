@@ -1,0 +1,3 @@
+# Net voats: a color scores its upvoats x up minus its downvoats x down.
+up = 1.0
+down = 1.0

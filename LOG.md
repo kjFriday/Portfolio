@@ -190,6 +190,17 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Not fixed: sizes are file sizes, not space on disk (hard links, compressed and cloud-only files, the app's own trash). That is left for a separate task.
 - Checked: `--selftest` 83 checks, all pass, and 13 reintroduced bugs each make it fail. Driven in-process with Tk events (hover, zoom, Backspace, colours, move to trash then the rebuilt map) with window screenshots.
 
+## 2026-10-29
+
+**color_tile_recommender** (new: Generic Company Color Voats, Python/tkinter)
+- A board of the 216 colors of the 6×6×6 cube, best first, and nothing else: no text, menus or dialogs in the window. Left-click upvoats, right-click downvoats, Ctrl+Z takes the last voat back. Voats are kept on this computer only.
+- Algo aggregation factory: each algo has a TOML or JSON weights file (`weights/`), a preset (`presets/`) names the algo that ranks and what it uses, and `factory.py` generates a standalone ranker per preset (`rankers/ranker_<preset>.py`: the weights as constants, the functions copied unchanged from `algos.py`). The window regenerates a ranker when it is missing or no longer matches its files; `factory.py --check` reports stale ones.
+- Algos: net voats, Wilson score, color similarity (OKLab, zero beyond a reach), exploration, a weighted blend, and a mixer that ranks by a chain of algos and hands on when one stalls. What one algo leaves tied goes to the next, three downvoats in a row pass the lead on, and an algo over its step budget is skipped. Farthest-point discovery order settles the last ties, so every order is total and repeatable.
+- Presets: mixer (default), balanced, popular, discover. Needs Python 3.11+ (TOML through `tomllib`).
+- `--preset`, `--voats`, `--version`, `--smoke FILE`, `--selftest`; 43 tests in `test_algos.py`, `test_factory.py` and `test_color_voats.py`. Added to the Dev Console's `programs.ini`, together with QR Studio, which had a section but was missing from the console's list.
+- Icon: a self-drawn 16×16 glyph of nine color tiles, enlarged with `tools/pixel_icons.py`.
+- Checked: the 43 tests pass 5 runs in a row; `factory.py --check` and `--selftest` pass. `--smoke` finds one canvas of 216 rectangles with no text items and no menu; an upvoated tile moves to the top, a downvoat counts, Ctrl+Z restores the board, and the user's voat file is left alone. `stamp.py --check` is clean; the generated rankers count as generated and are not stamped.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

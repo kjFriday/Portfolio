@@ -1,0 +1,3 @@
+# Wilson score: the lower bound of a color's share of upvoats.
+# z is the confidence (1.96 is 95 %); a higher z trusts colors with few voats less.
+z = 1.96

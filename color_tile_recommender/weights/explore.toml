@@ -1,0 +1,3 @@
+# Exploration: a color scores its OKLab distance to the nearest voated color, so new ground
+# comes first. far: from this distance on, a color counts as fully unexplored.
+far = 0.5

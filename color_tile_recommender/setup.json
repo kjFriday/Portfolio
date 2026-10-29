@@ -1,0 +1,26 @@
+{
+  "id": "GenericCompany.ColorVoats",
+  "name": "Generic Company Color Voats",
+  "version": "0.1.0",
+  "publisher": "Generic Company Inc. (fictional)",
+  "group": "Generic Company Inc",
+  "icon": "icon/app.ico",
+  "license": "LICENSE",
+  "files": [
+    {"from": "color_voats.py"},
+    {"from": "factory.py"},
+    {"from": "algos.py"},
+    {"from": "weights", "to": "weights"},
+    {"from": "presets", "to": "presets"},
+    {"from": "rankers", "to": "rankers"},
+    {"from": "icon", "to": "icon"},
+    {"from": "README.md"}
+  ],
+  "exclude": ["__pycache__", "*.pyc"],
+  "run": {"program": "{python}", "args": ["{app}\\color_voats.py"], "appUserModelId": "GenericCompany.ColorVoats"},
+  "requires": {"python": "3.11"},
+  "askFolder": true,
+  "shortcuts": {"ask": true, "startMenu": true, "desktop": false},
+  "purge": ["{localappdata}\\Generic Company Inc\\GenericCompany.ColorVoats"],
+  "output": "dist/{name}-{version}-setup.exe"
+}

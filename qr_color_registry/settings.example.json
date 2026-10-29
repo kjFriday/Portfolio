@@ -31,6 +31,11 @@
     "about": "How plain-English questions become query plans: the model's rules, worked examples and color words. file: empty means planner.json beside the program.",
     "file": ""
   },
+  "links": {
+    "about": "Short links: links.json holds their two sections (local and nonlocal), the ID length, the tags added to destinations and the link templates. file: empty means links.json beside the program. use: which section new short links use, local (this computer or your own network) or nonlocal (your internet address); the Make tab switches it.",
+    "file": "",
+    "use": "local"
+  },
   "queries": {
     "about": "How many results an answer holds, how long a question may be, and how long one read of the registry may take before it is stopped.",
     "default_limit": 20,

@@ -23,6 +23,7 @@ import audit
 import ecp
 import local_inference
 import registry
+import shortlinks
 import swatch
 from test_local_inference import FakeOllama, QWEN_DIGEST
 
@@ -294,6 +295,21 @@ class EnvironmentTests(EngineCase):
         self.assertEqual(value["records"][0]["payload_url"], "https://example.com/caf\u00e9menu")
         self.assertFalse(value["truncated"])
 
+    def test_short_links_answer_with_their_destination(self):
+        code = shortlinks.new_code(7)
+        opened = registry.connect(self.db, False)
+        registry.save_qr(opened["value"], {"link": "HTTPS://GO.EXAMPLE.COM/" + code, "color": "#996600",
+                                           "path": os.path.join(self.folder, "short.png"), "format": "png",
+                                           "ec_level": "M", "version": 2, "origin": "made",
+                                           "short": {"code": code, "target": "https://example.com/opening-times"}})
+        registry.close(opened["value"])
+        value = self.answer("https://example.com/opening-times")
+        self.assertEqual(len(value["records"]), 1)
+        record = value["records"][0]
+        self.assertEqual((record["payload_url"], record["target_url"]),
+                         ("HTTPS://GO.EXAMPLE.COM/" + code, "https://example.com/opening-times"))
+        self.assertEqual(self.answer("#006633")["records"][0]["target_url"], "")
+
     def test_long_fields_are_cut(self):
         ecp.MAX_FIELD_CHARACTERS = 40
         value = self.answer("#006633")
@@ -530,4 +546,4 @@ class FramingTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=9c294bc3cf2128c5f3c7fba62e0a0de1679a18b0fe282da49296d847927c9cff ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=2cc4844d609c28236a91561b02d6241134add60c16e060d6b582180c5ca5a177 ====

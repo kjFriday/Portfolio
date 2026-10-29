@@ -9,20 +9,29 @@
 """QR Palette registry: the SQLite database of QR codes, their colors, their links and where they are.
 
 It is relational: colors and links are tables of their own, and each QR code row points at one of
-each, so one link can have codes in many colors and one color can be on many codes. The database
-belongs to this program alone (it is not the Generic Company hub's shared database). It is created
-here in one transaction, and every open checks its application id and schema version, so any other
-SQLite file is refused. A connection is opened for one piece of work, in the thread doing it, and
-closed again. ECP and MCP open it read-only. It holds data only: every setting is in settings.json.
+each, so one link can have codes in many colors and one color can be on many codes. A short link
+(shortlinks.py) is a link whose text is a short address; its row in short_links says where that
+address sends people, and it stays when its last picture is forgotten, because printed codes still
+use it. The database belongs to this program alone (it is not the Generic Company hub's shared
+database). It is created here in one transaction, and every open checks its application id and
+schema version, so any other SQLite file is refused. A connection is opened for one piece of work,
+in the thread doing it, and closed again. ECP and MCP open it read-only. It holds data only: every
+setting is in settings.json.
+
+Schema versions: 2 added short_links. A writable open moves a version 1 registry to 2 in one
+transaction; a read-only open reads version 1 as it is (with no short links), since it may not write.
 
 Records
-  Result   {"ok": bool, "error": str, "value": any}
-  Row      {"id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format",
-            "ec_level", "version", "origin", "created"}          one line of the qr_lookup view
-  Entry    {"link", "color", "path", "format", "ec_level", "version", "origin"}   a code to save
-  Filters  {"color": "#rrggbb", "near": bool, "family": str, "link": str, "link_exact": str,
-            "path": str}                     "" means "any"; every filter given must match (AND)
-  Voat     {"color": "#rrggbb", "voat": 1 | -1}                  what a ranker reads, oldest first
+  Result     {"ok": bool, "error": str, "value": any}
+  Row        {"id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format",
+              "ec_level", "version", "origin", "created", "short_code", "target"}   one QR code;
+              short_code and target are "" unless its link is a short link
+  Entry      {"link", "color", "path", "format", "ec_level", "version", "origin",
+              "short": {"code", "target"} or absent}                                 a code to save
+  ShortLink  {"code", "url", "target", "hex", "created", "updated", "pictures"}
+  Filters    {"color": "#rrggbb", "near": bool, "family": str, "link": str, "link_exact": str,
+              "path": str}                   "" means "any"; every filter given must match (AND)
+  Voat       {"color": "#rrggbb", "voat": 1 | -1}                 what a ranker reads, oldest first
 """
 
 import os
@@ -30,6 +39,7 @@ import pathlib
 import re
 import sqlite3
 import time
+import urllib.parse
 
 import swatch
 
@@ -37,7 +47,9 @@ import swatch
 # ECP spec's DDL (which sets only user_version): other programs, such as Data Bridge, find the registry by it
 # and by SCHEMA_VERSION, and refuse a file without it.
 APPLICATION_ID = 0x51525041
-SCHEMA_VERSION = 1  # those programs check it too: raise it only together with them
+SCHEMA_VERSION = 2  # those programs check it too: raise it only together with them
+READABLE_VERSIONS = (1, 2)  # what a read-only connection accepts (it cannot move a registry to SCHEMA_VERSION)
+OPEN_VERSIONS = {}  # id(connection) -> the schema version that connection opened, until close()
 BUSY_SECONDS = 5.0
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
@@ -54,6 +66,7 @@ READ_COLUMNS = {
     "qr_codes": ("id", "link_id", "color_id", "path", "path_key", "format", "ec_level", "version", "origin",
                  "created"),
     "votes": ("color_id", "voat", "voted"),
+    "short_links": ("id", "code", "link_id", "color_id", "target", "created", "updated"),
 }
 READ_FUNCTIONS = ("count",)
 # sqlite3_limit values for the read rail (the sqlite.org high-security column, ECP spec 7.4)
@@ -62,10 +75,17 @@ READ_LIMITS = (("SQLITE_LIMIT_LENGTH", 1000000), ("SQLITE_LIMIT_SQL_LENGTH", 100
                ("SQLITE_LIMIT_VDBE_OP", 25000), ("SQLITE_LIMIT_FUNCTION_ARG", 8), ("SQLITE_LIMIT_ATTACHED", 0),
                ("SQLITE_LIMIT_LIKE_PATTERN_LENGTH", 50), ("SQLITE_LIMIT_VARIABLE_NUMBER", 10),
                ("SQLITE_LIMIT_TRIGGER_DEPTH", 10))
-LOOKUP = ("SELECT q.id AS id, l.url AS link, c.hex AS hex, c.name AS name, c.family AS family, "
-          "c.cube_index AS cube_index, q.path AS path, q.path_key AS path_key, q.format AS format, "
-          "q.ec_level AS ec_level, q.version AS version, q.origin AS origin, q.created AS created "
-          "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id")
+LOOKUP_COLUMNS = ("SELECT q.id AS id, l.url AS link, c.hex AS hex, c.name AS name, c.family AS family, "
+                  "c.cube_index AS cube_index, q.path AS path, q.path_key AS path_key, q.format AS format, "
+                  "q.ec_level AS ec_level, q.version AS version, q.origin AS origin, q.created AS created")
+LOOKUP = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target "
+          "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id "
+          "LEFT JOIN short_links s ON s.link_id = l.id")
+LOOKUP_V1 = (LOOKUP_COLUMNS + ", NULL AS short_code, NULL AS target "
+             "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id")
+SHORT_LINKS = ("SELECT s.code, l.url, s.target, c.hex, s.created, s.updated, "
+               "(SELECT count(*) FROM qr_codes q WHERE q.link_id = s.link_id) "
+               "FROM short_links s JOIN links l ON l.id = s.link_id JOIN colors c ON c.id = s.color_id")
 
 SCHEMA = (
     """CREATE TABLE colors (
@@ -95,14 +115,29 @@ SCHEMA = (
         color_id INTEGER PRIMARY KEY REFERENCES colors(id),
         voat INTEGER NOT NULL CHECK (voat IN (-1, 1)),
         voted TEXT NOT NULL)""",
+)
+# Version 2: short links (and the view shows them). Run on a new registry, and on a version 1 one.
+TO_VERSION_2 = (
+    """CREATE TABLE short_links (
+        id INTEGER PRIMARY KEY,
+        code TEXT NOT NULL UNIQUE,
+        link_id INTEGER NOT NULL UNIQUE REFERENCES links(id),
+        color_id INTEGER NOT NULL REFERENCES colors(id),
+        target TEXT NOT NULL,
+        created TEXT NOT NULL,
+        updated TEXT NOT NULL)""",
+    "CREATE INDEX short_links_by_target ON short_links(target)",
+    "DROP VIEW IF EXISTS qr_lookup",
     """CREATE VIEW qr_lookup AS
         SELECT q.id AS id, l.url AS link, c.hex AS hex, c.name AS name, c.family AS family,
                c.cube_index AS cube_index, q.path AS path, q.path_key AS path_key, q.format AS format,
-               q.ec_level AS ec_level, q.version AS version, q.origin AS origin, q.created AS created
-        FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id""",
+               q.ec_level AS ec_level, q.version AS version, q.origin AS origin, q.created AS created,
+               s.code AS short_code, s.target AS target
+        FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id
+        LEFT JOIN short_links s ON s.link_id = l.id""",
 )
 ROW_KEYS = ("id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format", "ec_level",
-            "version", "origin", "created")
+            "version", "origin", "created", "short_code", "target")
 
 
 def ok_result(value):
@@ -165,10 +200,16 @@ def file_state(path, local_only):
 # --- Opening ---------------------------------------------------------------------------------------
 
 def close(connection):
+    OPEN_VERSIONS.pop(id(connection), None)
     try:
         connection.close()
     except sqlite3.Error:
         pass
+
+
+def schema_of(connection):
+    """The schema version a connection opened (read-only connections may be at an older one)."""
+    return OPEN_VERSIONS.get(id(connection), SCHEMA_VERSION)
 
 
 def rollback(connection):
@@ -180,8 +221,9 @@ def rollback(connection):
 
 def connect(path, read_only):
     """Open the registry -> Result connection. Read-write creates a new registry in a missing or
-    empty file; read-only never creates anything and sets query_only. Any file that is not a QR
-    Palette registry of this schema version is refused. Close it with close() when done."""
+    empty file, and moves an older one to SCHEMA_VERSION; read-only never creates or changes
+    anything, sets query_only, and also reads the versions in READABLE_VERSIONS. Any file that is
+    not a QR Palette registry of such a version is refused. Close it with close() when done."""
     connection = None
     try:
         if read_only:
@@ -211,7 +253,7 @@ def connect(path, read_only):
         if application != APPLICATION_ID:
             close(connection)
             return fail(path + " is not a QR Palette registry")
-        if version != SCHEMA_VERSION:
+        if version not in READABLE_VERSIONS or (not read_only and version > SCHEMA_VERSION):
             close(connection)
             return fail(path + " is a QR Palette registry of another version (" + str(version) + ")")
         if read_only:
@@ -219,8 +261,16 @@ def connect(path, read_only):
             if not hardened["ok"]:
                 close(connection)
                 return hardened
-        elif connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
-            connection.execute("PRAGMA journal_mode=DELETE")  # registries made before 0.1.0 used WAL
+        else:
+            if connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
+                connection.execute("PRAGMA journal_mode=DELETE")  # registries made before 0.1.0 used WAL
+            if version < SCHEMA_VERSION:
+                upgraded = upgrade_schema(connection)
+                if not upgraded["ok"]:
+                    close(connection)
+                    return upgraded
+                version = SCHEMA_VERSION
+        OPEN_VERSIONS[id(connection)] = version
     except (sqlite3.Error, OSError) as error:
         if connection is not None:
             close(connection)
@@ -263,7 +313,7 @@ def harden_read_rail(connection):
 
 
 def read_rail_authorizer(action, first, second, database, inner):
-    """Allow plain SELECTs that read the allowed columns of the four tables and call the allowed
+    """Allow plain SELECTs that read the allowed columns of the five tables and call the allowed
     functions; deny everything else (DENY, never IGNORE, so a mistake is an error, not a silent
     NULL)."""
     if action == sqlite3.SQLITE_SELECT:
@@ -284,7 +334,7 @@ def create_schema(connection):
     SQLite's default rollback journal: a read-only connection can then always read the file."""
     try:
         connection.execute("BEGIN IMMEDIATE")
-        for statement in SCHEMA:
+        for statement in SCHEMA + TO_VERSION_2:
             connection.execute(statement)
         colors = swatch.palette()
         for index in range(len(colors)):
@@ -295,6 +345,21 @@ def create_schema(connection):
     except sqlite3.Error as error:
         rollback(connection)
         return fail("cannot create the registry: " + str(error))
+    return ok_result(True)
+
+
+def upgrade_schema(connection):
+    """Move a version 1 registry to version 2 (the short_links table), all in one transaction."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
+            for statement in TO_VERSION_2:
+                connection.execute(statement)
+            connection.execute("PRAGMA user_version=2")
+        connection.execute("COMMIT")
+    except sqlite3.Error as error:
+        rollback(connection)
+        return fail("cannot update the registry to version 2: " + str(error))
     return ok_result(True)
 
 
@@ -339,11 +404,18 @@ def check_entry(entry):
         return "unknown origin"
     if entry["path"] == "" or not os.path.isabs(entry["path"]):
         return "the path must be absolute"
+    short = entry.get("short")
+    if short is not None:
+        if not isinstance(short.get("code"), str) or not short["code"].isdigit() or not short["code"].isascii():
+            return "a short link's ID is digits"
+        if not isinstance(short.get("target"), str) or short["target"] == "":
+            return "a short link needs a destination"
     return ""
 
 
 def save_qr(connection, entry):
-    """Add a QR code, or replace the one already registered at the same file -> Result id."""
+    """Add a QR code, or replace the one already registered at the same file -> Result id. An Entry
+    with "short" also records its short link (or keeps the one already recorded for that ID)."""
     problem = check_entry(entry)
     if problem != "":
         return fail(problem)
@@ -352,6 +424,16 @@ def save_qr(connection, entry):
         connection.execute("BEGIN IMMEDIATE")
         color = color_id(connection, entry["color"])
         link = link_id(connection, entry["link"])
+        short = entry.get("short")
+        if short is not None:
+            row = connection.execute("SELECT link_id FROM short_links WHERE code = ?", (short["code"],)).fetchone()
+            if row is None:
+                now = now_text()
+                connection.execute("INSERT INTO short_links (code, link_id, color_id, target, created, updated) "
+                                   "VALUES (?, ?, ?, ?, ?, ?)", (short["code"], link, color, short["target"], now, now))
+            elif row[0] != link:
+                rollback(connection)
+                return fail("the short link ID " + short["code"] + " is already used for another address")
         connection.execute(
             "INSERT INTO qr_codes (link_id, color_id, path, path_key, format, ec_level, version, origin, created) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -370,7 +452,36 @@ def save_qr(connection, entry):
 
 
 def drop_unused_links(connection):
-    connection.execute("DELETE FROM links WHERE id NOT IN (SELECT link_id FROM qr_codes)")
+    """Links no picture uses any more, except short links: printed codes still send people there."""
+    connection.execute("DELETE FROM links WHERE id NOT IN (SELECT link_id FROM qr_codes) "
+                       "AND id NOT IN (SELECT link_id FROM short_links)")
+
+
+def short_link_for(connection, target, color, base):
+    """The short link made on `base` for this destination in this color -> ShortLink, or None."""
+    for found in short_links(connection):
+        if found["target"] == target and found["hex"] == color and found["url"].startswith(base):
+            return found
+    return None
+
+
+def code_taken(connection, code):
+    return connection.execute("SELECT count(*) FROM short_links WHERE code = ?", (code,)).fetchone()[0] > 0
+
+
+def retarget(connection, code, target):
+    """Send a short link somewhere else -> Result True when there was one. Printed codes keep working:
+    export the redirect pages again to publish the change."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute("UPDATE short_links SET target = ?, updated = ? WHERE code = ?",
+                                    (target, now_text(), code))
+        changed = cursor.rowcount > 0
+        connection.execute("COMMIT")
+    except sqlite3.Error as error:
+        rollback(connection)
+        return fail("cannot change the destination: " + str(error))
+    return ok_result(changed)
 
 
 def forget_qr(connection, number):
@@ -447,22 +558,44 @@ def row_record(row):
     record = {}
     for key in ROW_KEYS:
         record[key] = row[key]
+    for key in ("short_code", "target"):
+        if record[key] is None:
+            record[key] = ""
     return record
+
+
+def lookup(connection):
+    """The SELECT that reads Rows, for the schema version this connection opened."""
+    if schema_of(connection) < 2:
+        return LOOKUP_V1
+    return LOOKUP
 
 
 def all_rows(connection):
     """Every QR code, newest first, as Row records (the cursor is finished before returning)."""
     rows = []
-    for row in connection.execute(LOOKUP + " ORDER BY q.id DESC").fetchall():
+    for row in connection.execute(lookup(connection) + " ORDER BY q.id DESC").fetchall():
         rows.append(row_record(row))
     return rows
 
 
 def row_by_id(connection, number):
-    row = connection.execute(LOOKUP + " WHERE q.id = ?", (number,)).fetchone()
+    row = connection.execute(lookup(connection) + " WHERE q.id = ?", (number,)).fetchone()
     if row is None:
         return None
     return row_record(row)
+
+
+def short_links(connection):
+    """Every short link, oldest first, as ShortLink records ("pictures" counts the files that print it).
+    A version 1 registry has none."""
+    found = []
+    if schema_of(connection) < 2:
+        return found
+    for row in connection.execute(SHORT_LINKS + " ORDER BY s.id").fetchall():
+        found.append({"code": row[0], "url": row[1], "target": row[2], "hex": row[3], "created": row[4],
+                      "updated": row[5], "pictures": row[6]})
+    return found
 
 
 def vote_log(connection):
@@ -526,7 +659,15 @@ def loose_words(text):
 
 def text_contains(haystack, needle):
     """True when `needle` is in `haystack` as typed (case-folded), or when each of its words is,
-    ignoring punctuation: "store hours" finds ".../store-hours", "shop sale" finds "shop.example.com/sale"."""
+    ignoring punctuation: "store hours" finds ".../store-hours", "shop sale" finds "shop.example.com/sale".
+    A link's percent-escapes are read too, so "blue mug" finds ".../p/blue%20mug"."""
+    if contains_once(haystack, needle):
+        return True
+    decoded = urllib.parse.unquote(haystack)
+    return decoded != haystack and contains_once(decoded, needle)
+
+
+def contains_once(haystack, needle):
     if needle.casefold() in haystack.casefold():
         return True
     wanted = loose_words(needle).split(" ")
@@ -548,9 +689,11 @@ def row_matches(row, filters):
             return False
     if filters["family"] != "" and row["family"] != filters["family"]:
         return False
-    if filters["link_exact"] != "" and row["link"] != filters["link_exact"]:
+    # A short link matches by the address it prints and by where it sends people.
+    if filters["link_exact"] != "" and filters["link_exact"] not in (row["link"], row["target"]):
         return False
-    if filters["link"] != "" and not text_contains(row["link"], filters["link"]):
+    if filters["link"] != "" and not text_contains(row["link"], filters["link"]) and not (
+            row["target"] != "" and text_contains(row["target"], filters["link"])):
         return False
     if filters["path"] != "":
         wanted = text_key(filters["path"]).casefold()
@@ -571,4 +714,4 @@ def find_rows(rows, filters, limit):
             found.append(row)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=d742232bcd284582c6674995c6384e086e28a76e20783f9b23830d63a2bf5b4a ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=f4860a115bcc6cff2597799bcdd58a58a062c2f8776b2dca44aedf0c59afe21b ====

@@ -246,6 +246,23 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
   - The window was driven through all three tabs, including Ask with a local model, with screenshots.
   - `stamp.py --check` is clean.
 
+**qr_color_registry** (short links)
+- A code can hold a short address, such as `HTTPS://GO.EXAMPLE.COM/73491205`, instead of the link, and its destination can change later without reprinting it.
+  - In capitals and digits, so it fits QR's alphanumeric mode: 25×25 at level M where the typed link needs 29×29.
+  - IDs are 7 random digits and a Damm check digit: no case to get wrong on a web host, and a mistyped ID is caught.
+  - The address is printed under the code (a 5×7 pixel font drawn for this, in PNG and SVG), and the code still reads back with it.
+  - One ID per destination and color. Forgetting a picture keeps its short link; *Change destination…* sends it elsewhere.
+- Two sections, switched by two buttons beside Short link and remembered in `settings.json` (`links.use`):
+  - `local` (default `HTTP://LOCALHOST:8000/`): works on this computer or your own network, for trying codes before you have a domain. The README shows the one-line `python -m http.server` command that serves the exported pages.
+  - `nonlocal` (default the placeholder `HTTPS://GO.EXAMPLE.COM/`): your internet address, for printed codes. A local name or address there is refused.
+  - A code keeps the address it was made with. The same link in the same color gets one ID per section, and Find marks each short link local or nonlocal.
+- *File → Export local redirect pages…* and *Export nonlocal redirect pages…* (and `--export-redirects DIR [--section local|nonlocal]`) write one forwarding page per ID for any static web host, with tracking tags added to the destination there rather than in the code.
+- `links.json` (plain JSON like the other files): the two sections (each a base address and an export folder), and the ID length, tags and link templates (*From template…* in Make) they share.
+- Registry schema version 2 adds `short_links`. The window moves a version 1 registry to 2 on opening it; read-only readers (ECP) read either. ECP answers carry `target_url`, and plans match links against destinations too.
+- Searching links now also reads percent-escapes, so "blue mug" finds `https://shop.example.com/p/blue%20mug`.
+- The window queues its slow tasks first come, first served: Save, Ask or Find asked for while a model is still loading now waits its turn instead of being refused as busy. Cancel stops waiting for the running task; the ones queued behind it go on.
+- Checked: the 240 tests pass on Python 3.14 (twice) and 3.11; `--selftest` and `--smoke` pass. The window was driven through a template link, local and nonlocal short-link saves, Find and a local export, with screenshots. `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

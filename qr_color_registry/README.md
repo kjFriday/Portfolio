@@ -24,18 +24,68 @@ python -m unittest discover -p "test_*.py"
 ```
 
 `--selftest` runs a quick built-in check, `--version` prints the version, and `--smoke FILE` opens the window on a
-scratch registry, makes and finds a code, writes a JSON report and closes.
+scratch registry, makes and finds a code, writes a JSON report and closes. `--export-redirects DIR` writes the
+redirect pages of the short-link section in use (or `--section local|nonlocal`) into `DIR` and exits.
 
 ## What it does
 
 | Tab | What |
 |---|---|
-| Make | Type a link, then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. |
+| Make | Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. |
 | Read | Open or paste a picture of a QR code. It shows the text, the color it detects, and the codes in the registry that hold the same text. *Register this picture…* adds a PNG or SVG made elsewhere, in the color you confirm. |
-| Find | Find by **QR code** (a link, words in it, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, open the link, or forget the record (the file stays). The **Ask** row asks in plain English through a local model you pick. |
+| Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, open the link, send a short link somewhere else (*Change destination…*), or forget the record (the file stays). The **Ask** row asks in plain English through a local model you pick. |
 
 *File → Import votes from Color Voats…* brings in Color Voats' votes, with the newer vote winning for each color, so
 importing again changes nothing.
+
+## Short links: print once, change where it goes later
+
+With **Short link** ticked, the code holds a short address such as `HTTPS://GO.EXAMPLE.COM/73491205` instead of
+the link itself, and that address is printed under the code for anyone whose camera cannot scan it.
+- **Smaller codes.** The address is all capitals and digits, which QR codes store in their compact
+  alphanumeric mode: `https://shop.example.com/hours` needs a 29×29 code at level M, the short address 25×25.
+- **IDs you can type.** Seven random digits and a check digit (the Damm algorithm), so a mistyped ID is caught.
+  Digits have no upper or lower case, which web hosts would treat as different pages.
+- **One ID per link and color.** A PNG and an SVG of the same code share their ID; the same link in another
+  color gets its own, so scans can be told apart by color.
+- **Change destinations without reprinting.** *Change destination…* in Find sends a short link somewhere else.
+  The pictures stay as they are, and forgetting a picture keeps its short link, since printed copies still use it.
+- **Publish with any static web host.** *File → Export local redirect pages…* and *Export nonlocal redirect
+  pages…* (or `--export-redirects DIR --section local|nonlocal`) write one small page per ID that forwards to its
+  destination, plus `index.html`, `404.html` and a `robots.txt` that keeps the pages out of search engines. Export
+  again after a change.
+- **Tags in the page, not in the code.** The tracking tags in `links.json` (by default
+  `utm_source=qr&utm_medium=print&utm_content=ID-color`) are added to each destination when the pages are written,
+  so the code stays small. A link's own tags are never replaced.
+- **Templates.** *From template…* builds a link from a pattern in `links.json`, such as
+  `https://shop.example.com/p/{item}`, with each field filled in and encoded.
+
+### Local and nonlocal
+
+`links.json` has two sections of short links, each with its own base address and export folder. The two buttons
+beside **Short link** switch between them (choosing one ticks Short link), and `settings.json` remembers the choice
+as `links.use`. The Find tab marks each short link local or nonlocal.
+
+| Section | For | Default base |
+|---|---|---|
+| `local` | trying codes before you have a domain: they work on this computer, or on your own network | `HTTP://LOCALHOST:8000/` |
+| `nonlocal` | codes you print for everyone: an internet address on a domain of your own | `HTTPS://GO.EXAMPLE.COM/` (a placeholder) |
+
+- **A code keeps its address.** Switching changes which address new codes print, and which pages each Export
+  writes; a code already made stays local or nonlocal. The same link in the same color gets one ID in each section.
+- **Trying local codes.** Export the local pages, then serve that folder from this computer:
+
+  ```bash
+  python -m http.server 8000 --bind 127.0.0.1 --directory "C:\path\to\local pages"
+  ```
+
+  `LOCALHOST` only works in this computer's own browser. For phones on the same Wi-Fi, set the local base to this
+  computer's network address (`ipconfig` shows it), such as `HTTP://192.168.1.20:8000/`, and leave out
+  `--bind 127.0.0.1`; Windows may ask to let Python through its firewall. Stop the server with Ctrl+C when done.
+- **Nonlocal must be an internet address.** A local name or address there (`LOCALHOST`, `192.168.…`,
+  `….LOCAL`) is refused with a warning, so printed codes never point at your own network by mistake. Use a domain
+  or subdomain you control and will keep: every printed code depends on it, and whoever owned a lapsed domain could
+  send your codes anywhere. `GO.EXAMPLE.COM` is only a placeholder, and the window says so.
 
 ## Colors
 
@@ -61,7 +111,11 @@ alone, not to the Generic Company hub, and every open checks its SQLite applicat
 | `colors` | every color used: hex, RGB, cube index (none for off-cube colors), name and family; the 216 cube colors are there from the start |
 | `links` | the text each QR code holds |
 | `qr_codes` | one row per picture file: its path, its link, its color, PNG or SVG, error-correction level, QR version, made here or registered, and when |
+| `short_links` | one row per short link: its ID, the link row of the address it prints, the color it was made in, where it sends people, and when it was made and last changed |
 | `votes` | one Good or Bad vote per color |
+
+The schema is version 2 (version 1 had no `short_links`). The window moves a version 1 registry to version 2 the
+first time it opens it; read-only readers, such as ECP, read either.
 
 The registry holds data only; every setting is in `settings.json` (below).
 - **Pictures:** saved where you choose, by default in your Pictures folder under `QR Palette`. If Windows keeps
@@ -81,6 +135,7 @@ section. *File → Open settings.json* opens yours.
 | `presets/*.json` | Which algos rank the colors, and how they are mixed. |
 | `weights/*.json` | The numbers each algo uses. |
 | `planner.json` | How a question in plain English becomes a query plan: what the local model is told, the worked examples it is shown, the words for color families ("navy" is blue) and the filler words taken off the ends of links and paths. `settings.json` can point to your own copy. |
+| `links.json` | Short links: two sections, `local` and `nonlocal`, each with a base address (in capitals, ending in `/`) and the folder its exports start in; and, for both, the number of random digits per ID (4-12, default 7), whether **Short link** starts ticked, the tags added to destinations (`{id}` and `{hex}` are filled in) and the link templates (`{name}` is a field). `settings.json` can point to your own copy. |
 
 `settings.json`, section by section:
 
@@ -104,6 +159,8 @@ section. *File → Open settings.json* opens yours.
 | `inference.context_tokens` | `4096` | the model's context size for planning |
 | `inference.keep_alive` | `"10m"` | how long the server keeps the model loaded |
 | `planner.file` | `""` | your own planner file; empty means `planner.json` beside the program |
+| `links.file` | `""` | your own short-link file; empty means `links.json` beside the program |
+| `links.use` | `"local"` | which section new short links use, `local` or `nonlocal`; the Make tab switches it |
 | `queries.default_limit` / `max_limit` | `20` / `100` | results per answer, and the most a plan may ask for |
 | `queries.question_characters` | `2000` | the longest question |
 | `queries.statement_seconds` | `2` | how long one read of the registry may take before it is stopped |
@@ -175,8 +232,8 @@ runs, which may be remote. ECP keeps its own inference local; it cannot decide w
 
 Same layout as QR Studio and Color Voats:
 - **Plain code:** plain functions and records, explicit loops, and failures as Result records.
-- **Separate parts:** each module is its own part: codec, colors, registry, local inference, ECP, MCP server,
-  audit log.
+- **Separate parts:** each module is its own part: codec, colors, registry, short links, local inference, ECP,
+  MCP server, audit log.
 - **The window:** it only calls those.
 - **Order:** port `qr_codec.py` first, then `swatch.py` and `registry.py`, each with its tests.
 

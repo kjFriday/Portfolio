@@ -955,23 +955,143 @@ def matrix_to_image(matrix, scale, border):
     return image
 
 
-def matrix_to_svg(matrix, border, color=INK):
-    """The matrix as an SVG drawing: one path of unit squares in `color` ("#rrggbb") on white."""
+# --- Captions: text printed under a code (a short link to type when a camera cannot scan it) --------
+
+# A 5 x 7 pixel font drawn for this program: capitals, digits and the other characters of an address.
+GLYPHS = {
+    "0": (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
+    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
+    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
+    "6": ("..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###."),
+    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
+    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+    "9": (".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."),
+    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."),
+    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#"),
+    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
+    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."),
+    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
+    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
+    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
+    ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
+    "/": (".....", "....#", "...#.", "..#..", ".#...", "#....", "....."),
+    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
+    ":": (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."),
+    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+}
+SVG_GRID = 16  # font pixels in a drawing are laid out in sixteenths of a module
+
+
+def caption_layout(text, width, scale):
+    """How a caption fits under a code `width` pixels wide at `scale` pixels per module -> (lines,
+    pixel). Font pixels are at most half a module. It is one line while that allows a quarter of a
+    module per font pixel, else two lines split after the last "/". Never less than 1 pixel."""
+    usable = width - 2 * scale
+    largest = max(1, scale // 2)
+    smallest = max(1, scale // 4)
+
+    def fit(lines):
+        longest = 0
+        for line in lines:
+            longest = max(longest, len(line))
+        return min(largest, usable // max(1, 6 * longest - 1))
+
+    lines = [text]
+    pixel = fit(lines)
+    if pixel < smallest and "/" in text.rstrip("/"):
+        cut = text.rstrip("/").rindex("/") + 1
+        lines = [text[:cut], text[cut:]]
+        pixel = fit(lines)
+    return lines, max(1, pixel)
+
+
+def caption_size(lines, pixel, scale):
+    """(width, height) in pixels of a caption: lines of 7 font pixels, 2 between them, and one module
+    of margin below."""
+    longest = 0
+    for line in lines:
+        longest = max(longest, len(line))
+    return (6 * longest - 1) * pixel, len(lines) * 7 * pixel + (len(lines) - 1) * 2 * pixel + scale
+
+
+def caption_pixels(lines, pixel, width, top):
+    """The top-left corner of every font pixel of a caption, each line centred in `width`."""
+    corners = []
+    for index in range(len(lines)):
+        line = lines[index]
+        left = (width - (6 * len(line) - 1) * pixel) // 2
+        line_top = top + index * 9 * pixel
+        for place in range(len(line)):
+            glyph = GLYPHS.get(line[place], GLYPHS[" "])
+            for row in range(7):
+                for column in range(5):
+                    if glyph[row][column] == "#":
+                        corners.append((left + (6 * place + column) * pixel, line_top + row * pixel))
+    return corners
+
+
+def svg_number(value):
+    """A coordinate for a drawing, as short as it can be: 2.5, 3, 0.3125."""
+    text = "%.4f" % value
+    return text.rstrip("0").rstrip(".")
+
+
+def matrix_to_svg(matrix, border, color=INK, caption=""):
+    """The matrix as an SVG drawing: one path of unit squares in `color` ("#rrggbb") on white. A
+    caption is drawn below the quiet zone as a second path (and repeated as the drawing's <desc>),
+    which makes the drawing taller."""
     size = matrix["size"]
     side = size + 2 * border
-    parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + str(side) + " " + str(side) +
+    height = side
+    caption_parts = []
+    if caption != "":
+        lines, pixel = caption_layout(caption, side * SVG_GRID, SVG_GRID)
+        band = caption_size(lines, pixel, SVG_GRID)[1]
+        height = side + (band + SVG_GRID - 1) // SVG_GRID
+        step = svg_number(pixel / SVG_GRID)
+        for corner in caption_pixels(lines, pixel, side * SVG_GRID, side * SVG_GRID):
+            caption_parts.append("M" + svg_number(corner[0] / SVG_GRID) + "," + svg_number(corner[1] / SVG_GRID) +
+                                 "h" + step + "v" + step + "h-" + step + "z")
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + str(side) + " " + str(height) +
              '" shape-rendering="crispEdges">\n<rect width="100%" height="100%" fill="' + PAPER + '"/>\n<path d="']
     for y in range(size):
         for x in range(size):
             if matrix["dark"][y][x]:
                 parts.append("M" + str(x + border) + "," + str(y + border) + "h1v1h-1z")
-    parts.append('" fill="' + color + '"/>\n</svg>\n')
+    parts.append('" fill="' + color + '"/>\n')
+    if caption != "":
+        parts.append('<path d="' + "".join(caption_parts) + '" fill="' + color + '"/>\n<desc>' +
+                     caption.replace("&", "&amp;").replace("<", "&lt;") + "</desc>\n")
+    parts.append("</svg>\n")
     return "".join(parts)
 
 
 def read_svg_matrix(text):
     """An SVG drawing made by matrix_to_svg -> Result module grid (dark[row][column]), ready for
-    decode_matrix. Other SVG drawings are refused: this reads squares, it does not draw vectors."""
+    decode_matrix. Other SVG drawings are refused: this reads squares, it does not draw vectors. The
+    code is the first path; a caption below it makes the drawing taller, never wider."""
     if len(text) > MAX_FILE_BYTES:
         return fail("this drawing is too big")
     start = text.find('viewBox="0 0 ')
@@ -979,7 +1099,7 @@ def read_svg_matrix(text):
     if start < 0 or begin < 0:
         return fail("not a QR drawing made by this program")
     numbers = text[start + 13:text.find('"', start + 13)].split(" ")
-    if len(numbers) != 2 or not numbers[0].isdigit() or numbers[0] != numbers[1]:
+    if len(numbers) != 2 or not numbers[0].isdigit() or not numbers[1].isdigit() or int(numbers[1]) < int(numbers[0]):
         return fail("not a QR drawing made by this program")
     side = int(numbers[0])
     if side < 21 or side > 177 + 2 * 40:
@@ -1037,23 +1157,37 @@ def write_png(image):
             png_chunk(b"IEND", b""))
 
 
-def matrix_to_color_png(matrix, scale, border, color):
+def matrix_to_color_png(matrix, scale, border, color, caption=""):
     """The matrix as PNG bytes in two colors: `color` ("#rrggbb") modules on white. A palette PNG
-    (colour type 3, 8 bits) whose entry 0 is white and entry 1 is the color."""
+    (colour type 3, 8 bits) whose entry 0 is white and entry 1 is the color. A caption is drawn
+    below the quiet zone in the same color; the picture grows taller (and wider, only if it must)."""
     size = matrix["size"]
     side = (size + 2 * border) * scale
+    width = side
+    height = side
+    lines = []
+    pixel = 1
+    if caption != "":
+        lines, pixel = caption_layout(caption, side, scale)
+        band = caption_size(lines, pixel, scale)
+        width = max(side, band[0] + 2 * scale)
+        height = side + band[1]
+    canvas = bytearray(width * height)
+    left = (width - side) // 2
+    for module_y in range(size):
+        for module_x in range(size):
+            if matrix["dark"][module_y][module_x]:
+                x = left + (module_x + border) * scale
+                for y in range((module_y + border) * scale, (module_y + border + 1) * scale):
+                    canvas[y * width + x:y * width + x + scale] = b"\x01" * scale
+    for corner in caption_pixels(lines, pixel, width, side):
+        for y in range(corner[1], corner[1] + pixel):
+            canvas[y * width + corner[0]:y * width + corner[0] + pixel] = b"\x01" * pixel
     rows = bytearray()
-    for y in range(side):
+    for y in range(height):
         rows.append(0)
-        row = bytearray(side)
-        module_y = y // scale - border
-        if 0 <= module_y < size:
-            for module_x in range(size):
-                if matrix["dark"][module_y][module_x]:
-                    left = (module_x + border) * scale
-                    row[left:left + scale] = b"\x01" * scale
-        rows.extend(row)
-    header = struct.pack(">IIBBBBB", side, side, 8, 3, 0, 0, 0)
+        rows.extend(canvas[y * width:(y + 1) * width])
+    header = struct.pack(">IIBBBBB", width, height, 8, 3, 0, 0, 0)
     entries = bytes([255, 255, 255, int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)])
     return (PNG_SIGNATURE + png_chunk(b"IHDR", header) + png_chunk(b"PLTE", entries) +
             png_chunk(b"IDAT", zlib.compress(bytes(rows), 9)) + png_chunk(b"IEND", b""))
@@ -1834,21 +1968,21 @@ def file_kind(path):
     return "png"
 
 
-def picture_bytes(matrix, scale, color, kind):
+def picture_bytes(matrix, scale, color, kind, caption=""):
     """The matrix as file contents in `color`: PNG bytes, or SVG text as UTF-8. Four modules of
-    quiet zone on every side."""
+    quiet zone on every side, and the caption (if any) below."""
     if kind == "svg":
-        return matrix_to_svg(matrix, 4, color).encode("utf-8")
-    return matrix_to_color_png(matrix, scale, 4, color)
+        return matrix_to_svg(matrix, 4, color, caption).encode("utf-8")
+    return matrix_to_color_png(matrix, scale, 4, color, caption)
 
 
-def save_matrix(matrix, path, scale, color=INK):
+def save_matrix(matrix, path, scale, color=INK, caption=""):
     """Write a .png or .svg file in `color` -> Result path. It is written next to the target first
     and then moved into place, so a failed save never leaves half a picture behind."""
     temporary = path + ".part"
     try:
         handle = open(temporary, "wb")
-        handle.write(picture_bytes(matrix, scale, color, file_kind(path)))
+        handle.write(picture_bytes(matrix, scale, color, file_kind(path), caption))
         handle.close()
         os.replace(temporary, path)
     except OSError as error:
@@ -1937,4 +2071,4 @@ def describe(reading):
     return ("version " + str(reading["version"]) + ", level " + reading["level"] + ", mask " +
             str(reading["mask"]) + ", " + str(reading["corrected"]) + " codeword(s) corrected")
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=1d8cff95c921f6817f7295fbad9a34babb1b1e3f6cfb2a69295940ab7a92afd9 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=35f9355356085b7d8e6cce50b67887812781a55fac4f7cad4c410e9c611fb173 ====

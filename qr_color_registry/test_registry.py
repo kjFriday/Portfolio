@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 import registry
+import shortlinks
 import swatch
 
 
@@ -121,7 +122,7 @@ class OpeningTests(RegistryCase):
         tables = []
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall():
             tables.append(row[0])
-        self.assertEqual(tables, ["colors", "links", "qr_codes", "votes"])
+        self.assertEqual(tables, ["colors", "links", "qr_codes", "short_links", "votes"])
 
 
 class ReadRailTests(RegistryCase):
@@ -178,6 +179,104 @@ class ReadRailTests(RegistryCase):
         handle.write(b"\xff" * 4096)
         handle.close()
         self.assertFalse(registry.connect(self.path, True)["ok"])
+
+
+TARGET = "https://shop.example.com/hours"
+
+
+def code_of(body):
+    return body + shortlinks.check_digit(body)
+
+
+def short_entry(folder, name, code, color, target):
+    made = entry(folder, name, "HTTPS://GO.EXAMPLE.COM/" + code, color)
+    made["short"] = {"code": code, "target": target}
+    return made
+
+
+class ShortLinkTests(RegistryCase):
+    def setUp(self):
+        RegistryCase.setUp(self)
+        self.code = code_of("1234567")
+
+    def test_short_links_are_saved_reused_and_found_by_destination(self):
+        connection = self.open(False)
+        self.assertTrue(registry.save_qr(connection, short_entry(self.folder, "a.png", self.code, "#3366cc", TARGET))["ok"])
+        self.assertTrue(registry.save_qr(connection, short_entry(self.folder, "a.svg", self.code, "#3366cc", TARGET))["ok"])
+        found = registry.short_links(connection)
+        self.assertEqual(len(found), 1)
+        self.assertEqual((found[0]["code"], found[0]["target"], found[0]["hex"], found[0]["pictures"]),
+                         (self.code, TARGET, "#3366cc", 2))
+        self.assertEqual(registry.short_link_for(connection, TARGET, "#3366cc", "HTTPS://GO.EXAMPLE.COM/")["code"],
+                         self.code)
+        self.assertIsNone(registry.short_link_for(connection, TARGET, "#006633", "HTTPS://GO.EXAMPLE.COM/"))
+        self.assertIsNone(registry.short_link_for(connection, TARGET, "#3366cc", "HTTP://LOCALHOST:8000/"))
+        row = registry.all_rows(connection)[0]
+        self.assertEqual((row["short_code"], row["target"]), (self.code, TARGET))
+        rows = registry.all_rows(connection)
+        for changes in ({"link": "hours"}, {"link_exact": TARGET}, {"link_exact": "HTTPS://GO.EXAMPLE.COM/" + self.code},
+                        {"link": self.code}):
+            filters = registry.empty_filters()
+            for key in changes:
+                filters[key] = changes[key]
+            self.assertEqual(len(registry.find_rows(rows, filters, 20)), 2, changes)
+
+    def test_an_id_cannot_move_to_another_address(self):
+        connection = self.open(False)
+        registry.save_qr(connection, short_entry(self.folder, "a.png", self.code, "#3366cc", TARGET))
+        moved = entry(self.folder, "b.png", "HTTPS://OTHER.EXAMPLE.COM/" + self.code, "#3366cc")
+        moved["short"] = {"code": self.code, "target": TARGET}
+        self.assertIn("already used", registry.save_qr(connection, moved)["error"])
+        self.assertEqual(registry.counts(connection)["records"], 1)
+        bad = short_entry(self.folder, "c.png", "12AB", "#3366cc", TARGET)
+        self.assertFalse(registry.save_qr(connection, bad)["ok"])
+
+    def test_forgetting_the_pictures_keeps_the_printed_link_and_it_can_be_retargeted(self):
+        connection = self.open(False)
+        number = registry.save_qr(connection, short_entry(self.folder, "a.png", self.code, "#3366cc", TARGET))["value"]
+        registry.forget_qr(connection, number)
+        found = registry.short_links(connection)
+        self.assertEqual((len(found), found[0]["pictures"]), (1, 0))
+        self.assertEqual(registry.counts(connection)["links"], 1)
+        self.assertTrue(registry.retarget(connection, self.code, "https://shop.example.com/holidays")["value"])
+        self.assertEqual(registry.short_links(connection)[0]["target"], "https://shop.example.com/holidays")
+        self.assertFalse(registry.retarget(connection, code_of("7654321"), TARGET)["value"])
+        self.assertTrue(registry.code_taken(connection, self.code))
+
+    def test_the_read_rail_reads_short_links(self):
+        writer = self.open(False)
+        registry.save_qr(writer, short_entry(self.folder, "a.png", self.code, "#3366cc", TARGET))
+        registry.close(writer)
+        reader = self.open(True)
+        self.assertEqual(registry.short_links(reader)[0]["target"], TARGET)
+        self.assertEqual(registry.all_rows(reader)[0]["target"], TARGET)
+
+    def test_a_version_1_registry_is_read_as_it_is_and_moved_to_2_when_written(self):
+        writer = self.open(False)
+        registry.save_qr(writer, entry(self.folder, "a.png", "https://example.com/a", "#3366cc"))
+        writer.execute("DROP VIEW qr_lookup")
+        writer.execute("DROP TABLE short_links")
+        writer.execute("PRAGMA user_version=1")
+        registry.close(writer)
+        reader = self.open(True)
+        self.assertEqual(registry.all_rows(reader)[0]["short_code"], "")
+        self.assertEqual(registry.short_links(reader), [])
+        registry.close(reader)
+        plain = sqlite3.connect(self.path)
+        self.assertEqual(plain.execute("PRAGMA user_version").fetchone()[0], 1)  # reading changed nothing
+        plain.close()
+        writer = self.open(False)
+        self.assertEqual(writer.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(writer.execute("PRAGMA application_id").fetchone()[0], registry.APPLICATION_ID)
+        self.assertEqual(registry.short_links(writer), [])
+        self.assertEqual(len(registry.all_rows(writer)), 1)
+        self.assertEqual(writer.execute("SELECT count(*) FROM qr_lookup").fetchone()[0], 1)
+
+    def test_other_versions_are_refused(self):
+        writer = self.open(False)
+        writer.execute("PRAGMA user_version=3")
+        registry.close(writer)
+        self.assertIn("another version", registry.connect(self.path, True)["error"])
 
 
 class SavingTests(RegistryCase):
@@ -327,6 +426,9 @@ class FindTests(RegistryCase):
         self.assertFalse(registry.text_contains("https://example.com/careers", "careers page"))
         self.assertFalse(registry.text_contains("https://example.com/careers", "%"))
         self.assertFalse(registry.text_contains("https://example.com/careers", "--"))
+        self.assertTrue(registry.text_contains("https://shop.example.com/p/blue%20mug", "blue mug"))
+        self.assertTrue(registry.text_contains("https://shop.example.com/p/blue%20mug", "BLUE%20MUG"))
+        self.assertFalse(registry.text_contains("https://shop.example.com/p/blue%20mug", "red mug"))
 
     def test_limits(self):
         self.assertEqual(registry.clamp_limit(0), 1)
@@ -343,4 +445,4 @@ class FindTests(RegistryCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4911ae3a3fa3eb60dfb96ef3289b0260f833b6ced36cf1c368527f8a0cbe26e4 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=48f7ef7b769bf80dc5a1d4ee24f9fbaf5588b624c6a190fe949ff406c2417df0 ====

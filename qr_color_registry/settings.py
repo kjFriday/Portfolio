@@ -70,6 +70,14 @@ DEFAULTS = {
                  "words. file: empty means planner.json beside the program.",
         "file": "",
     },
+    "links": {
+        "about": "Short links: links.json holds their two sections (local and nonlocal), the ID length, the tags "
+                 "added to destinations and the link templates. file: empty means links.json beside the program. "
+                 "use: which section new short links use, local (this computer or your own network) or nonlocal "
+                 "(your internet address); the Make tab switches it.",
+        "file": "",
+        "use": "local",
+    },
     "queries": {
         "about": "How many results an answer holds, how long a question may be, and how long one read of the "
                  "registry may take before it is stopped.",
@@ -116,6 +124,8 @@ SPEC = (
     ("inference", "context_tokens", "int", 512, 131072),
     ("inference", "keep_alive", "text", None, None),
     ("planner", "file", "path", None, None),
+    ("links", "file", "path", None, None),
+    ("links", "use", "choice", ("local", "nonlocal"), None),
     ("queries", "default_limit", "int", 1, 1000),
     ("queries", "max_limit", "int", 1, 1000),
     ("queries", "question_characters", "int", 20, 5000),
@@ -307,4 +317,4 @@ def write_defaults(state):
         return ok_result(state["path"])
     return save(state, [])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a627bbd10de15dbbb564d5d13924c293bdfbee92602c01524dcedf3d0743b09c ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=fff82d82f8778f8d0bb165802a57ee483a615b42e1508a415208b7e35941052f ====

@@ -26,6 +26,7 @@ import qr_codec
 import qr_palette
 import registry
 import settings
+import shortlinks
 import swatch
 from test_local_inference import QWEN_DIGEST, FakeOllama
 
@@ -165,6 +166,92 @@ class VoteTests(CoreCase):
         self.assertFalse(qr_palette.import_color_voats(self.db, self.path("bad.json"))["ok"])
 
 
+class ShortLinkTests(CoreCase):
+    TARGET = "https://shop.example.com/hours"
+
+    def make_short(self, name, color, target=TARGET, section="nonlocal"):
+        return qr_palette.make_qr(self.db, target, color, "M", self.path(name), 4,
+                                  qr_palette.short_request(shortlinks.new_code(7), section))
+
+    def test_local_and_nonlocal_short_links_are_separate(self):
+        public = self.make_short("hours.png", "#3366cc")["value"]
+        local = self.make_short("hours-local.png", "#3366cc", section="local")["value"]
+        self.assertNotEqual(local["short_code"], public["short_code"])
+        self.assertEqual(local["link"], "HTTP://LOCALHOST:8000/" + local["short_code"])
+        self.assertEqual(local["target"], public["target"])
+        self.assertEqual(qr_codec.read_qr_file(local["path"])["value"]["reading"]["text"], local["link"])
+        again = self.make_short("hours-local.svg", "#3366cc", section="local")["value"]
+        self.assertEqual(again["short_code"], local["short_code"])
+        notes = []
+        for shown in qr_palette.search(self.db, "qr_code", "hours", False, 20)["value"]:
+            notes.append(qr_palette.short_note(shown))
+        self.assertEqual(sorted(notes), [" (local)", " (local)", " (nonlocal)"])
+
+    def test_a_short_link_is_printed_and_its_destination_registered(self):
+        made = self.make_short("hours.png", "#3366cc")
+        self.assertTrue(made["ok"], made["error"])
+        code = made["value"]["short_code"]
+        self.assertTrue(shortlinks.is_valid_code(code))
+        self.assertEqual(made["value"]["link"], "HTTPS://GO.EXAMPLE.COM/" + code)
+        self.assertEqual(made["value"]["target"], self.TARGET)
+        self.assertEqual(made["value"]["version"], 2)
+        picture = qr_codec.read_qr_file(made["value"]["path"])
+        self.assertEqual(picture["value"]["reading"]["text"], made["value"]["link"])
+        for value in ("hours", self.TARGET, code):
+            found = qr_palette.search(self.db, "qr_code", value, False, 20)["value"]
+            self.assertEqual(len(found), 1, value)
+            self.assertEqual((found[0]["short_code"], found[0]["target"]), (code, self.TARGET))
+
+    def test_the_same_destination_and_color_reuse_the_id(self):
+        first = self.make_short("hours.png", "#3366cc")["value"]
+        again = self.make_short("hours.svg", "#3366cc")["value"]
+        other = self.make_short("hours-green.png", "#006633")["value"]
+        self.assertEqual(again["short_code"], first["short_code"])
+        self.assertNotEqual(other["short_code"], first["short_code"])
+        self.assertEqual(len(qr_palette.search(self.db, "qr_code", "hours", False, 20)["value"]), 3)
+
+    def test_only_web_links_get_short_links(self):
+        refused = self.make_short("x.png", "#3366cc", "just some text")
+        self.assertFalse(refused["ok"])
+        self.assertIn("http", refused["error"])
+        self.assertFalse(os.path.exists(self.path("x.png")))
+
+    def test_destinations_change_without_a_new_picture(self):
+        made = self.make_short("hours.png", "#3366cc")["value"]
+        before = file_hash(made["path"])
+        self.assertTrue(qr_palette.retarget_link(self.db, made["short_code"], "https://shop.example.com/holidays")["ok"])
+        found = qr_palette.search(self.db, "qr_code", "holidays", False, 20)["value"]
+        self.assertEqual(found[0]["target"], "https://shop.example.com/holidays")
+        self.assertEqual(file_hash(made["path"]), before)
+        self.assertFalse(qr_palette.retarget_link(self.db, made["short_code"], "not a link")["ok"])
+        self.assertFalse(qr_palette.retarget_link(self.db, shortlinks.new_code(7), self.TARGET)["ok"])
+
+    def export(self, arguments):
+        return subprocess.run([sys.executable, PROGRAM, "--db", self.db] + arguments, capture_output=True, timeout=60,
+                              env=child_environment(self.folder), cwd=HERE)
+
+    def test_redirect_pages_are_exported_from_the_command_line_one_section_at_a_time(self):
+        first = self.make_short("hours.png", "#3366cc")["value"]
+        second = self.make_short("menu.png", "#006633", "https://example.com/menu")["value"]
+        local = self.make_short("try.png", "#006633", "https://example.com/try", "local")["value"]
+        site = self.path("site")
+        done = self.export(["--export-redirects", site, "--section", "nonlocal"])
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn(b"wrote 2 nonlocal redirect page(s)", done.stdout)
+        handle = open(os.path.join(site, first["short_code"], "index.html"), encoding="utf-8")
+        page = handle.read()
+        handle.close()
+        self.assertIn("url=https://shop.example.com/hours?utm_source=qr", page)
+        self.assertTrue(os.path.isfile(os.path.join(site, second["short_code"], "index.html")))
+        self.assertFalse(os.path.exists(os.path.join(site, local["short_code"])))
+        lan = self.path("lan")
+        done = self.export(["--export-redirects", lan])  # settings.json's links.use: local by default
+        self.assertIn(b"wrote 1 local redirect page(s)", done.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(lan, local["short_code"], "index.html")))
+        self.assertEqual(self.export(["--export-redirects", lan, "--section", "elsewhere"]).returncode, 2)
+        self.assertFalse(qr_palette.export_redirects(self.path("none.db"), site, "local")["ok"])
+
+
 class ApplySettingsTests(unittest.TestCase):
     def tearDown(self):
         qr_palette.apply_settings(settings.load("no-such-settings.json")["values"])
@@ -205,11 +292,35 @@ class ApplySettingsTests(unittest.TestCase):
 
     def test_ecp_records_become_result_rows(self):
         record = {"id": 3, "hex": "#3366cc", "color_name": "Blue", "color_family": "blue", "rank": 1,
-                  "payload_url": "https://example.com/a", "file_path": "C:\\Codes\\a.png", "net_votes": 0,
-                  "created_at": "2026-10-29T10:00:00Z", "exists": None}
+                  "payload_url": "https://example.com/a", "target_url": "", "file_path": "C:\\Codes\\a.png",
+                  "net_votes": 0, "created_at": "2026-10-29T10:00:00Z", "exists": None}
         self.assertEqual(qr_palette.shown_from_record(record),
                          {"id": 3, "link": "https://example.com/a", "hex": "#3366cc", "name": "Blue", "family": "blue",
-                          "path": "C:\\Codes\\a.png", "exists": None, "ec_level": "M", "version": 1})
+                          "path": "C:\\Codes\\a.png", "exists": None, "ec_level": "M", "version": 1,
+                          "short_code": "", "target": ""})
+        record["payload_url"] = "HTTPS://GO.EXAMPLE.COM/12345674"
+        record["target_url"] = "https://example.com/a"
+        shown = qr_palette.shown_from_record(record)
+        self.assertEqual((shown["short_code"], qr_palette.destination(shown)), ("12345674", "https://example.com/a"))
+
+    def test_links_json_comes_from_the_settings(self):
+        folder = tempfile.mkdtemp(prefix="qr_palette_links_setting_")
+        try:
+            path = os.path.join(folder, "links.json")
+            handle = open(path, "w", encoding="utf-8")
+            handle.write(json.dumps({"nonlocal": {"base": "HTTPS://GO.SHOP.TEST/"}, "id_digits": 5}))
+            handle.close()
+            values = settings.load("no-such-settings.json")["values"]
+            self.assertEqual(values["links"]["use"], "local")
+            values["links"]["file"] = path
+            values["links"]["use"] = "nonlocal"
+            self.assertEqual(qr_palette.apply_settings(values), [])
+            self.assertEqual((qr_palette.LINKS["nonlocal"]["base"], qr_palette.LINKS["id_digits"]),
+                             ("HTTPS://GO.SHOP.TEST/", 5))
+            self.assertEqual(qr_palette.LINK_SECTION, "nonlocal")
+            self.assertEqual(qr_palette.short_request("1", qr_palette.LINK_SECTION)["base"], "HTTPS://GO.SHOP.TEST/")
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 class CommandLineTests(CoreCase):
@@ -330,4 +441,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=639831b60af498b1fd0165d3815c46e6e766d46be0423c58e244f968383f1dc8 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=4eb405681a22f197e8ca2c4521796455a76f19e0d98d9a55e9162d152ef0cdb5 ====

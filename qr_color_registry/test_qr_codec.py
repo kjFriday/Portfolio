@@ -234,7 +234,7 @@ class ColorTests(unittest.TestCase):
 
     def test_svg_reader_refuses_other_drawings(self):
         for text in ("", "<svg/>", '<svg viewBox="0 0 30 30"><path d="M1,1h2v2z"/></svg>',
-                     '<svg viewBox="0 0 30 31"><path d="M4,4h1v1h-1z"/></svg>',
+                     '<svg viewBox="0 0 31 30"><path d="M4,4h1v1h-1z"/></svg>',
                      '<svg viewBox="0 0 37 37"><path d="M4,4h1v1h-1zM99,4h1v1h-1z"/></svg>'):
             self.assertFalse(qr.read_svg_matrix(text)["ok"], text)
 
@@ -264,6 +264,57 @@ class ColorTests(unittest.TestCase):
         self.assertTrue(loaded["ok"])
         self.assertEqual(max(loaded["value"]["gray"]), 255)
         self.assertEqual(min(loaded["value"]["gray"]), 255)  # black was the transparent key
+
+
+class CaptionTests(unittest.TestCase):
+    def setUp(self):
+        self.url = "HTTPS://GO.EXAMPLE.COM/12345674"
+        self.caption = "GO.EXAMPLE.COM/12345674"
+        self.matrix = make(self.url, "M")
+        self.folder = tempfile.mkdtemp(prefix="qr_palette_caption_")
+
+    def tearDown(self):
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+    def test_a_caption_goes_under_the_code_and_the_code_still_reads(self):
+        for scale in (2, 3, 8):
+            loaded = qr.read_png(qr.matrix_to_color_png(self.matrix, scale, 4, "#3366cc", self.caption))
+            self.assertTrue(loaded["ok"])
+            side = (self.matrix["size"] + 8) * scale
+            self.assertGreater(loaded["value"]["height"], side)
+            self.assertGreaterEqual(loaded["value"]["width"], side)
+            self.assertEqual(read(loaded["value"])["value"]["text"], self.url, scale)
+            self.assertEqual(qr.dark_color(loaded["value"]), "#3366cc")
+
+    def test_drawings_with_a_caption(self):
+        text = qr.matrix_to_svg(self.matrix, 4, "#006633", self.caption)
+        self.assertIn("<desc>" + self.caption + "</desc>", text)
+        grid = qr.read_svg_matrix(text)
+        self.assertTrue(grid["ok"], grid["error"])
+        self.assertEqual(grid["value"], self.matrix["dark"])
+        self.assertEqual(qr.svg_color(text), "#006633")
+        for name in ("short.png", "short.svg"):
+            path = os.path.join(self.folder, name)
+            self.assertTrue(qr.save_matrix(self.matrix, path, 4, "#006633", self.caption)["ok"])
+            picture = qr.read_qr_file(path)
+            self.assertTrue(picture["ok"], picture["error"])
+            self.assertEqual((picture["value"]["reading"]["text"], picture["value"]["color"]), (self.url, "#006633"))
+
+    def test_layout(self):
+        self.assertEqual(qr.caption_layout(self.caption, 33 * 8, 8), (["GO.EXAMPLE.COM/", "12345674"], 2))
+        self.assertEqual(qr.caption_layout("SHORT/1", 33 * 8, 8), (["SHORT/1"], 4))
+        self.assertEqual(qr.caption_size(["AB", "C"], 2, 8), (22, 7 * 2 * 2 + 2 * 2 + 8))
+
+    def test_every_character_of_an_address_has_its_own_glyph(self):
+        seen = []
+        for character in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./-:":
+            glyph = qr.GLYPHS[character]
+            self.assertEqual(len(glyph), 7, character)
+            for row in glyph:
+                self.assertEqual(len(row), 5, character)
+                self.assertEqual(row.replace("#", "").replace(".", ""), "", character)
+            self.assertNotIn(glyph, seen, character)
+            seen.append(glyph)
 
 
 class LimitTests(unittest.TestCase):
@@ -331,4 +382,4 @@ class LimitTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=6fc5961d580f528194ac639bf8d21a635acb05aa43151db590b8c7e5965e0c2a ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d26241015c995645ba6fb030800da8663563b76c27e4b832a2d107183ac84d3d ====

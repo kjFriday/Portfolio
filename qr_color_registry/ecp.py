@@ -28,8 +28,9 @@ Records
   Outcome    {"ok": bool, "kind": "ok" | one of KINDS, "detail": str, "value": any}
   QueryPlan  {"intent": "find" | "recommend", "color", "near", "family", "link", "link_exact", "path",
               "limit"}                                                               "" means "any"
-  Record     {"id", "hex", "color_name", "color_family", "rank", "payload_url", "file_path",
-              "net_votes", "created_at", "exists"}
+  Record     {"id", "hex", "color_name", "color_family", "rank", "payload_url", "target_url", "file_path",
+              "net_votes", "created_at", "exists"}      payload_url is what the code holds; target_url is
+              where its short link sends people, "" when the code holds its destination itself
   ColorPick  {"hex", "name", "family", "rank", "uses"}
 """
 
@@ -569,7 +570,8 @@ def run_plan(snapshot, plan, preset):
     for row in registry.find_rows(snapshot["rows"], plan_filters(plan), plan["limit"]):
         records.append({"id": row["id"], "hex": neutral(row["hex"], flags), "color_name": neutral(row["name"], flags),
                         "color_family": neutral(row["family"], flags), "rank": places.get(row["hex"]),
-                        "payload_url": neutral(row["link"], flags), "file_path": neutral(row["path"], flags),
+                        "payload_url": neutral(row["link"], flags), "target_url": neutral(row["target"], flags),
+                        "file_path": neutral(row["path"], flags),
                         "net_votes": snapshot["vote_map"].get(row["hex"], 0),
                         "created_at": neutral(row["created"], flags), "exists": registry.file_state(row["path"], True)})
     wanted = describe_plan(plan)
@@ -858,4 +860,4 @@ def serve(handler, state, reader, writer):
 
 configure_planner(DEFAULT_PLANNER)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=6c35e585e8bd6f74097323395721be72256f6f3a10020debc5d3e350c2f5df2c ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=252770f35ca4ac997d45aee59634bb12e0788dc345c3679c7eb6a858d730794d ====

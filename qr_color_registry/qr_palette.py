@@ -15,19 +15,27 @@ own. Other programs ask it through the Environment Context Protocol (ECP, see EC
 on stdin/stdout (--mcp, or --ecp, the same) with three tools. A local model is chosen first, and
 inference never leaves this computer.
 
+A code can hold a short link instead of its destination (shortlinks.py): a short address with the
+address printed under the code, whose destination can change later without reprinting. Short links
+come in two sections, switched in the Make tab: local (this computer or your own network, for
+trying codes) and nonlocal (your internet address, for printing). The window exports each
+section's redirect pages for a web server to serve.
+
 Everything a user may change is plain, human-readable JSON: settings.json (in the program's data
 folder, written with every setting and its default on the first run), presets/ and weights/ (how
-colors are ranked) and planner.json (how questions become query plans). The options below override
-settings.json for one run.
+colors are ranked), planner.json (how questions become query plans) and links.json (short links).
+The options below override settings.json for one run.
 
 Standard library only, written to port easily like QR Studio and Color Voats: plain functions and
 records, explicit loops, failures as Result records, and a CORE that never touches the GUI.
 
 Records
   Result   {"ok": bool, "error": str, "value": any}
-  Made     {"id": int, "path": str, "link": str, "color": "#rrggbb", "version": int, "level": str}
+  Made     {"id": int, "path": str, "link": str, "color": "#rrggbb", "version": int, "level": str,
+            "short_code": str, "target": str}            link is what the code holds; "" when not short
   Picture  {"reading": Reading, "format": "png" | "svg" | "other", "color": "#rrggbb", "image": Image or None}
-  Shown    {"id", "link", "hex", "name", "family", "path", "exists", "ec_level", "version"}   a result row
+  Shown    {"id", "link", "hex", "name", "family", "path", "exists", "ec_level", "version",
+            "short_code", "target"}                                                   a result row
 
 Usage
   python qr_palette.py                       open the window
@@ -38,6 +46,9 @@ Usage
   python qr_palette.py --ecp                 the same as --mcp
   python qr_palette.py --inference URL       the local Ollama server: http on 127.0.0.1, ::1 or localhost
   python qr_palette.py --inference-timeout S seconds a model may take to plan
+  python qr_palette.py --export-redirects DIR [--section local|nonlocal]
+                                             write a redirect page for every short link of the section in use
+                                             (or the one given) into DIR, then exit
   python qr_palette.py --selftest            run the built-in checks and exit
   python qr_palette.py --version
   python qr_palette.py --smoke FILE          open the window on a scratch registry and default settings, use
@@ -47,6 +58,7 @@ Usage
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -58,6 +70,7 @@ import mcp_server
 import qr_codec
 import registry
 import settings
+import shortlinks
 import swatch
 import textsafe
 
@@ -79,6 +92,8 @@ TILE = 30
 GAP = 4
 COLUMNS = 14
 PREVIEW = 340
+LINKS = shortlinks.copy_links(shortlinks.DEFAULT_LINKS)  # links.json, put in place by apply_settings()
+LINK_SECTION = "local"  # the section new short links use: settings.json's links.use
 
 
 # =================================================================================================
@@ -111,8 +126,9 @@ def default_audit_path():
 
 
 def apply_settings(values):
-    """Put settings.json's values in place across the modules, and load planner.json -> [warnings]."""
-    global DEFAULT_SCALE, PROTOCOL_TIMEOUT, WINDOW_TIMEOUT
+    """Put settings.json's values in place across the modules, and load planner.json and links.json
+    -> [warnings]."""
+    global DEFAULT_SCALE, PROTOCOL_TIMEOUT, WINDOW_TIMEOUT, LINKS, LINK_SECTION
     warnings = []
     colors = values["colors"]
     swatch.MIN_CONTRAST = colors["minimum_contrast"]
@@ -146,7 +162,10 @@ def apply_settings(values):
     planner_path = values["planner"]["file"] or os.path.join(HERE, "planner.json")
     loaded = ecp.load_planner(planner_path)
     ecp.configure_planner(loaded["planner"])
-    return warnings + loaded["warnings"]
+    links = shortlinks.load_links(values["links"]["file"] or os.path.join(HERE, "links.json"))
+    LINKS = links["links"]
+    LINK_SECTION = values["links"]["use"]
+    return warnings + loaded["warnings"] + links["warnings"]
 
 
 def make_engine(db_path, inference_url, timeout, values, model):
@@ -229,9 +248,38 @@ def with_registry(db_path, work):
         registry.close(opened["value"])
 
 
-def make_qr(db_path, link, color, level, path, scale):
+def short_request(code, section):
+    """What make_qr needs for a short link: the base of links.json's `section` ("local" or
+    "nonlocal"), the ID length, and the ID to use for a new one (the window keeps one ready, so its
+    preview shows the code that will be saved)."""
+    return {"base": LINKS[section]["base"], "digits": LINKS["id_digits"], "code": code, "section": section}
+
+
+def plan_short_link(db_path, target, color, short):
+    """The short link a code for `target` in `color` prints -> Result {"code", "url", "made": bool}:
+    the one already made on short["base"] for this destination in this color, else a new one there
+    with short["code"] (or a fresh ID when that one is not valid or already used). Local and nonlocal
+    short links to the same destination are separate, since they print different addresses."""
+    def plan(connection):
+        found = registry.short_link_for(connection, target, color, short["base"])
+        if found is not None:
+            return ok_result({"code": found["code"], "url": found["url"], "made": True})
+        code = short["code"]
+        tries = 0
+        while not shortlinks.is_valid_code(code) or registry.code_taken(connection, code):
+            tries = tries + 1
+            if tries > 50:
+                return fail("cannot find a free short-link ID; raise id_digits in links.json")
+            code = shortlinks.new_code(short["digits"])
+        return ok_result({"code": code, "url": shortlinks.short_url(short["base"], code), "made": False})
+
+    return with_registry(db_path, plan)
+
+
+def make_qr(db_path, link, color, level, path, scale, short=None):
     """Draw `link` as a QR code in `color`, save it to `path` (.png or .svg), read the file back to
-    prove it scans, and register it -> Result Made."""
+    prove it scans, and register it -> Result Made. With `short` (see short_request), `link` is the
+    destination: the code holds a short link to it instead, with that address printed under it."""
     text = textsafe.clean(link, None).strip()
     if text == "":
         return fail("type a link or some text first")
@@ -242,12 +290,26 @@ def make_qr(db_path, link, color, level, path, scale):
         return fail(color + " is too light to scan on white")
     if level not in registry.EC_LEVELS:
         return fail("unknown error-correction level")
+    target = ""
+    code = ""
+    caption = ""
+    if short is not None:
+        checked = shortlinks.check_target(text)
+        if not checked["ok"]:
+            return checked
+        target = checked["value"]
+        planned = plan_short_link(db_path, target, color, short)
+        if not planned["ok"]:
+            return planned
+        code = planned["value"]["code"]
+        text = planned["value"]["url"]
+        caption = shortlinks.caption(text)
     made = qr_codec.encode_text(text, level, 1, -1)
     if not made["ok"]:
         return made
     matrix = made["value"]
     path = registry.display_path(path)
-    saved = qr_codec.save_matrix(matrix, path, scale, color)
+    saved = qr_codec.save_matrix(matrix, path, scale, color, caption)
     if not saved["ok"]:
         return saved
     picture = qr_codec.read_qr_file(path)
@@ -257,17 +319,58 @@ def make_qr(db_path, link, color, level, path, scale):
         except OSError:
             pass
         return fail("the saved picture did not read back the same, so it was removed")
+    entry = {"link": text, "color": color, "path": path, "format": qr_codec.file_kind(path), "ec_level": level,
+             "version": matrix["version"], "origin": "made"}
+    if code != "":
+        entry["short"] = {"code": code, "target": target}
 
     def register(connection):
-        return registry.save_qr(connection, {"link": text, "color": color, "path": path,
-                                             "format": qr_codec.file_kind(path), "ec_level": level,
-                                             "version": matrix["version"], "origin": "made"})
+        return registry.save_qr(connection, entry)
 
     saved_record = with_registry(db_path, register)
     if not saved_record["ok"]:
         return saved_record
     return ok_result({"id": saved_record["value"], "path": path, "link": text, "color": color,
-                      "version": matrix["version"], "level": level})
+                      "version": matrix["version"], "level": level, "short_code": code, "target": target})
+
+
+def retarget_link(db_path, code, link):
+    """Send short link `code` to `link` from now on -> Result True. Export the pages to publish it."""
+    checked = shortlinks.check_target(link)
+    if not checked["ok"]:
+        return checked
+
+    def change(connection):
+        return registry.retarget(connection, code, checked["value"])
+
+    changed = with_registry(db_path, change)
+    if changed["ok"] and not changed["value"]:
+        return fail("there is no short link " + code)
+    return changed
+
+
+def export_redirects(db_path, folder, section):
+    """Write a redirect page for every short link of `section` ("local" or "nonlocal") into `folder`
+    (shortlinks.export_pages) -> Result. The registry is only read, on the read-only rail."""
+    opened = registry.connect(db_path, True)
+    if not opened["ok"]:
+        return opened
+    try:
+        rows = registry.short_links(opened["value"])
+    except Exception as error:
+        return fail("cannot read the short links: " + str(error))
+    finally:
+        registry.close(opened["value"])
+    return shortlinks.export_pages(folder, rows, LINKS[section]["base"], LINKS["tags"])
+
+
+def short_note(shown):
+    """A short link's section for the window: " (local)", " (nonlocal)", or "" when its address is
+    on neither section's base any more."""
+    section = shortlinks.section_of(LINKS, shown["link"])
+    if section == "":
+        return ""
+    return " (" + section + ")"
 
 
 def picture_from_image(image):
@@ -358,15 +461,24 @@ def board(db_path, preset):
 
 def shown_from_row(row, exists):
     return {"id": row["id"], "link": row["link"], "hex": row["hex"], "name": row["name"], "family": row["family"],
-            "path": row["path"], "exists": exists, "ec_level": row["ec_level"], "version": row["version"]}
+            "path": row["path"], "exists": exists, "ec_level": row["ec_level"], "version": row["version"],
+            "short_code": row["short_code"], "target": row["target"]}
 
 
 def shown_from_record(record):
     """An ECP Record as a result row. Records carry no EC level or version, so the preview is drawn at
-    M, as small as the link allows."""
+    M, as small as the link allows. A short link's ID is the last part of the address it prints."""
+    code = ""
+    if record["target_url"] != "":
+        code = record["payload_url"].rstrip("/").split("/")[-1]
     return {"id": record["id"], "link": record["payload_url"], "hex": record["hex"], "name": record["color_name"],
             "family": record["color_family"], "path": record["file_path"], "exists": record["exists"],
-            "ec_level": "M", "version": 1}
+            "ec_level": "M", "version": 1, "short_code": code, "target": record["target_url"]}
+
+
+def destination(shown):
+    """Where a result's code sends people: its short link's destination, or the link it holds."""
+    return shown["target"] or shown["link"]
 
 
 def search(db_path, by, value, near, limit):
@@ -408,15 +520,26 @@ def matches_for_text(db_path, text, path):
     return ok_result(shown)
 
 
-def preview_png(link, color, level, version):
-    """A small PNG of a record's code, drawn again from its link (for previews in the window)."""
+def preview_png(link, color, level, version, caption=""):
+    """A small PNG of a record's code, drawn again from its link (for previews in the window), as
+    large as fits in PREVIEW - 20 pixels with its caption."""
     made = qr_codec.encode_text(link, level, version, -1)
     if not made["ok"]:
         made = qr_codec.encode_text(link, "M", 1, -1)
     if not made["ok"]:
         return b""
-    scale = max(1, (PREVIEW - 20) // (made["value"]["size"] + 8))
-    return qr_codec.matrix_to_color_png(made["value"], scale, 4, color)
+    return fitted_png(made["value"], color, caption, PREVIEW - 20)
+
+
+def fitted_png(matrix, color, caption, room):
+    """The code as PNG bytes at the largest scale whose picture, caption included, fits `room` pixels."""
+    scale = max(1, room // (matrix["size"] + 8))
+    while True:
+        png = qr_codec.matrix_to_color_png(matrix, scale, 4, color, caption)
+        width, height = struct.unpack(">II", png[16:24])
+        if scale == 1 or (width <= room and height <= room):
+            return png
+        scale = scale - 1
 
 
 def reveal_command_line(path):
@@ -460,6 +583,17 @@ def selftest():
         check(found["ok"] and len(found["value"]) == 2, "found again by its link", failures)
         check(vote_color(db_path, "#3366cc", 1)["value"] == 1 and board(db_path, "mixer")["value"]["order"][0] == "#3366cc",
               "a Good vote moves the color to the top", failures)
+        local = make_qr(db_path, "https://example.com/later", "#006633", "M", os.path.join(folder, "s.png"), 4,
+                        short_request(shortlinks.new_code(LINKS["id_digits"]), "local"))
+        public = make_qr(db_path, "https://example.com/later", "#006633", "M", os.path.join(folder, "t.png"), 4,
+                         short_request(shortlinks.new_code(LINKS["id_digits"]), "nonlocal"))
+        check(local["ok"] and public["ok"] and local["value"]["link"].startswith(LINKS["local"]["base"]) and
+              public["value"]["link"].startswith(LINKS["nonlocal"]["base"]) and
+              public["value"]["target"] == "https://example.com/later",
+              "local and nonlocal short links are printed in the code, each with its destination", failures)
+        exported = export_redirects(db_path, os.path.join(folder, "site"), "local")
+        check(exported["ok"] and exported["value"]["written"] == 1 and len(exported["value"]["skipped"]) == 1,
+              "the local section's redirect page is exported, and only that one", failures)
 
         print("ecp and mcp")
         engine = ecp.new_engine(db_path, "http://127.0.0.1:1", 1.0, __version__)
@@ -560,7 +694,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     import threading
     import tkinter as tk
     import webbrowser
-    from tkinter import ttk, filedialog, messagebox
+    from tkinter import ttk, filedialog, messagebox, simpledialog
 
     windows_identity()
     opened = registry.connect(db_path, False)
@@ -579,11 +713,12 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     preset = values["colors"]["preset"]
     folder = values["pictures"]["folder"] or default_qr_folder()
 
-    state = {"job": None, "job_label": "", "job_number": 0, "finished": [], "picked": "", "order": [], "votes": {},
+    state = {"job": None, "job_label": "", "job_number": 0, "finished": [], "queue": [], "picked": "", "order": [],
+             "votes": {},
              "places": {}, "make_after": None, "matrix": None, "photos": {}, "swatches": {}, "picture": None,
              "picture_path": "", "picture_source": "", "results": [], "folder": folder, "models": [],
              "engine": engine, "model_id": "", "inference": "checking",
-             "remembered_model": values["inference"]["model"]}
+             "remembered_model": values["inference"]["model"], "short_candidate": "", "export_folders": {}}
 
     window = tk.Tk()
     window.title("Generic Company Inc. — QR Palette " + __version__)
@@ -593,21 +728,33 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     status = tk.StringVar(value="Ready")
     footer = tk.StringVar(value="")
 
-    # --- Jobs: one slow task at a time, off the window's thread -----------------------------------
+    # --- Jobs: one slow task at a time, off the window's thread; the rest wait their turn ----------
     def poll_job():
         while len(state["finished"]) > 0:
             number, done, outcome = state["finished"].pop(0)
             if number == state["job_number"] and state["job"] is not None:
                 state["job"] = None
                 done(outcome)
+                start_next()
                 return
         if state["job"] is not None:
             window.after(100, poll_job)
 
     def start_job(label, work, done):
+        """Run work() off the window's thread and then done(outcome) on it. Jobs run one at a time, first
+        come, first served: one asked for while another runs (Save while a model loads, say) waits for
+        its turn instead of being refused."""
+        state["queue"].append((label, work, done))
         if state["job"] is not None:
-            status.set("Busy: " + state["job_label"] + "…")
-            return False
+            status.set(state["job_label"] + "…  then " + label.lower() + " (" + str(len(state["queue"])) +
+                       " waiting)")
+            return
+        start_next()
+
+    def start_next():
+        if state["job"] is not None or len(state["queue"]) == 0:
+            return
+        label, work, done = state["queue"].pop(0)
         state["job_number"] = state["job_number"] + 1
         number = state["job_number"]
         state["job_label"] = label
@@ -619,17 +766,21 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 outcome = fail(label + " failed: " + str(error))
             state["finished"].append((number, done, outcome))
 
-        status.set(label + "…")
+        waiting = ""
+        if len(state["queue"]) > 0:
+            waiting = "  (" + str(len(state["queue"])) + " more waiting)"
+        status.set(label + "…" + waiting)
         state["job"] = threading.Thread(target=runner, daemon=True)
         state["job"].start()
         window.after(100, poll_job)
-        return True
 
     def cancel_job():
+        """Stop waiting for the running job (its answer is ignored); the jobs waiting behind it go on."""
         if state["job"] is not None:
             state["job"] = None
             state["job_number"] = state["job_number"] + 1
             status.set("Cancelled " + state["job_label"].lower())
+            start_next()
 
     def save_setting(section, key, value):
         if smoke_path != "":
@@ -698,7 +849,34 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             subprocess.Popen(["notepad", config["path"]])
         status.set("Settings take effect the next time QR Palette starts")
 
+    def export_pages(section):
+        start = state["export_folders"].get(section) or LINKS[section]["export_folder"] or os.path.expanduser("~")
+        folder = filedialog.askdirectory(title="Export the " + section + " redirect pages to", initialdir=start,
+                                         mustexist=False)
+        if not folder:
+            return
+        folder = registry.display_path(folder)
+
+        def done(outcome):
+            if not outcome["ok"]:
+                messagebox.showerror("Export redirect pages", outcome["error"])
+                return
+            state["export_folders"][section] = folder
+            message = "Wrote " + str(outcome["value"]["written"]) + " " + section + " redirect page(s) to " + folder
+            if len(outcome["value"]["skipped"]) > 0:
+                message = (message + "; " + str(len(outcome["value"]["skipped"])) +
+                           " short link(s) on other addresses were left out")
+            if section == "local":
+                message = message + ". Serve the folder from this computer to try them (README.md shows how)."
+            else:
+                message = message + ". Publish the folder at " + shortlinks.host_of(LINKS[section]["base"]) + "."
+            status.set(message)
+
+        start_job("Exporting redirect pages", lambda: export_redirects(db_path, folder, section), done)
+
     file_menu.add_command(label="Import votes from Color Voats…", command=import_votes)
+    file_menu.add_command(label="Export local redirect pages…", command=lambda: export_pages("local"))
+    file_menu.add_command(label="Export nonlocal redirect pages…", command=lambda: export_pages("nonlocal"))
     file_menu.add_command(label="Open settings.json", command=open_settings)
     file_menu.add_separator()
     file_menu.add_command(label="Exit", command=window.destroy)
@@ -732,6 +910,17 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     level_box = ttk.Combobox(make_bar, values=["L (7%)", "M (15%)", "Q (25%)", "H (30%)"], width=8, state="readonly")
     level_box.set(level_names[values["pictures"]["error_correction"]])
     level_box.pack(side="left", padx=6)
+    short_bar = ttk.Frame(make_tab)
+    short_bar.pack(fill="x", pady=(6, 0))
+    short_choice = tk.BooleanVar(value=LINKS["short_by_default"])
+    section_choice = tk.StringVar(value=LINK_SECTION)
+    ttk.Checkbutton(short_bar, text="Short link, printed as", variable=short_choice,
+                    command=lambda: schedule_preview()).pack(side="left")
+    for section in shortlinks.SECTIONS:
+        ttk.Radiobutton(short_bar, text=section + "  " + LINKS[section]["base"] + "…", value=section,
+                        variable=section_choice, command=lambda: change_section()).pack(side="left", padx=(10, 0))
+    if len(LINKS["templates"]) > 0:
+        ttk.Button(short_bar, text="From template…", command=lambda: from_template()).pack(side="left", padx=16)
     make_body = ttk.Frame(make_tab)
     make_body.pack(fill="both", expand=True, pady=(8, 0))
     tile_side = ttk.Frame(make_body)
@@ -755,10 +944,10 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     preview = tk.Canvas(preview_side, width=PREVIEW + 20, height=PREVIEW + 20, background="#ffffff", highlightthickness=1,
                         highlightbackground="#c8c8c8")
     preview.pack(anchor="nw")
+    save_bar = ttk.Frame(preview_side)  # right under the preview, so a long note below never hides it
+    save_bar.pack(anchor="w", pady=(6, 0))
     make_info = tk.StringVar(value="Type a link and pick a color.")
-    ttk.Label(preview_side, textvariable=make_info, wraplength=380, justify="left").pack(anchor="w", pady=4)
-    save_bar = ttk.Frame(preview_side)
-    save_bar.pack(anchor="w")
+    ttk.Label(preview_side, textvariable=make_info, wraplength=560, justify="left").pack(anchor="w", pady=4)
 
     def chosen_level():
         return level_box.get()[:1] or "M"
@@ -842,27 +1031,60 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         if text == "":
             make_info.set("Type a link and pick a color.")
             return
+        color = state["picked"] or qr_codec.INK
+        caption = ""
+        lead = ""
+        if short_choice.get():
+            checked = shortlinks.check_target(text)
+            if not checked["ok"]:
+                make_info.set(checked["error"] + ".")
+                return
+            if state["short_candidate"] == "":
+                state["short_candidate"] = shortlinks.new_code(LINKS["id_digits"])
+            section = section_choice.get()
+            planned = plan_short_link(db_path, checked["value"], color, short_request(state["short_candidate"], section))
+            if not planned["ok"]:
+                make_info.set(planned["error"] + ".")
+                return
+            if not planned["value"]["made"]:
+                state["short_candidate"] = planned["value"]["code"]
+            text = planned["value"]["url"]
+            caption = shortlinks.caption(text)
+            lead = "Prints " + text + " (" + section + "), which sends people to " + checked["value"] + ".\n"
+            if planned["value"]["made"]:
+                lead = lead + "Made before for this link in this color. "
+            if section == "local":
+                lead = lead + "Local: works only where you serve the local pages.\n"
+            elif shortlinks.is_placeholder(LINKS["nonlocal"]["base"]):
+                lead = lead + "Set your own nonlocal address in links.json before printing.\n"
+            elif planned["value"]["made"]:
+                lead = lead + "\n"
         made = qr_codec.encode_text(text, chosen_level(), 1, -1)
         if not made["ok"]:
             make_info.set(made["error"] + ".")
             return
         state["matrix"] = made["value"]
-        color = state["picked"] or qr_codec.INK
-        scale = max(1, PREVIEW // (made["value"]["size"] + 8))
-        photo = photo_from_png(qr_codec.matrix_to_color_png(made["value"], scale, 4, color))
+        photo = photo_from_png(fitted_png(made["value"], color, caption, PREVIEW))
         state["photos"]["preview"] = photo
         preview.create_image((PREVIEW + 20) // 2, (PREVIEW + 20) // 2, image=photo)
-        side = (made["value"]["size"] + 8) * DEFAULT_SCALE
+        width, height = struct.unpack(">II", qr_codec.matrix_to_color_png(made["value"], DEFAULT_SCALE, 4, color,
+                                                                         caption)[16:24])
         hint = ""
         if state["picked"] == "":
             hint = " Pick a color to save it."
-        make_info.set("Version " + str(made["value"]["version"]) + ", level " + made["value"]["level"] + ". PNG will be " +
-                      str(side) + " px square." + hint)
+        make_info.set(lead + "Version " + str(made["value"]["version"]) + ", level " + made["value"]["level"] +
+                      ". PNG will be " + str(width) + " × " + str(height) + " px." + hint)
 
     def schedule_preview(event=None):
         if state["make_after"] is not None:
             window.after_cancel(state["make_after"])
         state["make_after"] = window.after(250, refresh_preview)
+
+    def change_section():
+        """Local or nonlocal: picking one ticks Short link, and the choice is remembered."""
+        save_setting("links", "use", section_choice.get())
+        short_choice.set(True)
+        schedule_preview()
 
     def save_as(kind):
         text = textsafe.clean(link_text.get(), None).strip()
@@ -881,6 +1103,11 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             return
         color = state["picked"]
         level = chosen_level()
+        short = None
+        if short_choice.get():
+            if state["short_candidate"] == "":
+                state["short_candidate"] = shortlinks.new_code(LINKS["id_digits"])
+            short = short_request(state["short_candidate"], section_choice.get())
 
         def done(outcome):
             if not outcome["ok"]:
@@ -890,11 +1117,82 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             state["folder"] = os.path.dirname(outcome["value"]["path"])
             if os.path.normcase(state["folder"]) != os.path.normcase(default_qr_folder()):
                 save_setting("pictures", "folder", state["folder"])
-            status.set("Saved and registered: " + outcome["value"]["path"])
+            message = "Saved and registered: " + outcome["value"]["path"]
+            if outcome["value"]["short_code"] != "":
+                if outcome["value"]["short_code"] == state["short_candidate"]:
+                    state["short_candidate"] = ""  # used: the next new short link gets a new ID
+                message = (message + "  ·  " + short["section"] + " short link " + outcome["value"]["short_code"] +
+                           " sends people to " + outcome["value"]["target"] + " (File → Export " + short["section"] +
+                           " redirect pages… publishes it)")
+            status.set(message)
             refresh_footer()
             refresh_used()
 
-        start_job("Saving", lambda: make_qr(db_path, text, color, level, path, DEFAULT_SCALE), done)
+        start_job("Saving", lambda: make_qr(db_path, text, color, level, path, DEFAULT_SCALE, short), done)
+
+    def from_template():
+        """A small dialog that builds the link from one of links.json's templates."""
+        names = sorted(LINKS["templates"])
+        dialog = tk.Toplevel(window)
+        dialog.title("Link from a template")
+        dialog.transient(window)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Template").grid(row=0, column=0, sticky="w")
+        chooser = ttk.Combobox(body, values=names, state="readonly", width=24)
+        chooser.grid(row=0, column=1, sticky="w", pady=4)
+        pattern_text = tk.StringVar(value="")
+        ttk.Label(body, textvariable=pattern_text, foreground="#555555").grid(row=1, column=0, columnspan=2, sticky="w")
+        fields = ttk.Frame(body)
+        fields.grid(row=2, column=0, columnspan=2, sticky="we", pady=6)
+        result_text = tk.StringVar(value="")
+        ttk.Label(body, textvariable=result_text, wraplength=440, justify="left").grid(row=3, column=0, columnspan=2,
+                                                                                       sticky="w")
+        entries = {}
+
+        def filled():
+            typed = {}
+            for name in entries:
+                typed[name] = entries[name].get()
+            return shortlinks.fill_template(LINKS["templates"][chooser.get()], typed)
+
+        def update(event=None):
+            outcome = filled()
+            result_text.set(outcome["value"] if outcome["ok"] else outcome["error"])
+
+        def choose(event=None):
+            for child in fields.winfo_children():
+                child.destroy()
+            entries.clear()
+            pattern = LINKS["templates"][chooser.get()]
+            pattern_text.set(pattern)
+            names_in_order = shortlinks.template_fields(pattern)
+            for row in range(len(names_in_order)):
+                ttk.Label(fields, text=names_in_order[row]).grid(row=row, column=0, sticky="w", padx=(0, 8))
+                entry = ttk.Entry(fields, width=40)
+                entry.grid(row=row, column=1, pady=2)
+                entry.bind("<KeyRelease>", update)
+                entries[names_in_order[row]] = entry
+            update()
+
+        def use():
+            outcome = filled()
+            if not outcome["ok"]:
+                result_text.set(outcome["error"])
+                return
+            link_text.set(outcome["value"])
+            dialog.destroy()
+            refresh_preview()
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(buttons, text="Use this link", command=use).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        chooser.bind("<<ComboboxSelected>>", choose)
+        chooser.set(names[0])
+        choose()
+        dialog.grab_set()
 
     def change_preset(event=None):
         save_setting("colors", "preset", preset_box.get())
@@ -1161,8 +1459,12 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         for index in range(len(shown_list)):
             shown = shown_list[index]
             exists = {True: "yes", False: "missing", None: "?"}[shown["exists"]]
+            link = destination(shown).replace("\n", " ")
+            if shown["short_code"] != "":
+                section = shortlinks.section_of(LINKS, shown["link"])
+                link = link + "   (" + (section + " " if section != "" else "") + "short " + shown["short_code"] + ")"
             results.insert("", "end", iid=str(index), text=" " + shown["name"], image=swatch_image(shown["hex"]),
-                           values=(shown["hex"], shown["link"].replace("\n", " "), shown["path"], exists))
+                           values=(shown["hex"], link, shown["path"], exists))
         detail_preview.delete("all")
         detail_text.set("Select a result to see it here.")
         status.set(note)
@@ -1222,7 +1524,10 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         detail_preview.delete("all")
         if shown is None:
             return
-        photo = photo_from_png(preview_png(shown["link"], shown["hex"], shown["ec_level"], shown["version"]))
+        caption = ""
+        if shown["short_code"] != "":
+            caption = shortlinks.caption(shown["link"])
+        photo = photo_from_png(preview_png(shown["link"], shown["hex"], shown["ec_level"], shown["version"], caption))
         state["photos"]["detail"] = photo
         if photo is not None:
             factor = 1
@@ -1232,8 +1537,14 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 photo = photo.subsample(factor, factor)
                 state["photos"]["detail"] = photo
             detail_preview.create_image(86, 86, image=photo)
-        detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["link"], 300) +
-                        "\nPath: " + shown["path"])
+        if shown["short_code"] != "":
+            detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["target"], 300) +
+                            "\nPrinted as: " + shown["link"] + short_note(shown) +
+                            "  (Change destination… sends it elsewhere)" +
+                            "\nPath: " + shown["path"])
+        else:
+            detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["link"], 300) +
+                            "\nPath: " + shown["path"])
 
     def open_shown_picture():
         shown = selected_shown()
@@ -1264,18 +1575,45 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         if shown is None:
             return
         window.clipboard_clear()
-        window.clipboard_append(shown[key])
+        if key == "link":
+            window.clipboard_append(destination(shown))
+        else:
+            window.clipboard_append(shown[key])
         status.set("Copied the " + key)
 
     def open_shown_link():
         shown = selected_shown()
         if shown is None:
             return
-        if not qr_codec.is_link(shown["link"]):
+        link = destination(shown)
+        if not qr_codec.is_link(link):
             status.set("Only http:// and https:// links can be opened")
             return
-        if messagebox.askyesno("Open link", "Open this link in your browser?\n\n" + shown["link"]):
-            webbrowser.open(shown["link"].strip())
+        if messagebox.askyesno("Open link", "Open this link in your browser?\n\n" + link):
+            webbrowser.open(link.strip())
+
+    def change_destination():
+        shown = selected_shown()
+        if shown is None:
+            return
+        if shown["short_code"] == "":
+            status.set("This code holds its link itself; only a short link can be sent somewhere else")
+            return
+        link = simpledialog.askstring("Change destination", "Where should " + shown["link"] + " send people?\n"
+                                      "Printed codes keep working; export the redirect pages again to publish it.",
+                                      initialvalue=shown["target"], parent=window)
+        if link is None:
+            return
+
+        def done(outcome):
+            if not outcome["ok"]:
+                messagebox.showerror("Change destination", outcome["error"])
+                return
+            status.set("Short link " + shown["short_code"] + " now sends people to " + link.strip() +
+                       "  ·  File → Export redirect pages… publishes it")
+            run_search()
+
+        start_job("Changing the destination", lambda: retarget_link(db_path, shown["short_code"], link), done)
 
     def forget_shown():
         shown = selected_shown()
@@ -1443,7 +1781,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     ttk.Button(detail_buttons, text="Copy path", command=lambda: copy_shown("path")).pack(side="left")
     ttk.Button(detail_buttons, text="Copy link", command=lambda: copy_shown("link")).pack(side="left", padx=6)
     ttk.Button(detail_buttons, text="Open link", command=open_shown_link).pack(side="left")
-    ttk.Button(detail_buttons, text="Forget record", command=forget_shown).pack(side="left", padx=6)
+    ttk.Button(detail_buttons, text="Change destination…", command=change_destination).pack(side="left", padx=6)
+    ttk.Button(detail_buttons, text="Forget record", command=forget_shown).pack(side="left")
     results.bind("<<TreeviewSelect>>", show_detail)
     find_entry.bind("<Return>", lambda event: run_search())
     color_entry.bind("<Return>", lambda event: run_search())
@@ -1531,7 +1870,8 @@ def main(arguments):
     if "--selftest" in arguments:
         return selftest()
     values = {}
-    for name in ("--db", "--inference", "--inference-timeout", "--model", "--smoke", "--settings"):
+    for name in ("--db", "--inference", "--inference-timeout", "--model", "--smoke", "--settings", "--export-redirects",
+                 "--section"):
         value = option_value(arguments, name)
         if value is None:
             print(name + " needs a value")
@@ -1557,6 +1897,22 @@ def main(arguments):
     if db_path == "":
         db_path = config["values"]["registry"] or default_db_path()
     db_path = os.path.abspath(db_path)
+    if values["--export-redirects"] != "":
+        for warning in warnings:
+            sys.stderr.write("warning: " + warning + "\n")
+        section = values["--section"] or LINK_SECTION
+        if section not in shortlinks.SECTIONS:
+            print("--section is local or nonlocal")
+            return 2
+        exported = export_redirects(db_path, os.path.abspath(values["--export-redirects"]), section)
+        if not exported["ok"]:
+            print(exported["error"])
+            return 1
+        print("wrote " + str(exported["value"]["written"]) + " " + section + " redirect page(s) to " +
+              exported["value"]["folder"])
+        if len(exported["value"]["skipped"]) > 0:
+            print("skipped (another address or no longer a valid link): " + ", ".join(exported["value"]["skipped"]))
+        return 0
     timeout = 0.0
     if values["--inference-timeout"] != "":
         try:
@@ -1592,4 +1948,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=437fd8caa04df420caae3e9f2693798a331ad74215dd23c2d78c61b9493e71e1 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ea3dc889f15f290effab031e6dae9c936e0214840fae7928a28b5209873dd245 ====

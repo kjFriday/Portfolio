@@ -201,6 +201,16 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Icon: a self-drawn 16×16 glyph of nine color tiles, enlarged with `tools/pixel_icons.py`.
 - Checked: the 43 tests pass 5 runs in a row; `factory.py --check` and `--selftest` pass. `--smoke` finds one canvas of 216 rectangles with no text items and no menu; an upvoated tile moves to the top, a downvoat counts, Ctrl+Z restores the board, and the user's voat file is left alone. `stamp.py --check` is clean; the generated rankers count as generated and are not stamped.
 
+**color_tile_recommender 0.2.0** (a social feed)
+- The board of tiles is now a feed of posts, like a social site. Each post shows who posted it and when, the color, its caption and hex code, Good and Bad buttons, Save, and a comment section where your comments can be deleted. You get one vote per post: press it again to take it back, or press the other button to switch.
+- Tabs:
+  - **Feed**: For you (ranked by the chosen preset) or New, 20 posts at a time with Show more. Votes don't reshuffle what you're reading; Refresh re-ranks.
+  - **Saved**: the posts you saved.
+  - **New post**: pick or type a color and add a caption of up to 140 characters. Each color can be posted once, and you can delete your own posts.
+- The 216 cube colors are the built-in posts, each captioned with a name worked out from its OKLab lightness, chroma and hue ("Dark teal", "Light grey").
+- Posts, votes, comments and saves are kept in one file on this computer (`social.json`). It is written through a temporary file, and bad entries are dropped on load. `--voats` is now `--data`, and Ctrl+Z is gone: you take a vote back by pressing it again.
+- Checked: 58 tests pass 5 runs in a row and `--selftest` passes. `--smoke` votes, saves, comments, opens Saved and posts a new color in memory; the new post comes first in New. The feed was also checked by eye in a window screenshot.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

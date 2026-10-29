@@ -1,0 +1,137 @@
+{
+  "about": "How ECP turns a question in plain English into a query plan. rules: what the selected local model is told, one line each; {families} stands for the list of color families. examples: questions with the plans they should give, added to the rules. family_words: more words for each color family. words_meaning_a_code: words that only say \"QR code\". words_to_skip and words_to_trim: filler words taken off the ends of links and paths. Edit, save and restart.",
+  "rules": [
+    "You turn one question about a registry of colored QR codes into a JSON query plan. Every QR code has a link (the text it holds), a color (#rrggbb, in a family such as blue or green) and the path of its picture file.",
+    "Answer with one JSON object and nothing else, with exactly these fields:",
+    "  intent: \"find\" to look QR codes up, \"recommend\" to suggest colors for a new QR code",
+    "  color: a #rrggbb code written in the question, else \"\"",
+    "  near: true when the question asks for colors close to that code",
+    "  family: one of {families}, else \"\"",
+    "  link: words the link should contain, copied from the question, else \"\"",
+    "  link_exact: a whole link written in the question, else \"\"",
+    "  path: words from a folder or file name in the question, else \"\"",
+    "  limit: how many results the question wants, 20 when it does not say",
+    "Copy text exactly from the question. Never invent a link, a path or a #rrggbb code: a color named in words (blue, dark green) is a family, not a code."
+  ],
+  "examples": [
+    {
+      "question": "blue QR codes that link to the shop",
+      "plan": {
+        "intent": "find",
+        "color": "",
+        "near": false,
+        "family": "blue",
+        "link": "shop",
+        "link_exact": "",
+        "path": "",
+        "limit": 20
+      }
+    },
+    {
+      "question": "which code points to https://example.com/menu?",
+      "plan": {
+        "intent": "find",
+        "color": "",
+        "near": false,
+        "family": "",
+        "link": "",
+        "link_exact": "https://example.com/menu",
+        "path": "",
+        "limit": 20
+      }
+    },
+    {
+      "question": "suggest two colors for a new code",
+      "plan": {
+        "intent": "recommend",
+        "color": "",
+        "near": false,
+        "family": "",
+        "link": "",
+        "link_exact": "",
+        "path": "",
+        "limit": 2
+      }
+    },
+    {
+      "question": "codes close to #3366cc in the marketing folder",
+      "plan": {
+        "intent": "find",
+        "color": "#3366cc",
+        "near": true,
+        "family": "",
+        "link": "",
+        "link_exact": "",
+        "path": "marketing",
+        "limit": 20
+      }
+    }
+  ],
+  "family_words": {
+    "gray": "grey",
+    "cyan": "teal",
+    "aqua": "teal",
+    "turquoise": "teal",
+    "violet": "purple",
+    "lilac": "purple",
+    "lavender": "purple",
+    "magenta": "pink",
+    "fuchsia": "pink",
+    "navy": "blue",
+    "azure": "blue",
+    "maroon": "red",
+    "crimson": "red",
+    "scarlet": "red",
+    "lime": "green",
+    "gold": "yellow",
+    "golden": "yellow",
+    "tan": "brown",
+    "beige": "brown",
+    "khaki": "olive"
+  },
+  "words_meaning_a_code": [
+    "qr",
+    "qrs",
+    "code",
+    "codes",
+    "one",
+    "ones",
+    "please"
+  ],
+  "words_to_skip": [
+    "the",
+    "a",
+    "an",
+    "my",
+    "our",
+    "your",
+    "this",
+    "that",
+    "these",
+    "those",
+    "to",
+    "of",
+    "page",
+    "site",
+    "website",
+    "url",
+    "link",
+    "links",
+    "code",
+    "codes",
+    "qr",
+    "one",
+    "ones"
+  ],
+  "words_to_trim": [
+    "pages",
+    "folder",
+    "folders",
+    "file",
+    "files",
+    "directory",
+    "picture",
+    "pictures",
+    "image"
+  ]
+}

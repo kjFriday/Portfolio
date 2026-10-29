@@ -1,0 +1,10 @@
+{
+  "about": "The default. Net voats rank first; the colors they leave tied go to Wilson score, then to color similarity, then to exploration. Three downvoats in a row pass the lead down the chain.",
+  "algo": "mixer",
+  "uses": [
+    "net",
+    "wilson",
+    "similar",
+    "explore"
+  ]
+}

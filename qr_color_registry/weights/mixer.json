@@ -1,0 +1,6 @@
+{
+  "about": "The mixer runs its preset's chain of algos and hands on whenever one stalls. tie: scores (scaled to 0..1) closer than this count as tied, and the next algo sorts them. streak: this many downvoats in a row hand the lead to the next algo in the chain. budget: an algo that needs more steps than this for the color set is skipped.",
+  "tie": 0.001,
+  "streak": 3,
+  "budget": 1000000
+}

@@ -1,0 +1,6 @@
+{
+  "about": "Color similarity: every voat pulls on the colors near it in OKLab, a space where equal distances look about equally different (lightness 0..1; neighbours in the 216 colors are usually 0.03 apart). reach: how far the pull goes; at 0.15 a voat moves about 20 colors. up, down: how hard an upvoat pulls up and a downvoat pulls down.",
+  "reach": 0.15,
+  "up": 1.0,
+  "down": 1.0
+}

@@ -1,0 +1,8 @@
+{
+  "about": "Your best-voated colors first: Wilson score, then net voats.",
+  "algo": "blend",
+  "uses": {
+    "wilson": 0.7,
+    "net": 0.3
+  }
+}

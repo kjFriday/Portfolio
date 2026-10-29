@@ -211,6 +211,41 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Posts, votes, comments and saves are kept in one file on this computer (`social.json`). It is written through a temporary file, and bad entries are dropped on load. `--voats` is now `--data`, and Ctrl+Z is gone: you take a vote back by pressing it again.
 - Checked: 58 tests pass 5 runs in a row and `--selftest` passes. `--smoke` votes, saves, comments, opens Saved and posts a new color in memory; the new post comes first in New. The feed was also checked by eye in a window screenshot.
 
+**qr_color_registry** (new: Generic Company QR Palette, Python/tkinter)
+- QR Studio's codec and Color Voats' color ranking in one program:
+  - Make a QR code for a link in a recommended color, and read QR codes from pictures.
+  - Find any code again by its QR code (a link, a path or a picture) or by its color. Every answer gives the color, the link and the path of the picture file.
+- Colors:
+  - Only the 118 of the 216 cube colors with at least 3:1 WCAG contrast against white, compared exactly.
+  - Ranked by Color Voats' algos (copied unchanged) and one Good/Bad vote per color.
+  - Votes import from Color Voats' `social.json`; the newer vote wins for each color, so importing again changes nothing.
+- Everything a user may change is plain, indented JSON with an `about` text in each part:
+  - `settings.json`: written with every setting and its default on the first run; `settings.example.json` shows the same.
+  - `presets/` and `weights/`: Color Voats' TOML turned into JSON, read fresh each time, so edits apply at once.
+  - `planner.json`: the local model's rules, the worked examples and the word lists.
+  - Bad values fall back to their defaults and are reported. A file that is not valid JSON is never overwritten.
+- Registry: a relational SQLite database of its own (`colors`, `links`, `qr_codes`, `votes`). It holds data only; no settings.
+  - It is created in one transaction, and every open checks its application id and schema version, so the hub's database is refused.
+  - ECP reads it on a hardened read-only connection: `mode=ro`, `query_only`, SQLite's defensive settings and limits, `quick_check`, an allow-list authorizer and a 2 s time budget. It keeps the rollback journal (not WAL), so readers never create files.
+- Codec, copied from QR Studio (see `PROVENANCE.md`):
+  - Added: two-color palette PNGs and SVGs, reading back its own SVGs, PNG transparency, and the dark color of a picture.
+  - Limits on file size, picture size and decompression. Damaged files give a failed Result, never an exception.
+  - Every saved code is read back before it is registered.
+- Environment Context Protocol (ECP 1.0), specified in `ECP.md` and aligned with the ECP dual-rail runtime research spec (`research/`): an MCP server (`--mcp`, also `--ecp`) for 2025-11-25 (`initialize`) and 2026-07-28 (`server/discover`, `_meta`, -32022).
+  - Three tools: `ecp_list_models`, `ecp_select_model` (pins `name@digest` and loads the model) and `ecp_query`. Nothing is kept between calls; a query names its `model_id` or uses the default in `settings.json`.
+  - The model only turns a question into a query plan, which is checked, grounded against the question's own words and run as fixed filters; the environment answers. No fallback planner: a bad plan is a named failure.
+  - Inference is local only: loopback IP literals or `localhost`, no DNS, proxies or redirects; cloud and remote models refused, plans asked of `NAME:local`, `/api/status` must report cloud off (`OLLAMA_NO_CLOUD=1`; can be turned off in `settings.json`), digests re-checked, stamped answers refused.
+  - Failures are `isError` results with one of 17 kinds; JSON-RPC errors are only the standard ones. Answers are labelled untrusted, cleaned of hidden characters, capped, and rate limited.
+  - Every call goes into `audit.jsonl`, a SHA-256 hash chain holding prompt, schema and planner hashes and the plan as run, never the prompt itself.
+  - The first draft's own JSON-RPC methods, session states, -3200x codes and MCP bridge were replaced.
+- Icon: a self-drawn 16×16 QR glyph in Color Voats' tile colors, enlarged with `tools/pixel_icons.py`. Added to the Dev Console's `programs.ini`.
+- Checked:
+  - The 204 tests pass on Python 3.14 (twice) and 3.11. `--selftest` and `--smoke` pass.
+  - `--mcp` and `--ecp` were run as real processes in both MCP eras; the registry file is byte-for-byte unchanged afterwards and the audit chain verifies.
+  - A live MCP session on Ollama 0.40.10, through `NAME:local`: qwen2.5:7b-instruct loaded in 6.3 s, then planned six questions in 0.7-1.1 s each; deepseek-r1:7b (`think: false`) loaded in 12.4 s and planned in 1.1 s. All seven plans were right and needed no grounding changes. With default settings, planned questions are refused (`cloud_not_disabled`) because this computer's Ollama has its cloud features on.
+  - The window was driven through all three tabs, including Ask with a local model, with screenshots.
+  - `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

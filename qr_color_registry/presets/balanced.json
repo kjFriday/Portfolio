@@ -1,0 +1,9 @@
+{
+  "about": "Mostly colors like your upvoats, some new ground, a little of the raw voat count.",
+  "algo": "blend",
+  "uses": {
+    "similar": 0.6,
+    "explore": 0.3,
+    "net": 0.1
+  }
+}

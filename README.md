@@ -39,6 +39,8 @@ them is the **path to the shared SQLite file**.
 
 **Color Voats** (`color_tile_recommender`, Python/tkinter) is a stand-alone utility: a social feed where every post is a color. It starts with the 216 colors of the 6×6×6 cube, and you can post your own. Each post has Good and Bad buttons, Save (for a Saved tab) and a comment section. The For you feed is ranked by your votes ("voats") through an algo aggregation factory. Each algo (net voats, Wilson score, color similarity, exploration, and a mixer that hands on down a chain of algos when one stalls) has a TOML or JSON weights file. A named preset picks the algo and what it uses, and `factory.py` generates a standalone Python ranker for each preset. Run it with `python color_voats.py`. See [its README](color_tile_recommender/README.md).
 
+**QR Palette** (`qr_color_registry`, Python/tkinter) combines the two. It draws QR codes in the colors Color Voats' rankers recommend: the 118 of the 216 cube colors that are dark enough to scan on white. Every saved code is read back before it is kept. Each code's link, color and file path go into a relational SQLite registry of its own. You find codes again by QR code (a link, a path or a picture) or by color, and every answer gives the color, the link and where the picture is. Other programs can ask through the **Environment Context Protocol (ECP)**, an MCP server with three tools, specified in [ECP.md](qr_color_registry/ECP.md) after the ECP research spec. A client picks a local model, which only turns plain-English questions into query plans that are checked against the question and run on a hardened read-only connection; inference stays on this computer (Ollama on loopback; cloud and remote models are refused), and every call goes into a hash-chained audit log. Everything a user may change is plain, indented JSON: `settings.json`, the ranking presets and weights, and `planner.json`. Run it with `python qr_palette.py`. See [its README](qr_color_registry/README.md).
+
 ## Desktop apps
 
 Every program uses the same conventions:
@@ -144,6 +146,7 @@ python export_mock.py
 | `drive_and_network_storage_manager` | `python storage_manager.py --selftest` |
 | `qr_code_studio` | `python -m unittest test_qr_studio` |
 | `color_tile_recommender` | `python -m unittest discover -p "test_*.py"` |
+| `qr_color_registry` | `python -m unittest discover -p "test_*.py"` |
 | the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
 | the portfolio folder (stamps) | `python -m unittest test_stamp` |
 

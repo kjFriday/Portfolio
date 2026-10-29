@@ -180,6 +180,16 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - Core: `build_folder_tree`, `mark_wasted`, `find_node`, `layout_sunburst`, `ring_points`, `arc_color`, plain records `Node` and `Arc`. The tree is built on the analysis thread (200k files in ~1 s worst case, one folder per file), layout takes ~10 ms; after moves it is rebuilt from the smaller report.
 - Checked: `--selftest` 62 checks, all pass. Driven in-process with Tk events (hover, click to zoom, Backspace, colour switch) on the portfolio folder and a seeded duplicate set, with window screenshots after each step.
 
+**drive_and_network_storage_manager 0.3.1** (file slices, review fixes)
+- Space map: every file big enough to see gets its own slice (0.3.0 had one "N files here" slice per folder). Double-click a file slice, Enter on its "Biggest here" row, or use the right-click menu to show it in Explorer; files are only ever shown, never opened. In Duplicate copies mode each extra copy is its own red slice.
+- A review workflow (109 agents: five reviewers, then three skeptics per finding, then a completeness pass) confirmed 31 problems. 30 are fixed here; a second workflow (57 agents) checking those fixes found 14 more, also fixed:
+  - Drawing: slices merge by width in pixels per ring (4 px at the ring's inner edge, never under 0.6°), so the inner rings no longer draw as blank background. "N smaller items" counts only its own files. Each folder's subfolders and files are sorted once, when the tree is built.
+  - Clicks: a double-click on a folder no longer zooms and then shows whatever file ended up under the pointer. Quick clicks on the centre each go up a level. The centre label fits the hole and cannot be clicked. Double-clicks in "Biggest here" act only on rows. Right-click works on macOS with Tk 8.6 and 9.
+  - Speed: the tree is built off the window's thread: by the analysis, and after a move by a background "Drawing the map" job, only when the map is next shown. Duplicate marks take one pass over the copies and one over the folders. "Keep selected copy" moves only that group's marks.
+  - Other fixes: Explorer paths are always quoted (Explorer splits its arguments at "," and "="), and macOS packages (.app, .photoslibrary, ...) are shown, not opened. Dates the system cannot show read "unknown". The info line is a name line plus a numbers line, so a long path never hides the size. The sidebar count, the list's notes, focus and sorting are fixed too.
+- Not fixed: sizes are file sizes, not space on disk (hard links, compressed and cloud-only files, the app's own trash). That is left for a separate task.
+- Checked: `--selftest` 83 checks, all pass, and 13 reintroduced bugs each make it fail. Driven in-process with Tk events (hover, zoom, Backspace, colours, move to trash then the rebuilt map) with window screenshots.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

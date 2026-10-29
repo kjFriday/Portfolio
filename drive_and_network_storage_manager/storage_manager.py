@@ -28,10 +28,12 @@ Records
   Copy       {"source": str, "target": str, "size": int}
   Share      {"name": str, "unc": str, "letter": str}
   ShareState {"reachable": bool, "total": int, "used": int, "free": int, "error": str}
-  Node       {"name": str, "path": str, "bytes": int, "files": int, "wasted": int, "own_bytes": int,
-              "own_files": int, "own_wasted": int, "children": {name: Node}}   own_* = files directly in it
-  Arc        {"path": str, "name": str, "kind": "folder"|"files"|"rest", "depth": int, "start": float,
-              "extent": float, "bytes": int, "files": int, "wasted": int, "branch": int}
+  Node       {"name": str, "path": str, "bytes": int, "files": int, "wasted": int, "children": {name: Node},
+              "file_list": [FileInfo], "folder_list": [Node], "item_files": int, "wasted_paths": {path: True}}
+              file_list: files directly in it that take space, folder_list: subfolders that take space,
+              both biggest first; item_files: files in those slices (empty files directly in it are not)
+  Arc        {"path": str, "name": str, "kind": "folder"|"file"|"rest", "depth": int, "start": float,
+              "extent": float, "bytes": int, "files": int, "wasted": int, "branch": int, "modified": float}
 
 Progress
   Long functions take progress(text, done, total, unit), or None. unit is "files", "bytes" or
@@ -67,7 +69,7 @@ import tempfile
 import threading
 import time
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 APP_NAME = "Generic Company Storage Manager"
 APP_ID = "GenericCompany.Storage"
 ICON_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "app.ico")
@@ -84,6 +86,19 @@ LARGEST_COUNT = 100           # files listed under "Largest files"
 MAX_ROWS = 2000               # rows a list shows; actions still apply to every row
 MAP_DEPTH = 6                 # rings the space map shows around its centre folder
 MAP_MIN_DEGREES = 0.6         # narrower slices are merged into one "smaller items" slice
+MAP_MIN_PIXELS = 4            # ... and so are slices narrower than this at the inner edge of their ring
+
+# Folder name endings macOS shows as a single file (a package): opening one would launch an app or a
+# document, so such folders are shown selected in Finder instead.
+MAC_PACKAGES = {
+    ".app": True, ".bundle": True, ".framework": True, ".plugin": True, ".kext": True, ".appex": True,
+    ".xpc": True, ".prefpane": True, ".qlgenerator": True, ".mdimporter": True, ".saver": True,
+    ".photoslibrary": True, ".photolibrary": True, ".musiclibrary": True, ".tvlibrary": True,
+    ".imovielibrary": True, ".fcpbundle": True, ".logicx": True, ".band": True, ".pages": True,
+    ".numbers": True, ".key": True, ".rtfd": True, ".xcodeproj": True, ".xcworkspace": True,
+    ".xcarchive": True, ".playground": True, ".sparsebundle": True, ".pkg": True, ".mpkg": True,
+    ".scptd": True, ".dsym": True,
+}
 MAP_HUES = [210, 135, 35, 275, 180, 55, 245, 95]   # one per top-level slice; no red, which marks duplicates
 SECONDS_PER_DAY = 86400
 
@@ -141,6 +156,18 @@ def error_text(error):
 
 def is_own_folder(name):
     return name == TRASH_DIR_NAME
+
+
+def is_inside(root, path):
+    """True when path is root or below it. Windows case is ignored; a sibling such as D:\\datas is not
+    inside D:\\data, and a path on another drive is simply outside."""
+    folder = os.path.normcase(root)
+    target = os.path.normcase(path)
+    if target == folder:
+        return True
+    if not folder.endswith(os.sep) and not folder.endswith("/"):
+        folder = folder + os.sep
+    return target.startswith(folder)
 
 
 def relative_path(root, path):
@@ -616,8 +643,33 @@ def select_empty_dirs(all_empty, chosen, root):
 # ---- space map (sunburst) -----------------------------------------------------------------------
 
 def new_node(name, path):
-    return {"name": name, "path": path, "bytes": 0, "files": 0, "wasted": 0,
-            "own_bytes": 0, "own_files": 0, "own_wasted": 0, "children": {}}
+    return {"name": name, "path": path, "bytes": 0, "files": 0, "wasted": 0, "children": {},
+            "file_list": [], "folder_list": [], "item_files": 0, "wasted_paths": {}}
+
+
+def file_folder(root, path):
+    """The folder a file below root is directly in, spelled the way build_folder_tree names it."""
+    cut = path.rfind(os.sep)
+    if path.rfind("/") > cut:
+        cut = path.rfind("/")
+    folder = root
+    if cut >= 0:
+        folder = path[0:cut]
+    if len(folder) < len(root):  # a file right in a drive root: "D:\x" gives "D:"
+        folder = root
+    return folder
+
+
+def folder_nodes(tree):
+    """Every Node of the tree, each folder before the folders inside it."""
+    nodes = [tree]
+    index = 0
+    while index < len(nodes):
+        node = nodes[index]
+        for name in node["children"]:
+            nodes.append(node["children"][name])
+        index = index + 1
+    return nodes
 
 
 def path_parts(relative):
@@ -630,7 +682,12 @@ def path_parts(relative):
 
 
 def build_folder_tree(root, files):
-    """Folder tree of root with the bytes and file count of everything below each folder -> Node."""
+    """Folder tree of root with the bytes and file count of everything below each folder -> Node.
+
+    Each Node lists its slices once, biggest first, so drawing never sorts: file_list holds the files
+    directly in it that take space (empty files are counted but not listed) and folder_list the
+    subfolders that take space. item_files counts the files those slices hold.
+    """
     name = os.path.basename(root.rstrip("\\/"))
     if name == "":
         name = root
@@ -639,19 +696,13 @@ def build_folder_tree(root, files):
     # the tree once: there are far fewer folders than files.
     own = {}
     for info in files:
-        path = info["path"]
-        cut = path.rfind(os.sep)
-        if path.rfind("/") > cut:
-            cut = path.rfind("/")
-        folder = root
-        if cut >= 0:
-            folder = path[0:cut]
-        if len(folder) < len(root):  # a file right in a drive root: "D:\x" gives "D:"
-            folder = root
+        folder = file_folder(root, info["path"])
         if folder not in own:
-            own[folder] = {"bytes": 0, "files": 0}
+            own[folder] = {"bytes": 0, "files": 0, "list": []}
         own[folder]["bytes"] = own[folder]["bytes"] + info["size"]
         own[folder]["files"] = own[folder]["files"] + 1
+        if info["size"] > 0:
+            own[folder]["list"].append(info)
     for folder in own:
         total = own[folder]
         node = tree
@@ -663,8 +714,17 @@ def build_folder_tree(root, files):
             node = node["children"][part]
             node["bytes"] = node["bytes"] + total["bytes"]
             node["files"] = node["files"] + total["files"]
-        node["own_bytes"] = node["own_bytes"] + total["bytes"]
-        node["own_files"] = node["own_files"] + total["files"]
+        for info in sort_by_size_desc(total["list"]):
+            node["file_list"].append(info)
+    for node in folder_nodes(tree):
+        item_files = len(node["file_list"])
+        for name in node["children"]:
+            child = node["children"][name]
+            if child["bytes"] > 0:
+                node["folder_list"].append(child)
+                item_files = item_files + child["files"]
+        node["folder_list"].sort(key=entry_bytes, reverse=True)
+        node["item_files"] = item_files
     return tree
 
 
@@ -682,6 +742,8 @@ def folder_chain(tree, root, parts):
 
 def find_node(tree, root, folder):
     """The Node for folder (root or a folder below it), or None when it is not in the tree."""
+    if not is_inside(root, folder):
+        return None
     chain = folder_chain(tree, root, path_parts(relative_path(root, folder)))
     if chain is None:
         return None
@@ -689,55 +751,138 @@ def find_node(tree, root, folder):
 
 
 def mark_wasted(tree, root, groups, keep):
-    """Set each Node's wasted bytes: the duplicate copies below it that are not the kept one."""
-    pending = [tree]
-    while len(pending) > 0:
-        node = pending.pop()
+    """Set each Node's wasted bytes (the duplicate copies below it that are not the kept one) and its
+    wasted_paths (those copies directly in it). Copies outside the tree are left out.
+
+    Each copy is added to the folder it is in, then every folder's total is added to its parent's,
+    deepest first: one pass over the copies and one over the folders, however deep they are.
+    """
+    nodes = folder_nodes(tree)
+    by_path = {}
+    for node in nodes:
         node["wasted"] = 0
-        node["own_wasted"] = 0
-        for name in node["children"]:
-            pending.append(node["children"][name])
+        node["wasted_paths"] = {}
+        by_path[node["path"]] = node
+    # Paths come from the same walk as the tree, spelled the same way, so a plain prefix test is enough
+    # (and much cheaper than is_inside for tens of thousands of copies).
+    prefix = root
+    if not root.endswith(os.sep) and not root.endswith("/"):
+        prefix = root + os.sep
     for group in groups:
         keeper = keeper_index(group, keep)
         index = 0
         while index < len(group):
-            if index != keeper:
-                info = group[index]
-                parts = path_parts(relative_path(root, info["path"]))
-                chain = folder_chain(tree, root, parts[0:len(parts) - 1])
-                if chain is not None:
-                    for node in chain:
-                        node["wasted"] = node["wasted"] + info["size"]
-                    last = chain[len(chain) - 1]
-                    last["own_wasted"] = last["own_wasted"] + info["size"]
+            info = group[index]
+            if index != keeper and info["path"].startswith(prefix):
+                folder = file_folder(root, info["path"])
+                if folder in by_path:
+                    by_path[folder]["wasted"] = by_path[folder]["wasted"] + info["size"]
+                    by_path[folder]["wasted_paths"][info["path"]] = True
             index = index + 1
+    index = len(nodes) - 1
+    while index >= 0:
+        node = nodes[index]
+        for name in node["children"]:
+            node["wasted"] = node["wasted"] + node["children"][name]["wasted"]
+        index = index - 1
+
+
+def change_wasted(tree, root, info, amount):
+    """Add amount (negative to take away) to the wasted bytes of every folder holding info, and mark
+    or unmark info as an extra copy in its own folder. Copies outside the tree are left out."""
+    if not is_inside(root, info["path"]):
+        return
+    parts = path_parts(relative_path(root, info["path"]))
+    chain = folder_chain(tree, root, parts[0:len(parts) - 1])
+    if chain is None:
+        return
+    for node in chain:
+        node["wasted"] = node["wasted"] + amount
+    last = chain[len(chain) - 1]
+    if amount > 0:
+        last["wasted_paths"][info["path"]] = True
+    elif info["path"] in last["wasted_paths"]:
+        del last["wasted_paths"][info["path"]]
+
+
+def shift_kept_copy(tree, root, kept_before, kept_now):
+    """Update mark_wasted's marks when a group's kept copy changes: the old one becomes an extra copy and
+    the new one stops being one. Costs the depth of two folders, not a pass over every copy."""
+    if kept_before["path"] == kept_now["path"]:
+        return
+    change_wasted(tree, root, kept_before, kept_before["size"])
+    change_wasted(tree, root, kept_now, 0 - kept_now["size"])
 
 
 def entry_bytes(entry):
     return entry["bytes"]
 
 
-def map_entries(node):
-    """A folder's slices: its subfolders, plus one entry for the files directly in it, biggest first."""
+def map_item_count(node):
+    """How many slices a folder has: subfolders and files that take space."""
+    return len(node["folder_list"]) + len(node["file_list"])
+
+
+def map_entries(node, limit):
+    """A folder's slices, biggest first, at most limit of them: its subfolders and the files directly
+    in it, as {"kind", "node", "name", "path", "bytes", "files", "wasted", "modified"}.
+
+    folder_list and file_list are already sorted, so this merges two sorted lists and stops at limit:
+    a folder with a hundred thousand files or subfolders costs no more than one with a few.
+    """
+    folders = node["folder_list"]
+    files = node["file_list"]
     entries = []
-    for name in node["children"]:
-        child = node["children"][name]
-        if child["bytes"] > 0:
+    next_folder = 0
+    next_file = 0
+    while len(entries) < limit and (next_folder < len(folders) or next_file < len(files)):
+        take_folder = next_file >= len(files)
+        if next_folder < len(folders) and next_file < len(files):
+            take_folder = folders[next_folder]["bytes"] >= files[next_file]["size"]
+        if take_folder:
+            child = folders[next_folder]
             entries.append({"kind": "folder", "node": child, "name": child["name"], "path": child["path"],
-                            "bytes": child["bytes"], "files": child["files"], "wasted": child["wasted"]})
-    if node["own_bytes"] > 0:
-        entries.append({"kind": "files", "node": None, "name": plural(node["own_files"], "file") + " here",
-                        "path": node["path"], "bytes": node["own_bytes"], "files": node["own_files"],
-                        "wasted": node["own_wasted"]})
-    entries.sort(key=entry_bytes, reverse=True)
+                            "bytes": child["bytes"], "files": child["files"], "wasted": child["wasted"],
+                            "modified": 0.0})
+            next_folder = next_folder + 1
+        else:
+            info = files[next_file]
+            wasted = 0
+            if info["path"] in node["wasted_paths"]:
+                wasted = info["size"]
+            entries.append({"kind": "file", "node": None, "name": os.path.basename(info["path"]),
+                            "path": info["path"], "bytes": info["size"], "files": 1, "wasted": wasted,
+                            "modified": info["modified"]})
+            next_file = next_file + 1
     return entries
 
 
-def layout_sunburst(node, max_depth, min_degrees):
+def ring_min_angles(max_depth, hole, ring, min_pixels, min_degrees):
+    """The narrowest slice each ring may draw, in degrees: [ring 1, ring 2, ...].
+
+    A slice must be min_pixels wide at the inner edge of its ring (inner rings are short, so they
+    need wider angles), and never narrower than min_degrees.
+    """
+    angles = []
+    depth = 1
+    while depth <= max_depth:
+        angle = min_degrees
+        inner = hole + (depth - 1) * ring
+        if inner > 0 and min_pixels > 0:
+            needed = math.degrees(min_pixels / inner)
+            if needed > angle:
+                angle = needed
+        angles.append(angle)
+        depth = depth + 1
+    return angles
+
+
+def layout_sunburst(node, max_depth, min_angles):
     """Rings around node -> list of Arc, inner rings first.
 
-    Angles are degrees clockwise from 12 o'clock. Each folder's slices share its angle by bytes;
-    slices narrower than min_degrees are merged into one "rest" arc. Rings stop at max_depth.
+    Angles are degrees clockwise from 12 o'clock. Each folder's slices (subfolders and files) share
+    its angle by bytes; slices narrower than min_angles[depth - 1] (see ring_min_angles) are merged
+    into one "rest" arc. Rings stop at max_depth.
     """
     arcs = []
     if node["bytes"] <= 0:
@@ -746,45 +891,51 @@ def layout_sunburst(node, max_depth, min_degrees):
     while len(pending) > 0:
         item = pending.pop(0)
         parent = item["node"]
-        entries = map_entries(parent)
+        count = map_item_count(parent)
+        narrowest = min_angles[item["depth"] - 1]
+        # At most extent / narrowest slices can be wide enough to draw, so only that many (and a
+        # spare) are looked at; the rest is summed from the folder's totals below.
+        limit = count
+        if narrowest > 0:
+            limit = int(item["extent"] / narrowest) + 2
+            if limit > count:
+                limit = count
+        entries = map_entries(parent, limit)
         angle = item["start"]
-        rest = {"bytes": 0, "files": 0, "wasted": 0, "count": 0, "start": 0.0}
+        drawn = {"count": 0, "bytes": 0, "files": 0, "wasted": 0}
         index = 0
         while index < len(entries):
             entry = entries[index]
             extent = item["extent"] * entry["bytes"] / parent["bytes"]
+            # Biggest first, so once one slice is too narrow every later one is too: merge the tail
+            # (a lone narrow slice is drawn as itself).
+            if extent < narrowest and index < count - 1:
+                break
             branch = item["branch"]
             if item["depth"] == 1:
                 branch = index
-            # Biggest first, so once one slice is too narrow every later one is too: merge the tail
-            # (a lone narrow slice is drawn as itself).
-            if extent < min_degrees and index < len(entries) - 1:
-                if rest["count"] == 0:
-                    rest["start"] = angle
-                    rest["branch"] = branch
-                rest["bytes"] = rest["bytes"] + entry["bytes"]
-                rest["files"] = rest["files"] + entry["files"]
-                rest["wasted"] = rest["wasted"] + entry["wasted"]
-                rest["count"] = rest["count"] + 1
-            elif rest["count"] > 0:
-                rest["bytes"] = rest["bytes"] + entry["bytes"]
-                rest["files"] = rest["files"] + entry["files"]
-                rest["wasted"] = rest["wasted"] + entry["wasted"]
-                rest["count"] = rest["count"] + 1
-            else:
-                arcs.append({"path": entry["path"], "name": entry["name"], "kind": entry["kind"],
-                             "depth": item["depth"], "start": angle, "extent": extent, "bytes": entry["bytes"],
-                             "files": entry["files"], "wasted": entry["wasted"], "branch": branch})
-                if entry["kind"] == "folder" and item["depth"] < max_depth:
-                    pending.append({"node": entry["node"], "start": angle, "extent": extent,
-                                    "depth": item["depth"] + 1, "branch": branch})
+            arcs.append({"path": entry["path"], "name": entry["name"], "kind": entry["kind"],
+                         "depth": item["depth"], "start": angle, "extent": extent, "bytes": entry["bytes"],
+                         "files": entry["files"], "wasted": entry["wasted"], "branch": branch,
+                         "modified": entry["modified"]})
+            if entry["kind"] == "folder" and item["depth"] < max_depth:
+                pending.append({"node": entry["node"], "start": angle, "extent": extent,
+                                "depth": item["depth"] + 1, "branch": branch})
+            drawn["count"] = drawn["count"] + 1
+            drawn["bytes"] = drawn["bytes"] + entry["bytes"]
+            drawn["files"] = drawn["files"] + entry["files"]
+            drawn["wasted"] = drawn["wasted"] + entry["wasted"]
             angle = angle + extent
             index = index + 1
-        if rest["count"] > 0:
-            arcs.append({"path": parent["path"], "name": plural(rest["count"], "smaller item"), "kind": "rest",
-                         "depth": item["depth"], "start": rest["start"],
-                         "extent": item["start"] + item["extent"] - rest["start"], "bytes": rest["bytes"],
-                         "files": rest["files"], "wasted": rest["wasted"], "branch": rest["branch"]})
+        if drawn["count"] < count:
+            branch = item["branch"]
+            if item["depth"] == 1:
+                branch = index
+            arcs.append({"path": parent["path"], "name": plural(count - drawn["count"], "smaller item"),
+                         "kind": "rest", "depth": item["depth"], "start": angle,
+                         "extent": item["start"] + item["extent"] - angle, "bytes": parent["bytes"] - drawn["bytes"],
+                         "files": parent["item_files"] - drawn["files"], "wasted": parent["wasted"] - drawn["wasted"],
+                         "branch": branch, "modified": 0.0})
     return arcs
 
 
@@ -834,7 +985,7 @@ def arc_color(arc, mode, max_depth):
     hue = MAP_HUES[arc["branch"] % len(MAP_HUES)] / 360.0
     if arc["kind"] == "rest":
         return hls_hex(hue, 0.80 + 0.08 * outward, 0.0)
-    if arc["kind"] == "files":
+    if arc["kind"] == "file":
         return hls_hex(hue, 0.74 + 0.08 * outward, 0.18)
     return hls_hex(hue, 0.50 + 0.25 * outward, 0.55)
 
@@ -1211,14 +1362,45 @@ def open_folder_command(folder):
     if os.name == "nt":
         return ["explorer", folder]
     if sys.platform == "darwin":
+        if os.path.splitext(folder.rstrip("/"))[1].lower() in MAC_PACKAGES:
+            # A package such as Xcode.app or Photos Library.photoslibrary: "open" would launch it.
+            return ["open", "-R", folder]
         return ["open", folder]
     return ["xdg-open", folder]
+
+
+def command_line(arguments):
+    """The Windows command line for arguments. Explorer splits its own arguments at "," and "=", so
+    every path for it is quoted, with "/select," joined to the path after it."""
+    if len(arguments) == 0 or arguments[0] != "explorer":
+        return subprocess.list2cmdline(arguments)
+    line = "explorer"
+    index = 1
+    while index < len(arguments):
+        part = arguments[index]
+        switch = ""
+        if part.endswith(",") and index + 1 < len(arguments):
+            switch = part
+            index = index + 1
+            part = arguments[index]
+        if part.endswith("\\"):
+            part = part + "."  # D:\ becomes "D:\." : a backslash right before the closing quote would escape it
+        part = '"' + part + '"'
+        if switch != "":
+            line = line + " " + switch + part
+        else:
+            line = line + " " + part
+        index = index + 1
+    return line
 
 
 def launch(arguments):
     """Start a program without waiting for it -> Result(None)."""
     try:
-        subprocess.Popen(arguments)
+        if os.name == "nt":
+            subprocess.Popen(command_line(arguments))
+        else:
+            subprocess.Popen(arguments)
     except OSError as e:
         return failure(error_text(e))
     return success(None)
@@ -1307,7 +1489,12 @@ def human_count(count):
 
 
 def human_date(seconds):
-    return time.strftime("%Y-%m-%d", time.localtime(seconds))
+    """seconds -> "2026-10-28", or "unknown" for a time the system cannot show (Windows refuses times
+    before 1970 and after the year 3000, and NTFS can hold both)."""
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(seconds))
+    except (OSError, OverflowError, ValueError):
+        return "unknown"
 
 
 def plural(count, word):
@@ -1465,14 +1652,38 @@ def selftest():
                      {"path": os.path.join(top, "big", "c.bin"), "size": 90, "modified": now},
                      {"path": os.path.join(top, "small", "c.bin"), "size": 90, "modified": now},
                      {"path": os.path.join(top, "loose.bin"), "size": 10, "modified": now}]
-        tree = build_folder_tree(top, map_files)
-        check(tree["bytes"] == 1000 and tree["files"] == 5 and tree["own_bytes"] == 10, "tree totals", failures)
-        check(tree["children"]["big"]["bytes"] == 900 and tree["children"]["big"]["own_files"] == 2, "folder totals", failures)
+        # The tree is built from the files smallest first, so the checks below also prove both sorts.
+        smallest_first = []
+        index = len(map_files) - 1
+        while index >= 0:
+            smallest_first.append(map_files[index])
+            index = index - 1
+        tree = build_folder_tree(top, smallest_first)
+        no_merge = ring_min_angles(6, 0.0, 0.0, 0, 0.0)
+        flat = ring_min_angles(6, 0.0, 0.0, 0, MAP_MIN_DEGREES)
+        wide = ring_min_angles(6, 0.0, 0.0, 0, 50.0)
+        check(tree["bytes"] == 1000 and tree["files"] == 5 and len(tree["file_list"]) == 1
+              and tree["file_list"][0]["size"] == 10, "tree totals", failures)
+        big_node = tree["children"]["big"]
+        check(big_node["bytes"] == 900 and len(big_node["file_list"]) == 2 and big_node["file_list"][0]["size"] == 600
+              and big_node["file_list"][1]["size"] == 90, "folder totals, files biggest first", failures)
+        check(len(tree["folder_list"]) == 2 and tree["folder_list"][0]["name"] == "big" and tree["item_files"] == 5,
+              "subfolders biggest first", failures)
+        angles = ring_min_angles(3, 40.0, 20.0, 4, MAP_MIN_DEGREES)
+        check(abs(angles[0] - math.degrees(0.1)) < 1e-9 and angles[0] > angles[1] > angles[2] > MAP_MIN_DEGREES
+              and ring_min_angles(2, 1000.0, 10.0, 4, MAP_MIN_DEGREES) == [MAP_MIN_DEGREES, MAP_MIN_DEGREES],
+              "inner rings need wider slices", failures)
         drive = build_folder_tree("D:" + os.sep, [{"path": "D:" + os.sep + "x.bin", "size": 5, "modified": now},
                                                   {"path": os.path.join("D:" + os.sep, "a", "y.bin"), "size": 7, "modified": now}])
-        check(drive["own_bytes"] == 5 and drive["children"]["a"]["bytes"] == 7 and drive["bytes"] == 12,
-              "tree of a drive root", failures)
-        arcs = layout_sunburst(tree, 6, 0.0)
+        check(len(drive["file_list"]) == 1 and drive["file_list"][0]["size"] == 5 and drive["children"]["a"]["bytes"] == 7
+              and drive["bytes"] == 12, "tree of a drive root", failures)
+        empty_tree = build_folder_tree(top, [{"path": os.path.join(top, "e.txt"), "size": 0, "modified": now},
+                                             {"path": os.path.join(top, "f.txt"), "size": 4, "modified": now}])
+        empty_arcs = layout_sunburst(empty_tree, 6, flat)
+        check(empty_tree["files"] == 2 and len(empty_tree["file_list"]) == 1 and len(empty_arcs) == 1
+              and empty_arcs[0]["kind"] == "file" and abs(empty_arcs[0]["extent"] - 360.0) < 1e-9,
+              "empty files are counted but get no slice", failures)
+        arcs = layout_sunburst(tree, 6, no_merge)
         ring_total = 0.0
         big_arc = None
         for arc in arcs:
@@ -1488,14 +1699,130 @@ def selftest():
             if arc["depth"] == 2 and arc["branch"] == big_arc["branch"]:
                 inside = inside + arc["extent"]
         check(abs(inside - big_arc["extent"]) < 1e-9, "a folder's slices fill its angle", failures)
-        merged = layout_sunburst(tree, 6, 50.0)
+        follow = True
+        expected = big_arc["start"]
+        for arc in arcs:
+            if arc["depth"] == 2 and arc["branch"] == big_arc["branch"]:
+                follow = follow and abs(arc["start"] - expected) < 1e-9
+                expected = arc["start"] + arc["extent"]
+        three_top = os.path.join(work, "three")
+        three = layout_sunburst(build_folder_tree(three_top, [
+            {"path": os.path.join(three_top, "c.mkv"), "size": 100, "modified": now},
+            {"path": os.path.join(three_top, "a.mkv"), "size": 600, "modified": now},
+            {"path": os.path.join(three_top, "b.mkv"), "size": 300, "modified": now}]), 6, no_merge)
+        check(follow and abs(expected - big_arc["start"] - big_arc["extent"]) < 1e-9 and len(three) == 3
+              and three[0]["start"] == 0.0 and abs(three[1]["start"] - 216.0) < 1e-9
+              and abs(three[2]["start"] - 324.0) < 1e-9, "slices follow one another without overlapping", failures)
+        file_arcs = {}
+        for arc in arcs:
+            if arc["kind"] == "file":
+                file_arcs[arc["path"]] = arc
+        a_arc = file_arcs.get(map_files[0]["path"])
+        loose_arc = file_arcs.get(map_files[4]["path"])
+        check(len(file_arcs) == 5 and a_arc is not None and a_arc["depth"] == 2 and abs(a_arc["extent"] - 216.0) < 1e-9
+              and a_arc["name"] == "a.bin" and a_arc["modified"] == now and loose_arc is not None
+              and loose_arc["depth"] == 1, "files get slices of their own", failures)
+        check(len(map_entries(big_node, 1)) == 1 and map_entries(big_node, 1)[0]["kind"] == "file"
+              and map_entries(big_node, 9)[1]["kind"] == "folder" and map_item_count(big_node) == 3,
+              "slices merge folders and files biggest first, up to a limit", failures)
+        many_top = os.path.join(work, "many")
+        many = [{"path": os.path.join(many_top, "big.bin"), "size": 10000, "modified": now}]
+        index = 0
+        while index < 1000:
+            many.append({"path": os.path.join(many_top, "t" + str(index) + ".bin"), "size": 1, "modified": now})
+            index = index + 1
+        many_tree = build_folder_tree(many_top, many)
+        # big.bin is an extra copy of a file kept elsewhere, and so are two tiny files: the drawn slice
+        # and the merged one both hold duplicate bytes, and each must keep only its own.
+        kept_big = {"path": os.path.join(work, "keep", "big.bin"), "size": 10000, "modified": now}
+        mark_wasted(many_tree, many_top, [[kept_big, many[0]], [many[1], many[2]], [many[3], many[4]]], {})
+        many_arcs = layout_sunburst(many_tree, 6, flat)
+        check(len(many_arcs) == 2 and many_arcs[1]["kind"] == "rest" and many_arcs[1]["bytes"] == 1000
+              and many_arcs[1]["files"] == 1000 and many_arcs[1]["name"] == "1,000 smaller items"
+              and abs(many_arcs[0]["extent"] + many_arcs[1]["extent"] - 360.0) < 1e-9,
+              "a thousand tiny files become one slice", failures)
+        check(many_tree["wasted"] == 10002 and many_arcs[0]["wasted"] == 10000 and many_arcs[1]["wasted"] == 2,
+              "the merged slice keeps its duplicate copies", failures)
+        pair_arcs = layout_sunburst(build_folder_tree(many_top, [many[0], many[1]]), 6, flat)
+        check(len(pair_arcs) == 2 and pair_arcs[1]["kind"] == "file" and pair_arcs[1]["extent"] < MAP_MIN_DEGREES,
+              "a lone narrow slice is drawn as itself", failures)
+        # 500 slices of exactly the narrowest angle and 200 of half: only the look-ahead limit decides
+        # how many are drawn, so a smaller limit would hide drawable slices in "smaller items".
+        edge_top = os.path.join(work, "edge")
+        edge = []
+        index = 0
+        while index < 700:
+            size = 1
+            if index < 500:
+                size = 2
+            edge.append({"path": os.path.join(edge_top, "f" + str(index) + ".bin"), "size": size, "modified": now})
+            index = index + 1
+        edge_arcs = layout_sunburst(build_folder_tree(edge_top, edge), 6, flat)
+        edge_total = 0.0
+        for arc in edge_arcs:
+            edge_total = edge_total + arc["extent"]
+        check(len(edge_arcs) == 501 and edge_arcs[500]["kind"] == "rest" and edge_arcs[500]["bytes"] == 200
+              and edge_arcs[500]["name"] == "200 smaller items" and abs(edge_total - 360.0) < 1e-6,
+              "every slice wide enough is drawn", failures)
+        holes_top = os.path.join(work, "holes")
+        holes = layout_sunburst(build_folder_tree(holes_top, [
+            {"path": os.path.join(holes_top, "big.bin"), "size": 1000, "modified": now},
+            {"path": os.path.join(holes_top, "a.bin"), "size": 1, "modified": now},
+            {"path": os.path.join(holes_top, "b.bin"), "size": 1, "modified": now},
+            {"path": os.path.join(holes_top, "empty.txt"), "size": 0, "modified": now},
+            {"path": os.path.join(holes_top, "pkg", "__init__.py"), "size": 0, "modified": now}]), 6, flat)
+        check(len(holes) == 2 and holes[1]["kind"] == "rest" and holes[1]["files"] == 2
+              and holes[1]["name"] == "2 smaller items", "the merged slice counts only its own files", failures)
+        # Every folder's ring of slices must tile exactly its angle, also for a folder that does not start
+        # at 12 o'clock and whose ring ends in a merged slice (x\B here).
+        x_top = os.path.join(work, "x")
+        x_files = [{"path": os.path.join(x_top, "A", "big.bin"), "size": 600, "modified": now},
+                   {"path": os.path.join(x_top, "B", "big.bin"), "size": 390, "modified": now}]
+        index = 0
+        while index < 10:
+            x_files.append({"path": os.path.join(x_top, "B", "t" + str(index) + ".bin"), "size": 1, "modified": now})
+            index = index + 1
+        tiled = True
+        for layout in (arcs, layout_sunburst(build_folder_tree(x_top, x_files), 6, flat)):
+            for parent_arc in layout:
+                if parent_arc["kind"] != "folder":
+                    continue
+                parent_end = parent_arc["start"] + parent_arc["extent"]
+                expected = parent_arc["start"]
+                inside_count = 0
+                for arc in layout:
+                    if (arc["depth"] == parent_arc["depth"] + 1 and arc["start"] >= parent_arc["start"] - 1e-9
+                            and arc["start"] < parent_end - 1e-9):
+                        tiled = tiled and abs(arc["start"] - expected) < 1e-9 and arc["extent"] > 0
+                        expected = arc["start"] + arc["extent"]
+                        inside_count = inside_count + 1
+                tiled = tiled and inside_count > 0 and abs(expected - parent_end) < 1e-9
+        check(tiled, "each folder's slices tile its angle exactly", failures)
+        # Each ring uses its own narrowest angle: ring 1 keeps all three slices, ring 2 merges what is
+        # under 100 degrees.
+        per_ring = layout_sunburst(tree, 6, [10.0, 100.0, 0.0, 0.0, 0.0, 0.0])
+        ring_one = 0
+        ring_two_rests = []
+        for arc in per_ring:
+            if arc["depth"] == 1:
+                ring_one = ring_one + 1
+            if arc["depth"] == 2 and arc["kind"] == "rest":
+                ring_two_rests.append(arc)
+        chain_top = os.path.join(work, "chain")
+        chain_arcs = layout_sunburst(build_folder_tree(chain_top, [
+            {"path": os.path.join(chain_top, "a", "b", "c", "d", "e", "f", "x.bin"), "size": 5, "modified": now}]),
+            6, ring_min_angles(6, 30.0, 20.0, MAP_MIN_PIXELS, MAP_MIN_DEGREES))
+        check(ring_one == 3 and len(ring_two_rests) == 1 and ring_two_rests[0]["bytes"] == 300
+              and len(chain_arcs) == 6 and chain_arcs[5]["depth"] == 6, "each ring has its own narrowest angle", failures)
+        merged = layout_sunburst(tree, 6, wide)
         rests = []
         for arc in merged:
             if arc["kind"] == "rest":
                 rests.append(arc)
         check(len(rests) == 1 and rests[0]["bytes"] == 100 and abs(rests[0]["extent"] - 36.0) < 1e-9
-              and rests[0]["name"] == "2 smaller items", "narrow slices merge into one", failures)
-        shallow = layout_sunburst(tree, 1, 0.0)
+              and abs(rests[0]["start"] - 324.0) < 1e-9 and rests[0]["name"] == "2 smaller items",
+              "narrow slices merge into one", failures)
+        shallow = layout_sunburst(tree, 1, no_merge)
         deepest = 0
         for arc in shallow:
             if arc["depth"] > deepest:
@@ -1503,20 +1830,56 @@ def selftest():
         check(deepest == 1, "rings stop at max depth", failures)
         pair = [[map_files[3], map_files[2]]]
         mark_wasted(tree, top, pair, {})
-        check(tree["wasted"] == 90 and tree["children"]["big"]["own_wasted"] == 90
+        check(tree["wasted"] == 90 and big_node["wasted"] == 90 and map_files[2]["path"] in big_node["wasted_paths"]
               and tree["children"]["small"]["wasted"] == 0, "wasted bytes land on the extra copy's folders", failures)
+        copy_arc = None
+        for arc in layout_sunburst(tree, 6, no_merge):
+            if arc["path"] == map_files[2]["path"]:
+                copy_arc = arc
+        check(copy_arc is not None and copy_arc["wasted"] == 90, "the extra copy's own slice is marked", failures)
         mark_wasted(tree, top, pair, {map_files[2]["path"]: True})
-        check(tree["children"]["small"]["wasted"] == 90 and tree["children"]["big"]["wasted"] == 0,
+        check(tree["children"]["small"]["wasted"] == 90 and big_node["wasted"] == 0 and len(big_node["wasted_paths"]) == 0,
               "wasted bytes follow the kept copy", failures)
+        mark_wasted(tree, top, pair, {})
+        shift_kept_copy(tree, top, map_files[3], map_files[2])
+        check(tree["children"]["small"]["wasted"] == 90 and big_node["wasted"] == 0 and tree["wasted"] == 90
+              and len(big_node["wasted_paths"]) == 0 and map_files[3]["path"] in tree["children"]["small"]["wasted_paths"],
+              "changing the kept copy moves its marks", failures)
+        # Siblings whose names start like the analyzed folder's (m.bin, msmall) are outside it, even where
+        # the rest of the name matches a real subfolder.
+        outside = {"path": os.path.join(work, "msmall", "c.bin"), "size": 90, "modified": now}
+        beside = {"path": top + ".bin", "size": 90, "modified": now}
+        far = {"path": "Z:" + os.sep + "c.bin", "size": 90, "modified": now}
+        mark_wasted(tree, top, [[map_files[0], outside, beside, far]], {})
+        check(tree["wasted"] == 0, "copies outside the folder are left out", failures)
         check(find_node(tree, top, os.path.join(top, "big", "deep"))["name"] == "deep"
-              and find_node(tree, top, top) is tree and find_node(tree, top, os.path.join(top, "gone")) is None,
+              and find_node(tree, top, top) is tree and find_node(tree, top, os.path.join(top, "gone")) is None
+              and find_node(tree, top, top + "small") is None and find_node(tree, top, "Z:" + os.sep + "x") is None,
               "find a folder in the tree", failures)
+        data = "D:" + os.sep + "data"
+        check(is_inside(data, data + os.sep + "s") and not is_inside(data, data + "s") and is_inside(data, data + os.sep)
+              and is_inside("D:" + os.sep, "D:" + os.sep + "x") and not is_inside(data, "E:" + os.sep + "x"),
+              "inside a folder", failures)
+        check(file_folder("D:" + os.sep, "D:" + os.sep + "x.bin") == "D:" + os.sep
+              and file_folder(data, os.path.join(data, "s", "x.bin")) == os.path.join(data, "s"),
+              "a file's folder", failures)
         points = ring_points(100.0, 100.0, 10.0, 20.0, 0.0, 90.0, 30.0)
-        check(len(points) == 16 and abs(points[0] - 100.0) < 1e-9 and abs(points[1] - 80.0) < 1e-9,
-              "ring slice starts at 12 o'clock", failures)
+        check(len(points) == 16 and abs(points[0] - 100.0) < 1e-9 and abs(points[1] - 80.0) < 1e-9
+              and abs(points[6] - 120.0) < 1e-9 and abs(points[7] - 100.0) < 1e-9,
+              "ring slice starts at 12 o'clock and runs clockwise", failures)
         grey = arc_color({"depth": 1, "bytes": 10, "wasted": 0, "kind": "folder", "branch": 0}, "duplicates", 6)
         red = arc_color({"depth": 1, "bytes": 10, "wasted": 10, "kind": "folder", "branch": 0}, "duplicates", 6)
         check(grey[1:3] == grey[3:5] == grey[5:7] and red[1:3] > red[3:5], "duplicate colours go from grey to red", failures)
+        folder_colour = arc_color({"depth": 2, "bytes": 10, "wasted": 0, "kind": "folder", "branch": 1}, "folders", 6)
+        file_colour = arc_color({"depth": 2, "bytes": 10, "wasted": 0, "kind": "file", "branch": 1}, "folders", 6)
+        check(folder_colour != file_colour, "files look different from folders", failures)
+        check(command_line(["explorer", "/select,", "D:\\Q1,Q2\\a.xlsx"]) == 'explorer /select,"D:\\Q1,Q2\\a.xlsx"'
+              and command_line(["explorer", "/select,", "D:\\Music\\E=mc2.mp3"]) == 'explorer /select,"D:\\Music\\E=mc2.mp3"'
+              and command_line(["explorer", "D:\\x=y"]) == 'explorer "D:\\x=y"'
+              and command_line(["explorer", "D:\\"]) == 'explorer "D:\\."'
+              and command_line(["notepad", "a b.txt"]) == 'notepad "a b.txt"',
+              "paths for Explorer are quoted", failures)
+        check(human_date(10.0 ** 20) == "unknown" and len(human_date(now)) == 10, "dates the system cannot show", failures)
 
         print("shares, settings, desktop")
         check(unc_host("\\\\nas01\\media\\x") == "nas01", "host from UNC", failures)
@@ -1613,8 +1976,14 @@ def run_gui(smoke_path, start_folder, start_view):
         "map_items": {},     # canvas item -> Arc
         "map_hover": None,   # canvas item under the mouse
         "map_redraw": None,  # pending after() id while the canvas is being resized
+        "map_serial": 0,     # counts trees, so the list beside the map knows when it is out of date
+        "map_table_key": None,  # (map_serial, centre path) the "Biggest here" list shows
+        "map_scanning": False,  # an analysis is reading folders (before its first results)
+        "map_pressed": None,  # canvas item the last click landed on
+        "map_build_error": "",  # why the last background build of the map failed; "" when it did not
     }
     buttons = []        # (button, predicate): enabled when idle and predicate() is true
+    usable_when_busy = {}  # button -> True: also enabled while a job runs
     views = {}
     primary = {}        # view key -> action for the Delete key
 
@@ -1723,7 +2092,7 @@ def run_gui(smoke_path, start_folder, start_view):
         busy = state["busy"]
         for pair in buttons:
             enabled = False
-            if not busy:
+            if not busy or pair[0] in usable_when_busy:
                 try:
                     enabled = pair[1]()
                 except Exception:
@@ -1813,6 +2182,10 @@ def run_gui(smoke_path, start_folder, start_view):
                 if on_fail is not None:
                     on_fail(result)
             refresh_buttons()
+            # A map that had to wait for this job (it builds its tree as a job of its own) is drawn now.
+            if (not state["busy"] and state["view"] == "map" and state["report"] is not None
+                    and state["map_tree"] is None and not state["map_pending"] and state["map_build_error"] == ""):
+                map_draw()
 
         status_var.set(label + "\u2026")
         log(label)
@@ -1870,7 +2243,7 @@ def run_gui(smoke_path, start_folder, start_view):
             keys.append(column[0])
         tree = ttk.Treeview(holder, columns=keys, show="headings", selectmode="extended")
         table = {"tree": tree, "frame": holder, "rows": [], "values": values, "sort_keys": sort_keys,
-                 "sorted_by": "", "descending": False, "note": tk.StringVar(value="")}
+                 "sorted_by": "", "descending": False, "note": tk.StringVar(value=""), "extra_note": ""}
         for column in columns:
             tree.heading(column[0], text=column[1], anchor=column[3], command=lambda key=column[0]: sort_table(table, key))
             tree.column(column[0], width=column[2], anchor=column[3], stretch=column[4])
@@ -1897,7 +2270,7 @@ def run_gui(smoke_path, start_folder, start_view):
             table["note"].set("Showing the first " + human_count(shown) + " of " + human_count(len(rows))
                               + ". With nothing selected, actions apply to all of them.")
         else:
-            table["note"].set("")
+            table["note"].set(table["extra_note"])  # a note of the table's own that sorting must keep
 
     def sort_table(table, key):
         if key not in table["sort_keys"]:
@@ -1905,7 +2278,7 @@ def run_gui(smoke_path, start_folder, start_view):
         if table["sorted_by"] == key:
             table["descending"] = not table["descending"]
         else:
-            table["descending"] = key == "size" or key == "modified" or key == "files"
+            table["descending"] = key == "size" or key == "modified" or key == "files" or key == "share"
         table["sorted_by"] = key
         rows = list(table["rows"])
         rows.sort(key=table["sort_keys"][key], reverse=table["descending"])
@@ -1976,13 +2349,16 @@ def run_gui(smoke_path, start_folder, start_view):
         canvas_background = window.cget("background")
 
     def map_ready():
-        return state["map_tree"] is not None
+        return state["map_tree"] is not None and not state["map_pending"]
 
     def map_can_go_up():
-        return map_ready() and os.path.normcase(state["map_center"]) != os.path.normcase(state["root"])
+        return map_ready() and map_center_node() is not state["map_tree"]
 
-    add_button(mp, "Up one level", lambda: map_up(), map_can_go_up, False)
-    add_button(mp, "Open this folder", lambda: launch(open_folder_command(state["map_center"])), map_ready, False)
+    # These two only move the map or open a folder, so they stay usable while a job runs (the map is
+    # drawn before the duplicate comparison, which can take minutes).
+    usable_when_busy[add_button(mp, "Up one level", lambda: map_up(), map_can_go_up, False)] = True
+    usable_when_busy[add_button(mp, "Open this folder", lambda: launch(open_folder_command(state["map_center"])),
+                                map_ready, False)] = True
     ttk.Label(mp["actions"], text="Colour by").pack(side="left", padx=(12, 6))
     ttk.Radiobutton(mp["actions"], text="Folders", value="folders", variable=map_mode_var,
                     command=lambda: map_draw()).pack(side="left")
@@ -1992,17 +2368,20 @@ def run_gui(smoke_path, start_folder, start_view):
     map_info_holder = ttk.Frame(mp["frame"], height=2 * line_height + 4)
     map_info_holder.pack(fill="x", pady=(0, 6))
     map_info_holder.pack_propagate(False)
-    wrapping(ttk.Label(map_info_holder, textvariable=map_info)).pack(fill="x", anchor="nw")
+    map_info_label = wrapping(ttk.Label(map_info_holder, textvariable=map_info))
+    map_info_label.pack(fill="x", anchor="nw")
     map_body = ttk.Frame(mp["frame"])
     map_body.pack(fill="both", expand=True)
-    map_canvas = tk.Canvas(map_body, background=canvas_background, highlightthickness=0, width=360, height=300)
-    map_canvas.pack(side="left", fill="both", expand=True)
     map_table = make_table(
         map_body,
         [("name", "Biggest here", 190, "w", True), ("size", "Size", 85, "e", False), ("share", "Share", 65, "e", False)],
         lambda row: (row["name"], human_size(row["bytes"]), row["share"]),
-        {"name": lambda row: row["name"].lower(), "size": lambda row: row["bytes"]})
-    map_table["frame"].pack(side="left", fill="y", padx=(10, 0))
+        {"name": lambda row: row["name"].lower(), "size": lambda row: row["bytes"],
+         "share": lambda row: row["bytes"]})
+    # The table is packed first so that a narrow window shrinks the map, not the list.
+    map_table["frame"].pack(side="right", fill="y", padx=(10, 0))
+    map_canvas = tk.Canvas(map_body, background=canvas_background, highlightthickness=0, width=1, height=1)
+    map_canvas.pack(side="left", fill="both", expand=True)
     map_menu = tk.Menu(window, tearoff=0)
 
     def map_center_node():
@@ -2012,48 +2391,165 @@ def run_gui(smoke_path, start_folder, start_view):
             state["map_center"] = state["root"]
         return node
 
+    def set_map_tree(tree):
+        """Every new tree goes through here: its duplicate marks are due and the list beside the map
+        is refilled at the next draw."""
+        state["map_tree"] = tree
+        state["map_serial"] = state["map_serial"] + 1
+        state["map_wasted_ok"] = False
+        state["map_build_error"] = ""
+        if tree is None:
+            set_side("map", "")
+        else:
+            set_side("map", plural(len(tree["folder_list"]), "folder"))
+
     def map_prepare():
         """Make map_tree match the report and the duplicate groups. The analysis builds the tree on its
-        worker thread; it is only rebuilt here after files were moved."""
+        worker thread; when there is none (after files were moved) map_build_tree builds one in the
+        background, so the window never waits for it."""
         report = state["report"]
         if report is None or state["map_pending"]:
             return
         if state["map_tree"] is None:
-            state["map_tree"] = build_folder_tree(state["root"], report["files"])
-            state["map_wasted_ok"] = False
+            if state["map_build_error"] == "":
+                map_build_tree()
+            return
         if not state["map_wasted_ok"] and state["groups"] is not None:
             mark_wasted(state["map_tree"], state["root"], state["groups"], state["keep"])
             state["map_wasted_ok"] = True
-        set_side("map", plural(len(state["map_tree"]["children"]), "folder"))
+
+    def map_build_tree():
+        """Build the tree and its duplicate marks as a job, only when the map needs them. A job already
+        running goes first; the map is drawn when it ends (see run_job)."""
+        if state["busy"] or state["report"] is None:
+            return
+        root = state["root"]
+        files = state["report"]["files"]
+        groups = state["groups"]
+        keep = state["keep"]  # not changed while a job runs: "Keep selected copy" waits for it
+        before = status_var.get()
+        state["map_pending"] = True
+
+        def work(post):
+            tree = build_folder_tree(root, files)
+            if groups is not None:
+                mark_wasted(tree, root, groups, keep)
+            return success(tree)
+
+        def finish(result):
+            state["map_pending"] = False
+            set_map_tree(result["value"])
+            state["map_wasted_ok"] = groups is not None and groups is state["groups"]
+            status_var.set(before)  # keep the message of the action that made the map out of date
+            if state["view"] == "map":
+                map_draw()
+
+        def on_fail(result):
+            state["map_pending"] = False
+            state["map_build_error"] = result["error"]
+            if state["view"] == "map":
+                map_draw()
+
+        run_job("Drawing the map", work, finish, None, on_fail)
+
+    def map_name(path):
+        """path as the info line shows it: relative to the folder in the middle of the map, which is
+        shorter than relative to the analyzed folder."""
+        centre = state["map_center"]
+        text = path
+        if is_inside(centre, path):
+            text = relative_path(centre, path)
+        if text == "":
+            text = os.path.basename(path.rstrip("\\/"))
+            if text == "":
+                text = path
+        return text
+
+    def fit_middle(text, font, room):
+        """text, shortened in the middle with "…" until it is at most room pixels wide in font."""
+        if room <= 0 or font.measure(text) <= room:
+            return text
+        low = 0
+        high = len(text)
+        while low < high:  # the longest kept length that still fits
+            middle = (low + high + 1) // 2
+            head = middle // 2
+            candidate = text[0:head] + "…" + text[len(text) - (middle - head):]
+            if font.measure(candidate) <= room:
+                low = middle
+            else:
+                high = middle - 1
+        head = low // 2
+        return text[0:head] + "…" + text[len(text) - (low - head):]
+
+    def duplicates_state():
+        """"ready"; "reading" (a new analysis is reading folders); "comparing" (the analysis is still
+        comparing files); or "missing" (the comparison was cancelled or failed)."""
+        if state["map_scanning"]:
+            return "reading"
+        if state["groups"] is not None:
+            return "ready"
+        if state["dup_note"].startswith("comparing"):
+            return "comparing"
+        return "missing"
 
     def map_arc_text(arc, node):
+        """Two lines: the name, shortened to fit one line, then the numbers. So a long path can never push
+        the size or the duplicate status out of the two-line box."""
         name = arc["name"]
-        if arc["kind"] == "folder":
-            name = rel(arc["path"])
+        if arc["kind"] == "folder" or arc["kind"] == "file":
+            name = map_name(arc["path"])
         elif arc["kind"] == "rest":
-            name = name + " in " + rel(arc["path"])
+            name = name + " in " + map_name(arc["path"])
+        room = 0
+        try:
+            room = int(str(map_info_label.cget("wraplength"))) - 8
+        except (ValueError, tk.TclError):
+            room = 0
+        if room < 100:
+            room = map_info_label.winfo_width() - 8
+        name = fit_middle(name, base_font, room)
         share = 0.0
         if node["bytes"] > 0:
             share = 100.0 * arc["bytes"] / node["bytes"]
-        text = name + "  —  " + human_size(arc["bytes"]) + " (%.1f %%)" % share + "  ·  " + plural(arc["files"], "file")
+        details = human_size(arc["bytes"]) + "  ·  %.1f %%" % share
+        if arc["kind"] == "file":
+            details = details + "  ·  changed " + human_date(arc["modified"])
+        else:
+            details = details + "  ·  " + plural(arc["files"], "file")
         if map_mode_var.get() == "duplicates":
-            if state["groups"] is None:
-                text = text + "  ·  duplicates not compared yet"
+            status = duplicates_state()
+            if status == "reading" or status == "comparing":
+                details = details + "  ·  duplicates not compared yet"
+            elif status == "missing":
+                details = details + "  ·  duplicates were not compared"
+            elif arc["kind"] == "file":
+                if arc["wasted"] > 0:
+                    details = details + "  ·  an extra duplicate copy"
+                else:
+                    details = details + "  ·  not an extra copy"
             else:
-                text = text + "  ·  " + human_size(arc["wasted"]) + " in duplicate copies"
-        return text
+                details = details + "  ·  " + human_size(arc["wasted"]) + " in duplicate copies"
+        return name + "\n" + details
 
     def map_default_text(node):
-        text = "Point at a slice to see what it is. Click a folder to zoom in"
+        """Kept short: the line above the map is two lines tall, also in the narrowest window."""
+        up = ""
         if map_can_go_up():
-            text = text + ", the centre (or Backspace) to go back up"
-        text = text + ". Right-click for more."
+            up = ", the centre or Backspace to go up"
         if map_mode_var.get() == "duplicates":
-            if state["groups"] is None:
-                text = "Duplicates are still being compared; the map turns red where copies are found."
-            else:
-                text = "Red marks space taken by duplicate copies: the redder, the bigger its share. " + text
-        return text
+            status = duplicates_state()
+            if status == "reading":
+                return "Reading folders again; duplicates are compared after that."
+            if status == "comparing":
+                return "Duplicates are still being compared; the map turns red where copies are found."
+            if status == "missing":
+                note = state["dup_note"]
+                if note == "":
+                    note = "not compared"
+                return "Duplicates were " + note + ". Analyze again to compare them and see where copies are."
+            return "Red marks duplicate copies: the redder, the more of the slice they take. Click a folder to zoom in" + up + "."
+        return "Point at a slice for details. Click a folder to zoom in" + up + ". Right-click for more."
 
     def map_draw():
         map_canvas.delete("all")
@@ -2067,24 +2563,23 @@ def run_gui(smoke_path, start_folder, start_view):
             waiting = "Analyze a folder to see where its space goes."
             if state["map_pending"]:
                 waiting = "Drawing the map…"
+            elif state["report"] is None and state["map_scanning"]:
+                waiting = "Reading folders…"
+            elif state["report"] is not None and state["map_build_error"] != "":
+                waiting = "The map could not be drawn: " + state["map_build_error"]
+            elif state["report"] is not None and state["busy"]:
+                waiting = "The map is drawn when the current task ends."
             map_canvas.create_text(width / 2, height / 2, text=waiting, fill="#6b6b6b", font=base_font)
             mp["subtitle"].set("")
             map_info.set("")
-            fill_table(map_table, [])
+            map_fill_table(None)
             refresh_buttons()
             return
         node = map_center_node()
         mode = map_mode_var.get()
         mp["subtitle"].set(node["path"] + "  ·  " + human_size(node["bytes"]) + " in " + plural(node["files"], "file"))
         map_info.set(map_default_text(node))
-        rows = []
-        for entry in map_entries(node):
-            share = 0.0
-            if node["bytes"] > 0:
-                share = 100.0 * entry["bytes"] / node["bytes"]
-            entry["share"] = "%.1f %%" % share
-            rows.append(entry)
-        fill_table(map_table, rows)
+        map_fill_table(node)
         refresh_buttons()
         radius = (min(width, height) - 16) / 2.0
         if radius < 60:
@@ -2092,7 +2587,10 @@ def run_gui(smoke_path, start_folder, start_view):
         cx = width / 2.0
         cy = height / 2.0
         hole = radius * 0.2
-        arcs = layout_sunburst(node, MAP_DEPTH, MAP_MIN_DEGREES)
+        # Slices must be wide enough to see; the angle that takes depends on the ring's radius. Six
+        # rings is the most there can be, so these angles are safe however many rings are drawn.
+        min_angles = ring_min_angles(MAP_DEPTH, hole, (radius - hole) / MAP_DEPTH, MAP_MIN_PIXELS, MAP_MIN_DEGREES)
+        arcs = layout_sunburst(node, MAP_DEPTH, min_angles)
         rings = 3  # shallow folders get wider rings instead of a small map in a big canvas
         for arc in arcs:
             if arc["depth"] > rings:
@@ -2106,12 +2604,61 @@ def run_gui(smoke_path, start_folder, start_view):
             state["map_items"][item] = arc
         map_canvas.create_oval(cx - hole, cy - hole, cx + hole, cy + hole, fill="#ffffff", outline="#c8c8c8",
                                tags=("centre",))
-        label = node["name"]
-        if len(label) > 18:
-            label = label[0:17] + "…"
-        map_canvas.create_text(cx, cy - line_height / 2, text=label, font=strong_font, tags=("centre",))
-        map_canvas.create_text(cx, cy + line_height / 2, text=human_size(node["bytes"]), fill="#6b6b6b",
-                               font=base_font, tags=("centre",))
+        # The labels fit inside the hole and cannot be clicked: only the hole itself means "go up".
+        room = 2 * hole - 8
+        label = fit_text(node["name"], strong_font, room)
+        size_text = human_size(node["bytes"])
+        if base_font.measure(size_text) > room:
+            size_text = ""  # a cut number reads wrong; the line above the map shows it anyway
+        map_canvas.create_text(cx, cy - line_height / 2, text=label, font=strong_font, tags=("centre",),
+                               state="disabled")
+        map_canvas.create_text(cx, cy + line_height / 2, text=size_text, fill="#6b6b6b", font=base_font,
+                               tags=("centre",), state="disabled")
+
+    def fit_text(text, font, room):
+        """text, cut with "…" until it is at most room pixels wide in font ("" if not even that fits)."""
+        if font.measure(text) <= room:
+            return text
+        cut = len(text) - 1
+        while cut > 0 and font.measure(text[0:cut] + "…") > room:
+            cut = cut - 1
+        if cut == 0:
+            return ""
+        return text[0:cut] + "…"
+
+    def map_fill_table(node):
+        """Fill "Biggest here" for the folder in the middle; skipped when it already shows that folder of
+        this tree (a resize or a colour change does not change it)."""
+        key = None
+        if node is not None:
+            key = (state["map_serial"], node["path"])
+        if key == state["map_table_key"]:
+            return
+        state["map_table_key"] = key
+        rows = []
+        map_table["extra_note"] = ""
+        if node is not None:
+            # Rows are plain copies: the table must not keep the tree (and every file record) alive.
+            for entry in map_entries(node, MAX_ROWS):
+                share = 0.0
+                if node["bytes"] > 0:
+                    share = 100.0 * entry["bytes"] / node["bytes"]
+                rows.append({"kind": entry["kind"], "name": entry["name"], "path": entry["path"],
+                             "bytes": entry["bytes"], "share": "%.1f %%" % share})
+            count = map_item_count(node)
+            if count > len(rows):
+                map_table["extra_note"] = "The biggest " + human_count(len(rows)) + " of " + human_count(count) + "."
+        fill_table(map_table, rows)
+        tree_widget = map_table["tree"]
+        if len(rows) > 0:
+            # Refilling drops the keyboard position; put it back on the first row so Down and Enter work.
+            tree_widget.focus("0")
+            try:
+                focused = window.focus_get()
+            except (KeyError, tk.TclError):  # focus in a widget tkinter does not know, e.g. a list popup
+                focused = None
+            if focused == tree_widget:
+                tree_widget.selection_set("0")
 
     def map_target(event):
         """The Arc under the mouse, "centre", or None."""
@@ -2143,6 +2690,7 @@ def run_gui(smoke_path, start_folder, start_view):
         arc = state["map_items"][item]
         map_canvas.itemconfigure(item, outline="#202020", width=2)
         map_canvas.tag_raise(item)
+        map_canvas.tag_raise("centre")  # keep the centre's labels readable over the outline
         map_canvas.configure(cursor="hand2" if arc["kind"] == "folder" else "")
         map_info.set(map_arc_text(arc, map_center_node()))
 
@@ -2150,21 +2698,48 @@ def run_gui(smoke_path, start_folder, start_view):
         state["map_center"] = path
         map_draw()
 
+    def map_zoom_from_menu(path):
+        map_canvas.focus_set()  # so the Backspace the info line mentions goes up, as after a click
+        map_zoom(path)
+
     def map_up():
         if not map_can_go_up():
             return
+        root = state["root"]
         parent = os.path.dirname(state["map_center"])
-        if len(parent) < len(state["root"]):
-            parent = state["root"]
+        # dirname keeps the separator of a share root (\\nas\media\), so compare without separators.
+        if not is_inside(root, parent) or len(parent.rstrip("\\/")) <= len(root.rstrip("\\/")):
+            parent = root
         map_zoom(parent)
 
     def map_click(event):
         map_canvas.focus_set()  # so Backspace goes up a level instead of editing the folder box
+        found = map_canvas.find_withtag("current")
+        state["map_pressed"] = found[0] if len(found) > 0 else None
         target = map_target(event)
         if target == "centre":
             map_up()
         elif target is not None and target["kind"] == "folder":
             map_zoom(target["path"])
+
+    def map_double_click(event):
+        """Show a file in its folder. Only when the first click left the map as it was: after a zoom
+        (new canvas items) the pointer is over something else, which the user never pointed at. Quick
+        clicks on the centre still each go up a level."""
+        if map_target(event) == "centre":
+            map_up()
+            return
+        found = map_canvas.find_withtag("current")
+        if len(found) == 0 or found[0] != state["map_pressed"]:
+            return
+        target = map_target(event)
+        if target is not None and target["kind"] == "file":
+            launch(reveal_command(target["path"]))
+
+    def map_triple_click(event):
+        # A third quick click: up again on the centre, nothing elsewhere (the file was shown already).
+        if map_target(event) == "centre":
+            map_up()
 
     def map_right_click(event):
         target = map_target(event)
@@ -2172,14 +2747,19 @@ def run_gui(smoke_path, start_folder, start_view):
             return
         if target == "centre":
             path = state["map_center"]
-            can_zoom = False
+            kind = "centre"
         else:
             path = target["path"]
-            can_zoom = target["kind"] == "folder"
+            kind = target["kind"]
+        # A file is never handed to the file manager to open (that would run it): only its folder.
+        folder = path
+        if kind == "file":
+            folder = os.path.dirname(path)
         map_menu.delete(0, "end")
-        if can_zoom:
-            map_menu.add_command(label="Zoom in", command=lambda: map_zoom(path))
-        map_menu.add_command(label="Open folder", command=lambda: launch(open_folder_command(path)))
+        if kind == "folder":
+            map_menu.add_command(label="Zoom in", command=lambda: map_zoom_from_menu(path))
+        map_menu.add_command(label="Open its folder" if kind == "file" else "Open folder",
+                             command=lambda: launch(open_folder_command(folder)))
         map_menu.add_command(label="Show in its folder", command=lambda: launch(reveal_command(path)))
         map_menu.tk_popup(event.x_root, event.y_root)
 
@@ -2200,7 +2780,12 @@ def run_gui(smoke_path, start_folder, start_view):
         if rows[0]["kind"] == "folder":
             map_zoom(rows[0]["path"])
         else:
-            launch(open_folder_command(rows[0]["path"]))
+            launch(reveal_command(rows[0]["path"]))  # select the file in its folder; never open it
+
+    def map_table_double_click(event):
+        # Only a double-click on a row: not on a heading, a column divider or the empty space below.
+        if map_table["tree"].identify_region(event.x, event.y) == "cell":
+            map_table_open(event)
 
     def map_backspace(event):
         if state["view"] != "map":
@@ -2212,9 +2797,16 @@ def run_gui(smoke_path, start_folder, start_view):
     map_canvas.bind("<Motion>", map_hover)
     map_canvas.bind("<Leave>", map_hover)
     map_canvas.bind("<Button-1>", map_click)
+    map_canvas.bind("<Double-1>", map_double_click)
+    map_canvas.bind("<Triple-1>", map_triple_click)
     map_canvas.bind("<Button-3>", map_right_click)
+    if window.tk.call("tk", "windowingsystem") == "aqua":
+        # macOS: Control-click asks for the menu too, and Tk before 8.7 reports the right button as 2.
+        map_canvas.bind("<Control-Button-1>", map_right_click)
+        if tk.TkVersion < 8.7:
+            map_canvas.bind("<Button-2>", map_right_click)
     map_canvas.bind("<Configure>", map_resized)
-    map_table["tree"].bind("<Double-1>", map_table_open)
+    map_table["tree"].bind("<Double-1>", map_table_double_click)
     map_table["tree"].bind("<Return>", map_table_open)
     window.bind("<BackSpace>", map_backspace)
 
@@ -2311,10 +2903,14 @@ def run_gui(smoke_path, start_folder, start_view):
         groups = state["groups"]
         for pair in selected_copies():
             group = groups[pair[0]]
+            kept_before = group[keeper_index(group, state["keep"])]
             for info in group:
                 if info["path"] in state["keep"]:
                     del state["keep"][info["path"]]
             state["keep"][group[pair[1]]["path"]] = True
+            if state["map_tree"] is not None and state["map_wasted_ok"]:
+                # Move this group's marks on the map now; recounting every copy would freeze the window.
+                shift_kept_copy(state["map_tree"], state["root"], kept_before, group[pair[1]])
         refresh_duplicates()
 
     def trash_duplicates():
@@ -2629,7 +3225,7 @@ def run_gui(smoke_path, start_folder, start_view):
         if report is None:
             for entry in VIEWS:
                 set_side(entry[0], "")
-            state["map_tree"] = None
+            set_map_tree(None)
             if state["view"] == "map":
                 map_draw()
             refresh_buttons()
@@ -2693,8 +3289,8 @@ def run_gui(smoke_path, start_folder, start_view):
         refresh_buttons()
 
     def refresh_duplicates():
-        # The space map shows the duplicate copies too; redraw it now if it is on screen.
-        state["map_wasted_ok"] = False
+        # The space map shows the duplicate copies too; redraw it now if it is on screen. (Its marks are
+        # only recomputed where the groups or the kept copies change, which sets map_wasted_ok.)
         if state["view"] == "map":
             map_draw()
         dup_tree.delete(*dup_tree.get_children())
@@ -2814,9 +3410,8 @@ def run_gui(smoke_path, start_folder, start_view):
 
         def on_message(kind, value):
             if kind == "tree":
-                state["map_tree"] = value
+                set_map_tree(value)
                 state["map_pending"] = False
-                state["map_wasted_ok"] = False
                 if state["view"] == "map":
                     map_draw()
             if kind == "scan":
@@ -2824,8 +3419,9 @@ def run_gui(smoke_path, start_folder, start_view):
                 state["report"] = value
                 state["groups"] = None
                 state["keep"] = {}
-                state["map_tree"] = None
+                set_map_tree(None)
                 state["map_pending"] = True
+                state["map_scanning"] = False
                 state["map_center"] = root
                 state["dup_note"] = "comparing\u2026"
                 refresh_all()
@@ -2836,6 +3432,7 @@ def run_gui(smoke_path, start_folder, start_view):
         def finish(result):
             state["groups"] = result["value"]
             state["dup_note"] = ""
+            state["map_wasted_ok"] = False
             refresh_all()
             savings = duplicate_savings(result["value"])
             log("  " + plural(savings["copies"], "duplicate copy") + ", " + human_size(savings["bytes"]))
@@ -2843,6 +3440,7 @@ def run_gui(smoke_path, start_folder, start_view):
                            + human_size(savings["bytes"]) + " in duplicate copies")
 
         def on_fail(result):
+            state["map_scanning"] = False
             if state["map_pending"]:  # the tree never arrived; build it here when the map is shown
                 state["map_pending"] = False
                 if state["view"] == "map":
@@ -2850,8 +3448,13 @@ def run_gui(smoke_path, start_folder, start_view):
             if state["report"] is not None and state["root"] == root:
                 state["dup_note"] = "not compared (" + result["error"] + ")"
                 refresh_all()
+            elif state["view"] == "map":
+                map_draw()
 
+        state["map_scanning"] = True
         run_job("Analyzing " + root, work, finish, on_message, on_fail)
+        if state["view"] == "map" and state["report"] is None:
+            map_draw()  # "Reading folders…" instead of "Analyze a folder" while the first walk runs
 
     def apply_and_forget(label, moves, verb):
         """Apply moves, then drop the moved paths from the results instead of analyzing again."""
@@ -2862,10 +3465,14 @@ def run_gui(smoke_path, start_folder, start_view):
             gone = {}
             for move in result["value"]["moved"]:
                 gone[move["source"]] = True
+            files_before = state["report"]["file_count"]
             state["report"] = remove_from_report(state["report"], gone, LARGEST_COUNT, state["old_days"], time.time())
             if state["groups"] is not None:
                 state["groups"] = remove_from_groups(state["groups"], gone)
-            state["map_tree"] = None  # rebuilt from the smaller report when the map is next drawn
+            if state["report"]["file_count"] < files_before:
+                # The map is out of date. It is rebuilt in the background the next time it is shown, so a
+                # move costs nothing more for someone who never opens the map.
+                set_map_tree(None)
             refresh_all()
 
         run_job(label, lambda post: apply_moves(root, moves, state["cancel"], progress_sender(post)), finish, None, None)
@@ -2989,4 +3596,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5d9bdd59a0d23aca144dc47f827f0c43257c75edeefe8e829010c748548865b9 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ff227301e9041f3ee909ec78ea68d8f35b52ac307d383831f80d9e26133b58e9 ====

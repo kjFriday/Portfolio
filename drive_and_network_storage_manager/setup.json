@@ -1,7 +1,7 @@
 {
   "id": "GenericCompany.Storage",
   "name": "Generic Company Storage Manager",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "Generic Company Inc. (fictional)",
   "group": "Generic Company Inc",
   "icon": "icon/app.ico",

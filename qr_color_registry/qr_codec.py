@@ -8,10 +8,10 @@
 
 """QR Palette codec: QR Studio's QR encoder and decoder, with colored output.
 
-Standard library only (struct and zlib; random for the test helpers). Copied from QR Studio's CORE
-section (see PROVENANCE.md) and extended with two-color PNG and SVG output, reading back this codec's
-own SVG drawings, the dark color of a picture, PNG transparency (tRNS), and limits on how much a
-picture may cost to read.
+Standard library only (struct and zlib; math and random for the picture changes). Copied from QR
+Studio's CORE section (see PROVENANCE.md) and extended with two-color PNG and SVG output, reading back
+this codec's own SVG drawings, the dark color of a picture, PNG transparency (tRNS), limits on how
+much a picture may cost to read, and a robustness score: how much wear a code survives.
 
 Written to be easy to port to another language, like QR Studio: plain functions and plain records,
 explicit loops, and failures reported as Result records instead of exceptions across layers.
@@ -24,8 +24,10 @@ Records
   Matrix   {"size": int, "dark": [[bool]] (row, column), "version": int, "level": str, "mask": int}
   Reading  {"text": str, "version": int, "level": str, "mask": int, "corrected": int,
             "corners": [[x, y]] finder centres top-left, top-right, bottom-left in image pixels}
+  Score    {"passed": int, "tried": int, "failed": [the names of the WEAR tests the code failed]}
 """
 
+import math
 import os
 import random
 import struct
@@ -1904,7 +1906,7 @@ def majority_filter(bits, width, height):
     return result
 
 
-# --- Picture changes (used by the tests to make harder pictures) ---------------------------------
+# --- Picture changes (the tests' harder pictures, and the robustness score's wear) ---------------
 
 def rotate_image(image):
     """Quarter turn clockwise."""
@@ -1952,6 +1954,169 @@ def warp_image(image, corners):
             if 0 <= u < width and 0 <= v < height:
                 result["gray"][y * width + x] = image["gray"][int(v) * width + int(u)]
     return result
+
+
+def blur_image(image, size):
+    """Each pixel the mean of the `size` x `size` square around it (a box blur; edges repeat)."""
+    width = image["width"]
+    height = image["height"]
+    gray = image["gray"]
+    half = size // 2
+    across = [0] * (width * height)
+    for y in range(height):
+        row = y * width
+        for x in range(width):
+            total = 0
+            for dx in range(-half, half + 1):
+                total = total + gray[row + min(width - 1, max(0, x + dx))]
+            across[row + x] = total
+    result = make_image(width, height, 255)
+    area = size * size
+    for y in range(height):
+        for x in range(width):
+            total = 0
+            for dy in range(-half, half + 1):
+                total = total + across[min(height - 1, max(0, y + dy)) * width + x]
+            result["gray"][y * width + x] = (total + area // 2) // area
+    return result
+
+
+def tilt_image(image, degrees):
+    """Turned `degrees` about its centre (nearest neighbour), on a canvas just big enough for all of
+    it, white where the picture does not reach."""
+    angle = math.radians(degrees)
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    width = image["width"]
+    height = image["height"]
+    new_width = int(math.ceil(abs(width * cos_a) + abs(height * sin_a)))
+    new_height = int(math.ceil(abs(width * sin_a) + abs(height * cos_a)))
+    result = make_image(new_width, new_height, 255)
+    for y in range(new_height):
+        dy = y + 0.5 - new_height / 2.0
+        for x in range(new_width):
+            dx = x + 0.5 - new_width / 2.0
+            u = cos_a * dx + sin_a * dy + width / 2.0
+            v = cos_a * dy - sin_a * dx + height / 2.0
+            if 0 <= u < width and 0 <= v < height:
+                result["gray"][y * new_width + x] = image["gray"][int(v) * width + int(u)]
+    return result
+
+
+def fade_image(image, factor):
+    """Lower contrast, like a faded print: every pixel moves towards white, keeping `factor` (0-1) of
+    its distance from white."""
+    result = make_image(image["width"], image["height"], 255)
+    for i in range(len(image["gray"])):
+        result["gray"][i] = 255 - int(round((255 - image["gray"][i]) * factor))
+    return result
+
+
+def add_grain(image, sigma, seed):
+    """Sensor grain: every pixel moved by a seeded Gaussian amount. Only random() is used (Box-Muller),
+    the one generator Python keeps the same across versions, so a score never changes with Python."""
+    generator = random.Random(seed)
+    result = make_image(image["width"], image["height"], 255)
+    for i in range(len(image["gray"])):
+        shift = sigma * math.sqrt(-2.0 * math.log(1.0 - generator.random())) * math.cos(2.0 * math.pi *
+                                                                                      generator.random())
+        result["gray"][i] = min(255, max(0, image["gray"][i] + int(round(shift))))
+    return result
+
+
+def add_specks(image, fraction, seed):
+    """A fraction of the pixels set to random grays, like add_noise but with random() only (see
+    add_grain), for the robustness score."""
+    generator = random.Random(seed)
+    result = {"width": image["width"], "height": image["height"], "gray": bytearray(image["gray"]), "rgb": None}
+    total = len(result["gray"])
+    for i in range(int(total * fraction)):
+        result["gray"][int(generator.random() * total)] = int(generator.random() * 256)
+    return result
+
+
+def cover_image(image, box):
+    """A white square over part of the picture, like a sticker or a scratch: box is (left, top, side)."""
+    result = {"width": image["width"], "height": image["height"], "gray": bytearray(image["gray"]), "rgb": None}
+    left, top, side = box
+    for y in range(max(0, top), min(image["height"], top + side)):
+        for x in range(max(0, left), min(image["width"], left + side)):
+            result["gray"][y * image["width"] + x] = 255
+    return result
+
+
+# --- Robustness: how much wear a code survives before it is printed ------------------------------
+
+WEAR = ("shrunk to half", "shrunk to a third", "light blur", "heavy blur", "light noise", "heavy noise",
+        "tilted 5 degrees", "low contrast", "very low contrast", "covered corner")
+COVERED_SHARE = 0.33  # the covered corner's side, as a share of the code's side
+
+
+def corner_box(reading):
+    """The covered corner of a code read from an upright picture -> (left, top, side) in pixels: a
+    square COVERED_SHARE of the code's side, one module in from its bottom-right corner (where no
+    finder pattern is)."""
+    size = 17 + 4 * reading["version"]
+    top_left = reading["corners"][0]
+    top_right = reading["corners"][1]
+    bottom_left = reading["corners"][2]
+    module = (top_right[0] - top_left[0]) / float(size - 7)
+    right = top_right[0] + 3.5 * module
+    bottom = bottom_left[1] + 3.5 * module
+    side = int(round(COVERED_SHARE * size * module))
+    return int(round(right - module)) - side, int(round(bottom - module)) - side, side
+
+
+def worn_image(image, name, reading):
+    """The picture after one of the WEAR tests; `reading` is the clean picture's, for the covered corner."""
+    if name == "shrunk to half":
+        return scale_image(image, 0.5)
+    if name == "shrunk to a third":
+        return scale_image(image, 1.0 / 3.0)
+    if name == "light blur":
+        return blur_image(image, 3)
+    if name == "heavy blur":
+        return blur_image(image, 5)
+    if name == "light noise":
+        return add_specks(image, 0.05, 1)
+    if name == "heavy noise":
+        return add_specks(image, 0.15, 2)
+    if name == "tilted 5 degrees":
+        return tilt_image(image, 5)
+    if name == "low contrast":
+        return add_grain(fade_image(image, 0.3), 12, 3)
+    if name == "very low contrast":
+        return add_grain(fade_image(image, 0.15), 12, 4)
+    return cover_image(image, corner_box(reading))
+
+
+def robustness(image, text):
+    """How much wear a code survives: each WEAR test applied to its upright picture, which must then
+    still read as `text` -> Result Score. A picture that does not read even unworn is a failed Result.
+    The tests are fixed (seeded noise), so the same picture always scores the same."""
+    clean = decode_image(image)
+    if not clean["ok"] or clean["value"]["text"] != text:
+        return fail("the picture does not read back as it is")
+    failed = []
+    for name in WEAR:
+        reading = decode_image(worn_image(image, name, clean["value"]))
+        if not reading["ok"] or reading["value"]["text"] != text:
+            failed.append(name)
+    return ok_result({"passed": len(WEAR) - len(failed), "tried": len(WEAR), "failed": failed})
+
+
+def describe_score(score):
+    """"8 of 10 passed; failed: shrunk to a third, heavy blur" (or "10 of 10 passed")."""
+    said = str(score["passed"]) + " of " + str(score["tried"]) + " passed"
+    if len(score["failed"]) > 0:
+        said = said + "; failed: " + ", ".join(score["failed"])
+    return said
+
+
+def picture_image(matrix, scale, color, caption=""):
+    """The Image of the PNG picture_bytes would write: `color` on white, with its quiet zone and
+    caption, as gray the way a camera would see it."""
+    return read_png(matrix_to_color_png(matrix, scale, 4, color, caption))["value"]
 
 
 # --- Links, files and the color of a picture -----------------------------------------------------
@@ -2071,4 +2236,4 @@ def describe(reading):
     return ("version " + str(reading["version"]) + ", level " + reading["level"] + ", mask " +
             str(reading["mask"]) + ", " + str(reading["corrected"]) + " codeword(s) corrected")
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=35f9355356085b7d8e6cce50b67887812781a55fac4f7cad4c410e9c611fb173 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=f574ec8263b47187923ac6b41c697adcf6dda4a5f822c2db51298e54914ab5c9 ====

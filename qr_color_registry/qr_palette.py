@@ -577,6 +577,11 @@ def selftest():
         check(made_svg["ok"], "a green SVG code is made, read back and registered", failures)
         check(not make_qr(db_path, "x", "#ffff00", "M", os.path.join(folder, "b.png"), 4)["ok"],
               "a color too light to scan is refused", failures)
+        sample = "HTTPS://GO.EXAMPLE.COM/12345678"
+        worn = qr_codec.robustness(qr_codec.picture_image(qr_codec.encode_text(sample, "H", 1, -1)["value"], 4,
+                                                          "#000000"), sample)
+        check(worn["ok"] and worn["value"]["passed"] == 9, "a code's robustness is scored (9 of 10 for this one)",
+              failures)
         found = search(db_path, "color", "blue", False, 20)
         check(found["ok"] and len(found["value"]) == 1 and found["value"][0]["path"] == made["value"]["path"],
               "found again by color, with its path", failures)
@@ -1957,4 +1962,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=cee297ffb5036277e2ee7f9cd2ef4bc9314982e626d5a59008d61bf9b76b0e90 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1cf1b6372e9230f2ac5d6e7f88c352cdded3ad223eed0de782f21be06014c414 ====

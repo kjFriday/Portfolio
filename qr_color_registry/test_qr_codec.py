@@ -317,6 +317,54 @@ class CaptionTests(unittest.TestCase):
             seen.append(glyph)
 
 
+SHORT = "HTTPS://GO.EXAMPLE.COM/12345678"
+
+
+class RobustnessTests(unittest.TestCase):
+    def picture(self, level, color):
+        return qr.picture_image(make(SHORT, level), 4, color)
+
+    def test_the_wear_is_the_same_every_time(self):
+        image = self.picture("H", "#000000")
+        clean = read(image)["value"]
+        for name in qr.WEAR:
+            first = qr.worn_image(image, name, clean)
+            second = qr.worn_image(image, name, clean)
+            self.assertEqual((first["width"], first["height"], first["gray"]),
+                             (second["width"], second["height"], second["gray"]), name)
+
+    def test_a_fixed_code_scores_the_same(self):
+        score = qr.robustness(self.picture("H", "#000000"), SHORT)
+        self.assertTrue(score["ok"], score["error"])
+        self.assertEqual(score["value"], {"passed": 9, "tried": 10, "failed": ["shrunk to a third"]})
+        self.assertEqual(qr.describe_score(score["value"]), "9 of 10 passed; failed: shrunk to a third")
+        self.assertEqual(qr.describe_score({"passed": 10, "tried": 10, "failed": []}), "10 of 10 passed")
+
+    def test_more_error_correction_scores_at_least_as_well(self):
+        low = qr.robustness(self.picture("L", "#3366cc"), SHORT)["value"]
+        high = qr.robustness(self.picture("H", "#3366cc"), SHORT)["value"]
+        self.assertGreaterEqual(high["passed"], low["passed"])
+        self.assertIn("covered corner", low["failed"])
+        self.assertNotIn("covered corner", high["failed"])
+
+    def test_a_picture_that_does_not_read_is_not_scored(self):
+        self.assertFalse(qr.robustness(qr.make_image(80, 80, 255), SHORT)["ok"])
+        self.assertFalse(qr.robustness(self.picture("M", "#000000"), "HTTPS://GO.EXAMPLE.COM/1")["ok"])
+
+    def test_the_kinds_of_wear(self):
+        image = self.picture("M", "#000000")
+        self.assertEqual(qr.tilt_image(image, 0)["gray"], image["gray"])
+        tilted = qr.tilt_image(image, 5)
+        self.assertGreater(tilted["width"], image["width"])
+        self.assertEqual(min(qr.fade_image(image, 0.5)["gray"]), 127)
+        self.assertEqual(qr.blur_image(qr.make_image(9, 9, 40), 5)["gray"], qr.make_image(9, 9, 40)["gray"])
+        covered = qr.cover_image(image, (0, 0, 10))
+        self.assertEqual(min(covered["gray"][0:10]), 255)
+        self.assertEqual(len(qr.add_grain(image, 12, 3)["gray"]), len(image["gray"]))
+        box = qr.corner_box(read(image)["value"])
+        self.assertEqual(box[2], round(qr.COVERED_SHARE * 25 * 4))  # version 2: 25 modules of 4 pixels
+
+
 class LimitTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix="qr_palette_limits_")
@@ -382,4 +430,4 @@ class LimitTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=d26241015c995645ba6fb030800da8663563b76c27e4b832a2d107183ac84d3d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=14d5e67755a55ad1ce8e569fc41b4b4394001cc439db340c4c2f018cc269dc50 ====

@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import local_inference
 
 PLAN = {"intent": "find", "color": "", "near": False, "family": "", "link": "", "link_exact": "", "path": "",
-        "limit": 20}
+        "section": "", "short": False, "limit": 20}
 QWEN_DIGEST = "a" * 64
 R1_DIGEST = "b" * 64
 
@@ -358,4 +358,4 @@ class ServerTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=298f5e4822baa1ad940729de9fc5faa8933b3a63d4ba46e5c252e78e60a8794d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d39e67fb19b1bd7c55c2d34e8371cda50323342110ea5cf64027056bbe0c6cee ====

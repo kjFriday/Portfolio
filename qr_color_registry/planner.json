@@ -1,15 +1,17 @@
 {
-  "about": "How ECP turns a question in plain English into a query plan. rules: what the selected local model is told, one line each; {families} stands for the list of color families. examples: questions with the plans they should give, added to the rules. family_words: more words for each color family. words_meaning_a_code: words that only say \"QR code\". words_to_skip and words_to_trim: filler words taken off the ends of links and paths. Edit, save and restart.",
+  "about": "How ECP turns a question in plain English into a query plan. rules: what the selected local model is told, one line each; {families} stands for the list of color families. examples: questions with the plans they should give, added to the rules. family_words: more words for each color family. section_words: the words that name each section of short links (\"non local\" counts as nonlocal). short_words: words that ask for codes with a short link. words_meaning_a_code: words that only say \"QR code\". words_to_skip and words_to_trim: filler words taken off the ends of links and paths. Edit, save and restart.",
   "rules": [
-    "You turn one question about a registry of colored QR codes into a JSON query plan. Every QR code has a link (the text it holds), a color (#rrggbb, in a family such as blue or green) and the path of its picture file.",
+    "You turn one question about a registry of colored QR codes into a JSON query plan. Every QR code has a link (the text it holds), a color (#rrggbb, in a family such as blue or green) and the path of its picture file. A code may hold a short link instead: a short address in the local section (for this computer) or the nonlocal section (on the internet) that forwards people to its destination.",
     "Answer with one JSON object and nothing else, with exactly these fields:",
     "  intent: \"find\" to look QR codes up, \"recommend\" to suggest colors for a new QR code",
     "  color: a #rrggbb code written in the question, else \"\"",
     "  near: true when the question asks for colors close to that code",
     "  family: one of {families}, else \"\"",
-    "  link: words the link should contain, copied from the question, else \"\"",
+    "  link: words the link or the destination should contain, copied from the question, else \"\"",
     "  link_exact: a whole link written in the question, else \"\"",
     "  path: words from a folder or file name in the question, else \"\"",
+    "  section: \"local\" or \"nonlocal\" when the question asks for that section's short links, else \"\"",
+    "  short: true when the question asks only for codes with a short link, else false",
     "  limit: how many results the question wants, 20 when it does not say",
     "Copy text exactly from the question. Never invent a link, a path or a #rrggbb code: a color named in words (blue, dark green) is a family, not a code."
   ],
@@ -24,6 +26,8 @@
         "link": "shop",
         "link_exact": "",
         "path": "",
+        "section": "",
+        "short": false,
         "limit": 20
       }
     },
@@ -37,6 +41,8 @@
         "link": "",
         "link_exact": "https://example.com/menu",
         "path": "",
+        "section": "",
+        "short": false,
         "limit": 20
       }
     },
@@ -50,6 +56,8 @@
         "link": "",
         "link_exact": "",
         "path": "",
+        "section": "",
+        "short": false,
         "limit": 2
       }
     },
@@ -63,6 +71,53 @@
         "link": "",
         "link_exact": "",
         "path": "marketing",
+        "section": "",
+        "short": false,
+        "limit": 20
+      }
+    },
+    {
+      "question": "my local codes",
+      "plan": {
+        "intent": "find",
+        "color": "",
+        "near": false,
+        "family": "",
+        "link": "",
+        "link_exact": "",
+        "path": "",
+        "section": "local",
+        "short": false,
+        "limit": 20
+      }
+    },
+    {
+      "question": "codes with a short link that still point to the menu",
+      "plan": {
+        "intent": "find",
+        "color": "",
+        "near": false,
+        "family": "",
+        "link": "menu",
+        "link_exact": "",
+        "path": "",
+        "section": "",
+        "short": true,
+        "limit": 20
+      }
+    },
+    {
+      "question": "blue codes on the nonlocal short links",
+      "plan": {
+        "intent": "find",
+        "color": "",
+        "near": false,
+        "family": "blue",
+        "link": "",
+        "link_exact": "",
+        "path": "",
+        "section": "nonlocal",
+        "short": true,
         "limit": 20
       }
     }
@@ -89,6 +144,26 @@
     "beige": "brown",
     "khaki": "olive"
   },
+  "section_words": {
+    "local": [
+      "local",
+      "localhost"
+    ],
+    "nonlocal": [
+      "nonlocal",
+      "public",
+      "internet"
+    ]
+  },
+  "short_words": [
+    "short",
+    "shortlink",
+    "shortlinks",
+    "shortened",
+    "redirect",
+    "redirects",
+    "redirected"
+  ],
   "words_meaning_a_code": [
     "qr",
     "qrs",

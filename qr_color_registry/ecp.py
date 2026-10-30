@@ -23,14 +23,15 @@ hash-chained audit log. ECP.md is the paper.
 
 Records
   Engine     {"db", "endpoint", "endpoint_error", "timeout", "app_version", "default_model", "preset",
-              "audit_file", "ollama_version"}
+              "audit_file", "ollama_version", "links": links.json as shortlinks.load_links gives it}
   Call       {"tool": str, "client_info": {} as the client says, "request_id": the JSON-RPC id or None}
   Outcome    {"ok": bool, "kind": "ok" | one of KINDS, "detail": str, "value": any}
   QueryPlan  {"intent": "find" | "recommend", "color", "near", "family", "link", "link_exact", "path",
-              "limit"}                                                               "" means "any"
-  Record     {"id", "hex", "color_name", "color_family", "rank", "payload_url", "target_url", "file_path",
-              "net_votes", "created_at", "exists"}      payload_url is what the code holds; target_url is
-              where its short link sends people, "" when the code holds its destination itself
+              "section": "" | "local" | "nonlocal", "short": bool, "limit"}         "" means "any"
+  Record     {"id", "hex", "color_name", "color_family", "rank", "payload_url", "target_url", "section",
+              "file_path", "net_votes", "created_at", "exists"}      payload_url is what the code holds;
+              target_url is where its short link sends people, "" when the code holds its destination
+              itself; section is the short link's section ("local" or "nonlocal"), "" for no short link
   ColorPick  {"hex", "name", "family", "rank", "uses"}
 """
 
@@ -44,6 +45,7 @@ import unicodedata
 import audit
 import local_inference
 import registry
+import shortlinks
 import swatch
 import textsafe
 
@@ -70,7 +72,9 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
-PLAN_FIELDS = ("intent", "color", "near", "family", "link", "link_exact", "path", "limit")
+PLAN_FIELDS = ("intent", "color", "near", "family", "link", "link_exact", "path", "section", "short", "limit")
+PLAN_TEXT_FIELDS = ("intent", "color", "family", "link", "link_exact", "path", "section")
+SECTIONS = ("local", "nonlocal")
 AUDIT_ID_ROOM = 20
 ZERO_WIDTH = (0x061C, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0xFEFF)  # and the marks LRM, RLM, ALM
 
@@ -80,20 +84,25 @@ DEFAULT_PLANNER = {
     "about": "How ECP turns a question in plain English into a query plan. rules: what the selected local model "
              "is told, one line each; {families} stands for the list of color families. examples: questions "
              "with the plans they should give, added to the rules. family_words: more words for each color "
-             "family. words_meaning_a_code: words that only say \"QR code\". words_to_skip and words_to_trim: "
-             "filler words taken off the ends of links and paths. Edit, save and restart.",
+             "family. section_words: the words that name each section of short links (\"non local\" counts as "
+             "nonlocal). short_words: words that ask for codes with a short link. words_meaning_a_code: words "
+             "that only say \"QR code\". words_to_skip and words_to_trim: filler words taken off the ends of "
+             "links and paths. Edit, save and restart.",
     "rules": [
         "You turn one question about a registry of colored QR codes into a JSON query plan. Every QR code has a "
         "link (the text it holds), a color (#rrggbb, in a family such as blue or green) and the path of its "
-        "picture file.",
+        "picture file. A code may hold a short link instead: a short address in the local section (for this "
+        "computer) or the nonlocal section (on the internet) that forwards people to its destination.",
         "Answer with one JSON object and nothing else, with exactly these fields:",
         '  intent: "find" to look QR codes up, "recommend" to suggest colors for a new QR code',
         '  color: a #rrggbb code written in the question, else ""',
         "  near: true when the question asks for colors close to that code",
         '  family: one of {families}, else ""',
-        '  link: words the link should contain, copied from the question, else ""',
+        '  link: words the link or the destination should contain, copied from the question, else ""',
         '  link_exact: a whole link written in the question, else ""',
         '  path: words from a folder or file name in the question, else ""',
+        '  section: "local" or "nonlocal" when the question asks for that section\'s short links, else ""',
+        "  short: true when the question asks only for codes with a short link, else false",
         "  limit: how many results the question wants, 20 when it does not say",
         "Copy text exactly from the question. Never invent a link, a path or a #rrggbb code: a color named in "
         "words (blue, dark green) is a family, not a code.",
@@ -101,18 +110,29 @@ DEFAULT_PLANNER = {
     "examples": [
         {"question": "blue QR codes that link to the shop",
          "plan": {"intent": "find", "color": "", "near": False, "family": "blue", "link": "shop", "link_exact": "",
-                  "path": "", "limit": 20}},
+                  "path": "", "section": "", "short": False, "limit": 20}},
         {"question": "which code points to https://example.com/menu?",
          "plan": {"intent": "find", "color": "", "near": False, "family": "", "link": "",
-                  "link_exact": "https://example.com/menu", "path": "", "limit": 20}},
+                  "link_exact": "https://example.com/menu", "path": "", "section": "", "short": False, "limit": 20}},
         {"question": "suggest two colors for a new code",
          "plan": {"intent": "recommend", "color": "", "near": False, "family": "", "link": "", "link_exact": "",
-                  "path": "", "limit": 2}},
+                  "path": "", "section": "", "short": False, "limit": 2}},
         {"question": "codes close to #3366cc in the marketing folder",
          "plan": {"intent": "find", "color": "#3366cc", "near": True, "family": "", "link": "", "link_exact": "",
-                  "path": "marketing", "limit": 20}},
+                  "path": "marketing", "section": "", "short": False, "limit": 20}},
+        {"question": "my local codes",
+         "plan": {"intent": "find", "color": "", "near": False, "family": "", "link": "", "link_exact": "",
+                  "path": "", "section": "local", "short": False, "limit": 20}},
+        {"question": "codes with a short link that still point to the menu",
+         "plan": {"intent": "find", "color": "", "near": False, "family": "", "link": "menu", "link_exact": "",
+                  "path": "", "section": "", "short": True, "limit": 20}},
+        {"question": "blue codes on the nonlocal short links",
+         "plan": {"intent": "find", "color": "", "near": False, "family": "blue", "link": "", "link_exact": "",
+                  "path": "", "section": "nonlocal", "short": True, "limit": 20}},
     ],
     "family_words": swatch.FAMILY_WORDS,
+    "section_words": {"local": ["local", "localhost"], "nonlocal": ["nonlocal", "public", "internet"]},
+    "short_words": ["short", "shortlink", "shortlinks", "shortened", "redirect", "redirects", "redirected"],
     "words_meaning_a_code": ["qr", "qrs", "code", "codes", "one", "ones", "please"],
     "words_to_skip": ["the", "a", "an", "my", "our", "your", "this", "that", "these", "those", "to", "of", "page",
                       "site", "website", "url", "link", "links", "code", "codes", "qr", "one", "ones"],
@@ -126,6 +146,8 @@ SYSTEM_PROMPT_SHA256 = ""
 EXAMPLES = []
 EDGE_WORDS = []
 CODE_WORDS = []
+SECTION_WORDS = {}
+SHORT_WORDS = []
 
 
 # --- Records ---------------------------------------------------------------------------------------
@@ -156,12 +178,12 @@ def sha256_text(text):
 
 def empty_plan():
     return {"intent": "find", "color": "", "near": False, "family": "", "link": "", "link_exact": "", "path": "",
-            "limit": registry.DEFAULT_LIMIT}
+            "section": "", "short": False, "limit": registry.DEFAULT_LIMIT}
 
 
 def plan_filters(plan):
     filters = registry.empty_filters()
-    for key in ("color", "near", "family", "link", "link_exact", "path"):
+    for key in ("color", "near", "family", "link", "link_exact", "path", "section", "short"):
         filters[key] = plan[key]
     return filters
 
@@ -178,6 +200,8 @@ def plan_schema():
                            "link": {"type": "string", "maxLength": 200},
                            "link_exact": {"type": "string", "maxLength": 2048},
                            "path": {"type": "string", "maxLength": 260},
+                           "section": {"type": "string", "enum": [""] + list(SECTIONS)},
+                           "short": {"type": "boolean"},
                            "limit": {"type": "integer", "minimum": 1, "maximum": registry.MAX_LIMIT}},
             "required": list(PLAN_FIELDS), "additionalProperties": False}
 
@@ -193,7 +217,7 @@ def new_engine(db_path, inference_url, timeout, app_version):
         endpoint = parsed["value"]
     return {"db": db_path, "endpoint": endpoint, "endpoint_error": parsed["error"], "timeout": timeout,
             "app_version": app_version, "default_model": "", "preset": swatch.DEFAULT_PRESET, "audit_file": "",
-            "ollama_version": ""}
+            "ollama_version": "", "links": shortlinks.copy_links(shortlinks.DEFAULT_LINKS)}
 
 
 # --- The planner's configuration (planner.json) ----------------------------------------------------
@@ -236,11 +260,14 @@ def load_planner(path):
         examples = []
         if isinstance(data["examples"], list):
             for example in data["examples"]:
-                if (isinstance(example, dict) and isinstance(example.get("question"), str) and
-                        example["question"].strip() != "" and check_plan_shape(example.get("plan")) == "" and
-                        example["plan"]["family"] in [""] + list(swatch.FAMILIES) and
-                        example["plan"]["intent"] in ("find", "recommend")):
-                    examples.append({"question": example["question"], "plan": example["plan"]})
+                plan = None
+                if isinstance(example, dict):
+                    plan = with_new_fields(example.get("plan"))
+                if (plan is not None and isinstance(example.get("question"), str) and
+                        example["question"].strip() != "" and check_plan_shape(plan) == "" and
+                        plan["family"] in [""] + list(swatch.FAMILIES) and plan["section"] in [""] + list(SECTIONS)
+                        and plan["intent"] in ("find", "recommend")):
+                    examples.append({"question": example["question"], "plan": plan})
                 else:
                     warnings.append("planner: an example was left out; each needs a question and a whole plan")
         if len(examples) > 0:
@@ -260,22 +287,48 @@ def load_planner(path):
             planner["family_words"] = words
         else:
             warnings.append("planner: family_words must be an object of words and families")
-    for key in ("words_meaning_a_code", "words_to_skip", "words_to_trim"):
+    if "section_words" in data:
+        named = data["section_words"]
+        if (isinstance(named, dict) and sorted(named) == sorted(SECTIONS) and text_list(named["local"]) and
+                text_list(named["nonlocal"])):
+            planner["section_words"] = {"local": lowered_words(named["local"]),
+                                        "nonlocal": lowered_words(named["nonlocal"])}
+        else:
+            warnings.append("planner: section_words must give a list of words for local and for nonlocal")
+    for key in ("short_words", "words_meaning_a_code", "words_to_skip", "words_to_trim"):
         if key in data:
             if text_list(data[key]):
-                lowered = []
-                for item in data[key]:
-                    lowered.append(item.lower())
-                planner[key] = lowered
+                planner[key] = lowered_words(data[key])
             else:
                 warnings.append("planner: " + key + " must be a list of words")
     return {"planner": planner, "warnings": warnings}
+
+
+def lowered_words(words):
+    lowered = []
+    for item in words:
+        lowered.append(item.lower())
+    return lowered
+
+
+def with_new_fields(plan):
+    """An example's plan with the fields added after a planner.json was written (section, short) at
+    their defaults, so an older planner.json keeps its examples -> QueryPlan-shaped dict, or None."""
+    if not isinstance(plan, dict):
+        return None
+    filled = dict(plan)
+    if "section" not in filled:
+        filled["section"] = ""
+    if "short" not in filled:
+        filled["short"] = False
+    return filled
 
 
 def configure_planner(planner):
     """Put a planner configuration in place: the system prompt (rules, then the worked examples)
     and the word lists."""
     global PLANNER_RULES, SYSTEM_PROMPT, SYSTEM_PROMPT_SHA256, EXAMPLES, EDGE_WORDS, CODE_WORDS
+    global SECTION_WORDS, SHORT_WORDS
     PLANNER_RULES = "\n".join(planner["rules"]).replace("{families}", ", ".join(swatch.FAMILIES))
     EXAMPLES = list(planner["examples"])
     lines = [PLANNER_RULES, "", "Examples, each a question and the plan to answer with:"]
@@ -286,6 +339,9 @@ def configure_planner(planner):
     SYSTEM_PROMPT_SHA256 = sha256_text(SYSTEM_PROMPT)
     EDGE_WORDS = list(planner["words_to_skip"]) + list(planner["words_to_trim"])
     CODE_WORDS = list(planner["words_meaning_a_code"])
+    SECTION_WORDS = {"local": list(planner["section_words"]["local"]),
+                     "nonlocal": list(planner["section_words"]["nonlocal"])}
+    SHORT_WORDS = list(planner["short_words"])
     swatch.FAMILY_WORDS = dict(planner["family_words"])
 
 
@@ -391,11 +447,12 @@ def check_plan_shape(value):
     for key in value:
         if key not in PLAN_FIELDS:
             return "unknown field " + json.dumps(key)
-    for key in ("intent", "color", "family", "link", "link_exact", "path"):
+    for key in PLAN_TEXT_FIELDS:
         if not isinstance(value.get(key), str):
             return key + " must be a string"
-    if not isinstance(value.get("near"), bool):
-        return "near must be true or false"
+    for key in ("near", "short"):
+        if not isinstance(value.get(key), bool):
+            return key + " must be true or false"
     limit = value.get("limit")
     if isinstance(limit, bool) or not isinstance(limit, int):
         return "limit must be a whole number"
@@ -409,10 +466,34 @@ def family_in_question(family, words):
     return False
 
 
+def sections_in_question(words):
+    """The sections of short links a question names, by SECTION_WORDS: "my local codes" -> ["local"].
+    "non local" and "non-local" name nonlocal, not local."""
+    named = []
+    for index in range(len(words)):
+        word = words[index]
+        if word == "non" and index + 1 < len(words) and words[index + 1] == "local":
+            continue
+        if word == "local" and index > 0 and words[index - 1] == "non":
+            word = "nonlocal"
+        for section in SECTIONS:
+            if word in SECTION_WORDS.get(section, []) and section not in named:
+                named.append(section)
+    return named
+
+
+def short_in_question(words):
+    for word in words:
+        if word in SHORT_WORDS:
+            return True
+    return False
+
+
 def ground(proposed, question):
     """Keep only what the question supports -> (QueryPlan, clamped: [str]). Links, paths and color
-    codes must be written in the question; a family must be named in it; a color code in the
-    question always wins over the model's. Every change is listed."""
+    codes must be written in the question; a family or a section must be named in it, and short
+    links asked for in its words; a color code in the question always wins over the model's. Every
+    change is listed."""
     clamped = []
     plan = empty_plan()
     lowered = question.casefold()
@@ -437,6 +518,14 @@ def ground(proposed, question):
         plan["family"] = family
     elif proposed["family"] != "":
         clamped.append("family: dropped " + json.dumps(proposed["family"]) + ", not named in the question")
+    if proposed["section"] in SECTIONS and proposed["section"] in sections_in_question(words):
+        plan["section"] = proposed["section"]
+    elif proposed["section"] != "":
+        clamped.append("section: dropped " + json.dumps(proposed["section"]) + ", not named in the question")
+    if proposed["short"] and short_in_question(words):
+        plan["short"] = True
+    elif proposed["short"]:
+        clamped.append("short: dropped, the question does not ask for short links")
     for key in ("link", "link_exact", "path"):
         value = proposed[key].strip()
         if value == "":
@@ -536,11 +625,29 @@ def describe_plan(plan):
         parts.append('link containing "' + plan["link"] + '"')
     if plan["path"] != "":
         parts.append('path containing "' + plan["path"] + '"')
+    if plan["section"] != "":
+        parts.append(plan["section"] + " short links")
+    elif plan["short"]:
+        parts.append("short links")
     return ", ".join(parts)
 
 
-def run_plan(snapshot, plan, preset):
-    """A checked plan against a snapshot -> {"records", "colors", "summary", "truncated"}."""
+def with_sections(rows, links):
+    """Rows with "section": their short link's section by links.json's bases ("local" or "nonlocal"),
+    "" for a code without a short link (or one made on a base that is no longer either section's)."""
+    marked = []
+    for row in rows:
+        row = dict(row)
+        row["section"] = ""
+        if row["short_code"] != "":
+            row["section"] = shortlinks.section_of(links, row["link"])
+        marked.append(row)
+    return marked
+
+
+def run_plan(snapshot, plan, preset, links):
+    """A checked plan against a snapshot -> {"records", "colors", "summary", "truncated"}. `links`
+    (links.json) gives the sections' bases."""
     flags = {"truncated": False}
     ranked = swatch.rank_colors(preset, snapshot["votes"])
     order = []
@@ -567,11 +674,11 @@ def run_plan(snapshot, plan, preset):
         summary = ("Top " + str(len(colors)) + " color(s) for a new QR code (preset " + preset +
                    (", family " + plan["family"] if plan["family"] != "" else "") + "): " + ", ".join(names) + ".")
         return {"records": records, "colors": colors, "summary": summary, "truncated": False}
-    for row in registry.find_rows(snapshot["rows"], plan_filters(plan), plan["limit"]):
+    for row in registry.find_rows(with_sections(snapshot["rows"], links), plan_filters(plan), plan["limit"]):
         records.append({"id": row["id"], "hex": neutral(row["hex"], flags), "color_name": neutral(row["name"], flags),
                         "color_family": neutral(row["family"], flags), "rank": places.get(row["hex"]),
                         "payload_url": neutral(row["link"], flags), "target_url": neutral(row["target"], flags),
-                        "file_path": neutral(row["path"], flags),
+                        "section": row["section"], "file_path": neutral(row["path"], flags),
                         "net_votes": snapshot["vote_map"].get(row["hex"], 0),
                         "created_at": neutral(row["created"], flags), "exists": registry.file_state(row["path"], True)})
     wanted = describe_plan(plan)
@@ -753,7 +860,7 @@ def query(engine, prompt, model_id, call):
     extra["progress_fired"] = snapshot["kind"] == "db_timeout"
     if not snapshot["ok"]:
         return finish(engine, call, started, snapshot, extra)
-    ran = run_plan(snapshot["value"], plan, engine["preset"])
+    ran = run_plan(snapshot["value"], plan, engine["preset"], engine["links"])
     plan_used = {"planner": planner, "clamped": clamped}
     for key in PLAN_FIELDS:
         plan_used[key] = plan[key]
@@ -860,4 +967,4 @@ def serve(handler, state, reader, writer):
 
 configure_planner(DEFAULT_PLANNER)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=252770f35ca4ac997d45aee59634bb12e0788dc345c3679c7eb6a858d730794d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1f4a90d163c6500f7e8ec7f902760cb871893eb19dbc4928c83893be7d75f624 ====

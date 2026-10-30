@@ -182,6 +182,9 @@ class ToolTests(ServerCase):
         for key in mcp_server.TOOLS[2]["outputSchema"]["required"]:
             self.assertIn(key, content)
         self.assertEqual(content["records"][0]["file_path"], os.path.join(self.folder, "shop-blue.png"))
+        declared = mcp_server.TOOLS[2]["outputSchema"]["properties"]["records"]["items"]["properties"]
+        self.assertEqual(sorted(content["records"][0]), sorted(declared))  # every record field is declared
+        self.assertEqual(content["records"][0]["section"], "")
 
     def test_domain_failures_are_isError_results(self):
         answered = self.call(2, "ecp_query", {"prompt": "blue"})
@@ -273,4 +276,4 @@ class StdioTests(ServerCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=3689c92a8a3897014202671216f50380ec65f425d9113f1a8bd6c81221ca2e88 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d7d56a9254f445c1339b7daea3d8722cbd314c989b0912aa0b622bde32780116 ====

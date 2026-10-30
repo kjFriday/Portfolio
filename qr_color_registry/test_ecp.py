@@ -39,7 +39,7 @@ CODES = (("shop-blue.png", "https://shop.example.com/", "#3366cc"),
 
 def plan(**changes):
     value = {"intent": "find", "color": "", "near": False, "family": "", "link": "", "link_exact": "", "path": "",
-             "limit": 20}
+             "section": "", "short": False, "limit": 20}
     for key in changes:
         value[key] = changes[key]
     return value
@@ -310,6 +310,37 @@ class EnvironmentTests(EngineCase):
                          ("HTTPS://GO.EXAMPLE.COM/" + code, "https://example.com/opening-times"))
         self.assertEqual(self.answer("#006633")["records"][0]["target_url"], "")
 
+    def test_short_links_by_section(self):
+        local = shortlinks.new_code(7)
+        public = shortlinks.new_code(7)
+        opened = registry.connect(self.db, False)
+        for code, base, color in ((local, "HTTP://LOCALHOST:8000/", "#996600"), (public, "HTTPS://GO.EXAMPLE.COM/",
+                                                                                 "#336699")):
+            registry.save_qr(opened["value"], {"link": base + code, "color": color,
+                                               "path": os.path.join(self.folder, code + ".png"), "format": "png",
+                                               "ec_level": "M", "version": 2, "origin": "made",
+                                               "short": {"code": code, "target": "https://example.com/menu"}})
+        registry.close(opened["value"])
+        self.fake.plans.append(plan(section="local"))
+        value = self.answer("my local codes")
+        self.assertEqual(self.links(value), ["HTTP://LOCALHOST:8000/" + local])
+        self.assertEqual(value["records"][0]["section"], "local")
+        self.assertIn("local short links", value["summary"])
+        self.fake.plans.append(plan(section="nonlocal", short=True))
+        value = self.answer("codes on the non-local short links")
+        self.assertEqual(self.links(value), ["HTTPS://GO.EXAMPLE.COM/" + public])
+        self.assertEqual(value["records"][0]["section"], "nonlocal")
+        self.fake.plans.append(plan(short=True, link="menu"))
+        value = self.answer("short links that still point to the menu")
+        self.assertEqual(sorted(self.links(value)), sorted(["HTTP://LOCALHOST:8000/" + local,
+                                                            "HTTPS://GO.EXAMPLE.COM/" + public]))
+        self.fake.plans.append(plan(link="menu"))
+        self.assertEqual(self.answer("codes that point to the menu")["row_count"], 3)  # with the plain menu code
+        self.assertEqual(self.answer("#006633")["records"][0]["section"], "")
+        self.engine["links"] = shortlinks.copy_links(shortlinks.DEFAULT_LINKS)
+        self.engine["links"]["local"]["base"] = "HTTP://192.168.1.20:8000/"  # the base was changed since
+        self.assertEqual(self.answer("#996600")["records"][0]["section"], "")
+
     def test_long_fields_are_cut(self):
         ecp.MAX_FIELD_CHARACTERS = 40
         value = self.answer("#006633")
@@ -386,6 +417,23 @@ class GroundingTests(unittest.TestCase):
         kept, clamped = ecp.ground(plan(near=True), "codes near nothing")
         self.assertFalse(kept["near"])
 
+    def test_a_section_and_short_links_must_be_asked_for(self):
+        kept, clamped = ecp.ground(plan(section="local", short=True), "my local codes with a short link")
+        self.assertEqual((kept, clamped), (plan(section="local", short=True), []))
+        kept, clamped = ecp.ground(plan(section="local", short=True), "every blue code")
+        self.assertEqual(kept, plan())
+        self.assertEqual(len(clamped), 2)
+        self.assertIn("section: dropped", clamped[0])
+        self.assertIn("short: dropped", clamped[1])
+        for question in ("the non-local ones", "non local codes", "codes on the nonlocal links", "my public codes"):
+            self.assertEqual(ecp.ground(plan(section="nonlocal"), question)[0]["section"], "nonlocal", question)
+            self.assertEqual(ecp.ground(plan(section="local"), question)[0]["section"], "", question)
+        self.assertEqual(ecp.ground(plan(section="local"), "codes on localhost")[0]["section"], "local")
+        kept, clamped = ecp.ground(plan(section="elsewhere"), "local codes")
+        self.assertEqual((kept["section"], len(clamped)), ("", 1))
+        self.assertTrue(ecp.ground(plan(short=True), "which codes redirect?")[0]["short"])
+        self.assertEqual(ecp.sections_in_question(ecp.words_of("local and non-local")), ["local", "nonlocal"])
+
     def test_filler_words_come_off_the_ends(self):
         self.assertEqual(ecp.trim_edges("the careers page"), "careers")
         self.assertEqual(ecp.trim_edges("Marketing folder"), "Marketing")
@@ -407,7 +455,8 @@ class GroundingTests(unittest.TestCase):
         missing = plan()
         del missing["path"]
         for value in (None, [], missing, dict(plan(), notes="extra"), dict(plan(), near="yes"),
-                      dict(plan(), limit=True), dict(plan(), limit="5"), dict(plan(), color=None)):
+                      dict(plan(), limit=True), dict(plan(), limit="5"), dict(plan(), color=None),
+                      dict(plan(), short="yes"), dict(plan(), short=None), dict(plan(), section=None)):
             self.assertNotEqual(ecp.check_plan_shape(value), "", value)
 
     def test_the_plan_schema_is_flat_closed_and_fixed(self):
@@ -465,6 +514,24 @@ class PlannerFileTests(unittest.TestCase):
         self.assertEqual(loaded["planner"]["rules"], ecp.DEFAULT_PLANNER["rules"])
         self.assertEqual(loaded["planner"]["examples"], ecp.DEFAULT_PLANNER["examples"])
         self.assertEqual(loaded["planner"]["words_to_skip"], ecp.DEFAULT_PLANNER["words_to_skip"])
+
+    def test_an_older_planner_file_keeps_its_examples(self):
+        older = plan(family="blue")
+        del older["section"]
+        del older["short"]
+        self.write({"examples": [{"question": "blue codes", "plan": older}], "section_words": {"local": ["nearby"]}})
+        loaded = ecp.load_planner(self.path)
+        self.assertEqual(loaded["planner"]["examples"], [{"question": "blue codes", "plan": plan(family="blue")}])
+        self.assertEqual(len(loaded["warnings"]), 1)  # section_words needs both sections
+        self.assertEqual(loaded["planner"]["section_words"], ecp.DEFAULT_PLANNER["section_words"])
+        self.write({"section_words": {"local": ["Nearby"], "nonlocal": ["online"]}, "short_words": ["brief"],
+                    "examples": [{"question": "x", "plan": plan(section="far")}]})
+        loaded = self.load_and_use()
+        self.assertEqual(len(loaded["warnings"]), 2)  # the example's section, then "no usable examples"
+        self.assertEqual(ecp.sections_in_question(ecp.words_of("nearby codes")), ["local"])
+        self.assertEqual(ecp.sections_in_question(ecp.words_of("local codes")), [])
+        self.assertTrue(ecp.ground(plan(short=True), "brief ones")[0]["short"])
+        self.assertFalse(ecp.ground(plan(short=True), "short ones")[0]["short"])
 
     def test_a_missing_or_broken_file_means_the_built_in_planner(self):
         loaded = ecp.load_planner(os.path.join(self.folder, "missing.json"))
@@ -543,7 +610,52 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(responses[0]["id"], "é\u2028")
 
 
+class LiveModelTests(unittest.TestCase):
+    """Plans from a real local model for the questions about short links. They run only when
+    QR_PALETTE_LIVE_MODEL names a model this computer's Ollama has (for example qwen2.5:7b-instruct), at
+    QR_PALETTE_LIVE_URL (default http://127.0.0.1:11434). The cloud check is the fake server's to test:
+    here the plan is still asked of NAME:local on loopback."""
+
+    def setUp(self):
+        self.model = os.environ.get("QR_PALETTE_LIVE_MODEL", "").strip()
+        if self.model == "":
+            self.skipTest("set QR_PALETTE_LIVE_MODEL to a local model, such as qwen2.5:7b-instruct, to run it")
+        self.folder = tempfile.mkdtemp(prefix="qr_palette_live_")
+        self.addCleanup(shutil.rmtree, self.folder, True)
+        self.db = make_registry(self.folder)
+        opened = registry.connect(self.db, False)
+        for base, color in (("HTTP://LOCALHOST:8000/", "#996600"), ("HTTPS://GO.EXAMPLE.COM/", "#336699")):
+            code = shortlinks.new_code(7)
+            registry.save_qr(opened["value"], {"link": base + code, "color": color,
+                                               "path": os.path.join(self.folder, code + ".png"), "format": "png",
+                                               "ec_level": "M", "version": 2, "origin": "made",
+                                               "short": {"code": code, "target": "https://shop.example.com/hours"}})
+        registry.close(opened["value"])
+        self.engine = ecp.new_engine(self.db, os.environ.get("QR_PALETTE_LIVE_URL", "http://127.0.0.1:11434"), 120.0,
+                                     "0.1.0")
+        saved = ecp.REQUIRE_CLOUD_DISABLED
+        ecp.REQUIRE_CLOUD_DISABLED = False
+        self.addCleanup(setattr, ecp, "REQUIRE_CLOUD_DISABLED", saved)
+        found = ecp.resolve_model(self.engine, self.model)
+        if not found["ok"]:
+            self.skipTest(self.model + " cannot be used here: " + found["kind"] + " " + found["detail"])
+
+    def test_questions_about_short_links_are_planned(self):
+        for question, wanted in (("my local codes", {"section": "local"}),
+                                 ("which QR codes have a short link?", {"short": True, "section": ""}),
+                                 ("blue codes on the nonlocal short links", {"family": "blue", "section": "nonlocal"}),
+                                 ("codes that link to the shop", {"link": "shop", "section": "", "short": False})):
+            result = ecp.query(self.engine, question, self.model, ecp.new_call("ecp_query", {}, 1))
+            self.assertTrue(result["ok"], question + ": " + result["kind"] + " " + result["detail"])
+            self.assertEqual(result["value"]["plan_used"]["planner"], "model", question)
+            for key in wanted:
+                self.assertEqual(result["value"]["plan_used"][key], wanted[key], question)
+            for record in result["value"]["records"]:
+                if wanted.get("section", "") != "":
+                    self.assertEqual(record["section"], wanted["section"], question)
+
+
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=2cc4844d609c28236a91561b02d6241134add60c16e060d6b582180c5ca5a177 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=08c94671cd80aac9ef24ffa48cff4e2d81e8502ebac315a164264ba670a1f756 ====

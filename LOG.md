@@ -263,6 +263,17 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - The window queues its slow tasks first come, first served: Save, Ask or Find asked for while a model is still loading now waits its turn instead of being refused as busy. Cancel stops waiting for the running task; the ones queued behind it go on.
 - Checked: the 240 tests pass on Python 3.14 (twice) and 3.11; `--selftest` and `--smoke` pass. The window was driven through a template link, local and nonlocal short-link saves, Find and a local export, with screenshots. `stamp.py --check` is clean.
 
+**qr_color_registry** (ECP: questions about short links)
+- ECP's query plan has two more fields: `section` (`local` or `nonlocal`) and `short` (only codes that print a short link). "my local codes", "codes with a short link that still point to the menu" and "blue codes on the nonlocal short links" now plan and answer.
+  - Grounding keeps each only when the question says it in words: `section_words` and `short_words` in `planner.json`. "non-local" and "non local" mean nonlocal, never local.
+  - Records gain `section`, worked out from the bases in `links.json`; it is empty for codes without a short link.
+  - A `planner.json` written before these fields still loads: its examples get the defaults.
+  - Updated `mcp_server`'s output schema and ECP.md §7.4, §7.6, §8.2, §8.3, §8.6 and §16. ECP stays read-only.
+- Checked:
+  - The 244 tests pass on Python 3.14 (twice) and 3.11. `--selftest` (with a new check for sections) and `--smoke` pass.
+  - The new live test, run against qwen2.5:7b-instruct on this computer's Ollama, planned all four short-link questions correctly. It runs only when `QR_PALETTE_LIVE_MODEL` is set.
+  - `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

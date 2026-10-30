@@ -134,7 +134,7 @@ section. *File → Open settings.json* opens yours.
 | `settings.json` | Where things are and how the program behaves. It lives next to the registry in `%LOCALAPPDATA%\Generic Company Inc\GenericCompany.QRPalette\` (or `--settings FILE`). The window writes it with every setting and its default the first time it runs. `settings.example.json` shows the same defaults. |
 | `presets/*.json` | Which algos rank the colors, and how they are mixed. |
 | `weights/*.json` | The numbers each algo uses. |
-| `planner.json` | How a question in plain English becomes a query plan: what the local model is told, the worked examples it is shown, the words for color families ("navy" is blue) and the filler words taken off the ends of links and paths. `settings.json` can point to your own copy. |
+| `planner.json` | How a question in plain English becomes a query plan: what the local model is told, the worked examples it is shown, the words for color families ("navy" is blue), the words that name a section of short links or ask for short links, and the filler words taken off the ends of links and paths. `settings.json` can point to your own copy. A copy written before `section` and `short` existed still works. |
 | `links.json` | Short links: two sections, `local` and `nonlocal`, each with a base address (in capitals, ending in `/`) and the folder its exports start in; and, for both, the number of random digits per ID (4-12, default 7), whether **Short link** starts ticked, the tags added to destinations (`{id}` and `{hex}` are filled in) and the link templates (`{name}` is a field). `settings.json` can point to your own copy. |
 
 `settings.json`, section by section:
@@ -191,12 +191,16 @@ python qr_palette.py --mcp
 |---|---|
 | `ecp_list_models` | lists the models local to this computer that can plan, each with its `model_id` (`name@digest`) |
 | `ecp_select_model` | checks a model is local, pins its digest into a `model_id`, and loads it |
-| `ecp_query` | answers a question (`prompt`) with the matching codes: color, link (`payload_url`) and picture path (`file_path`); pass the `model_id` |
+| `ecp_query` | answers a question (`prompt`) with the matching codes: color, link (`payload_url`), a short link's destination (`target_url`) and section (`section`), and picture path (`file_path`); pass the `model_id` |
 
 - **How a question is answered:** the chosen model only turns the question into a query plan. The plan is checked
   against the question's own words before it runs, then runs on a read-only connection. The model never writes
   SQL, never sees the stored data, and never makes a file be opened. A color code, a whole link or a file path
   needs no model at all.
+- **Questions about short links:** "my local codes", "codes with a short link that still point to the menu" and
+  "blue codes on the nonlocal short links" are planned with `section` (local or nonlocal) and `short`. Each is kept
+  only when the question says so in words (`section_words` and `short_words` in `planner.json`; "non-local" means
+  nonlocal).
 - **Choosing a model:** nothing is remembered between calls. Pass the `model_id` on every query, or set a default
   with `inference.model` (or `--model NAME`). If the model's digest changes, queries say so instead of using it.
 - **Failures** come back as tool results marked `isError`, with a `kind` such as `model_not_local` or

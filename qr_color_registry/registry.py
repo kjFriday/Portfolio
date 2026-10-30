@@ -634,7 +634,10 @@ def counts(connection):
 # --- Finding (plain Python over the rows: no LIKE wildcards, full Unicode case folding) -------------
 
 def empty_filters():
-    return {"color": "", "near": False, "family": "", "link": "", "link_exact": "", "path": ""}
+    """No filter at all. "section" ("local" or "nonlocal") matches rows marked with that section (ECP
+    marks them from links.json's bases); "short" matches rows that print a short link."""
+    return {"color": "", "near": False, "family": "", "link": "", "link_exact": "", "path": "", "section": "",
+            "short": False}
 
 
 def clamp_limit(value):
@@ -649,7 +652,7 @@ def clamp_limit(value):
 
 def has_filter(filters):
     return (filters["color"] != "" or filters["family"] != "" or filters["link"] != "" or
-            filters["link_exact"] != "" or filters["path"] != "")
+            filters["link_exact"] != "" or filters["path"] != "" or filters["section"] != "" or filters["short"])
 
 
 def loose_words(text):
@@ -699,6 +702,10 @@ def row_matches(row, filters):
         wanted = text_key(filters["path"]).casefold()
         if wanted not in row["path_key"].casefold() and not text_contains(row["path"], filters["path"]):
             return False
+    if filters["short"] and row["short_code"] == "":
+        return False
+    if filters["section"] != "" and row.get("section", "") != filters["section"]:
+        return False
     return True
 
 
@@ -714,4 +721,4 @@ def find_rows(rows, filters, limit):
             found.append(row)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f4860a115bcc6cff2597799bcdd58a58a062c2f8776b2dca44aedf0c59afe21b ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=2b5187db5d278133c3f19744873889999d4cb4a7330aaaa3c2d4bb760d07ca7e ====

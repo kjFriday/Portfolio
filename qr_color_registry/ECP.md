@@ -234,10 +234,15 @@ never built from user text, and its SHA-256 goes into every audit line.
    "link": {"type": "string", "maxLength": 200},
    "link_exact": {"type": "string", "maxLength": 2048},
    "path": {"type": "string", "maxLength": 260},
+   "section": {"type": "string", "enum": ["", "local", "nonlocal"]},
+   "short": {"type": "boolean"},
    "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
- "required": ["intent", "color", "near", "family", "link", "link_exact", "path", "limit"],
+ "required": ["intent", "color", "near", "family", "link", "link_exact", "path", "section", "short", "limit"],
  "additionalProperties": false}
 ```
+`section` narrows the answer to the short links of one section of `links.json` (`local`: this computer or its own
+network; `nonlocal`: the internet address codes are printed for). `short` keeps only codes that print a short link.
+A `planner.json` written before these two fields existed still loads: its examples get `""` and `false`.
 
 ### 7.5 PlanUsed
 The QueryPlan as it ran, with `planner` (`"direct"` or `"model"`) and `clamped`, the list of everything grounding
@@ -247,7 +252,7 @@ dropped or replaced, so a client can see exactly how its question was read.
 One QR code, read on the rail from the `qr_codes`, `links`, `colors` and `short_links` tables:
 ```json
 {"id": 1, "hex": "#3366cc", "color_name": "Blue", "color_family": "blue", "rank": 181,
- "payload_url": "https://shop.example.com/", "target_url": "",
+ "payload_url": "https://shop.example.com/", "target_url": "", "section": "",
  "file_path": "C:\\Users\\<you>\\Pictures\\QR Palette\\shop-example-com-3366cc.png",
  "net_votes": 0, "created_at": "2026-10-29T18:49:11Z", "exists": true}
 ```
@@ -255,6 +260,9 @@ One QR code, read on the rail from the `qr_codes`, `links`, `colors` and `short_
 - **`target_url`** is where a short link sends people (the code holds `HTTPS://GO.EXAMPLE.COM/73491205`, say, and
   its redirect page forwards to `https://shop.example.com/hours`). It is `""` when the code holds its link itself.
   Plans match links against both, so "which code points to the shop hours?" finds short-linked codes too.
+- **`section`** is the short link's section, `"local"` or `"nonlocal"`, worked out from the bases in `links.json`
+  (the address the code holds starts with one of them). It is `""` for a code without a short link, and for a
+  short link made on a base that `links.json` no longer has.
 - **`rank`** is the color's place among the 216 cube colors under the preset in `settings.json` and the registry's
   votes. It is null for colors outside the cube.
 - **`exists`** is checked only for files on the computer's own drives. For network paths it is null (§13).
@@ -304,8 +312,12 @@ Applied to every model plan before it runs:
    Filler words at their ends ("the", "page", "folder", …) are removed, so "careers page" searches for "careers".
 3. `family` is kept only if the question names it or one of its synonyms ("navy" is blue, "gray" is grey).
    `intent` must be `find` or `recommend`.
-4. `near` only counts with a color. `limit` is clamped to 1-100.
-5. Everything dropped or replaced is listed in `plan_used.clamped`.
+4. `section` is kept only if the question names that section with one of its words in `planner.json`
+   (`section_words`: "local", "localhost"; "nonlocal", "public", "internet"). "non local" and "non-local" name
+   nonlocal, never local. `short` is kept only if the question asks for short links in words (`short_words`:
+   "short", "shortlink", "redirect", …).
+5. `near` only counts with a color. `limit` is clamped to 1-100.
+6. Everything dropped or replaced is listed in `plan_used.clamped`.
 
 A grounded plan can only narrow or widen the question's own words; it cannot add facts. Because the model never
 receives stored data (§13), what it proposes cannot be shaped by what the registry holds.
@@ -316,6 +328,8 @@ receives stored data (§13), what it proposes cannot be shaped by what the regis
     punctuation. So "store hours" finds `…/store-hours`, and "shop sale" finds `https://shop.example.com/sale`.
     Matching runs in Python over the rows read on the rail, never with SQL `LIKE` wildcards.
   - Colors match exactly, or with `near` within OKLab distance 0.08; a family matches its colors.
+  - `section` matches the codes whose short link starts with that section's base in `links.json`; `short`
+    matches every code that prints a short link.
   - A plan holds one family, so "red or blue" is read as red.
   - Results are newest first. The limit is 20 by default and 100 at most (`queries.default_limit`,
     `queries.max_limit`).
@@ -353,7 +367,8 @@ files when it starts and never writes them.
 | File | What it holds |
 |---|---|
 | `settings.json` | The inference address, default model, timeouts, token limits and the cloud check; the preset; contrast and "near"; result limits, question length, the rail's time budget; message size, rate limit and output caps; where the registry, pictures, rankings, planner and audit log are |
-| `planner.json` | The planning rules, the worked examples, color-family words, and the filler words grounding trims |
+| `planner.json` | The planning rules, the worked examples, color-family words, the words that name each section of short links or ask for short links, and the filler words grounding trims |
+| `links.json` | The bases of the two sections of short links, which give a record its `section` |
 | `presets/*.json`, `weights/*.json` | How the colors are ranked |
 
 A value that is missing or of the wrong kind falls back to its default, and the fall-back is reported on standard
@@ -625,7 +640,7 @@ program, so some parts are different, and some are absent:
 | A static Rust (musl) binary on an edge Linux board; a UART bridge to the host | A Python 3.10+ program using only the standard library, on Windows; stdio only | The portfolio's platform; there is no separate device |
 | A two-channel hardware interlock gating every call | None. `interlock_state` is always `"bypassed"` (the spec's `--interlock none` mode), and the interlock kinds never occur | No interlock hardware |
 | The inference address is a compile-time constant, 127.0.0.1:11434 | Any loopback IP literal or `localhost`, from `settings.json` or `--inference` | Every setting is meant to be editable JSON; names are still never resolved |
-| `ECPQueryPlan` (`target_family`, `hex_code`, `link_search`, `min_votes`, `sort_by`, `limit`) compiled into three fixed SQL templates | QR Palette's QueryPlan (§7.4), applied in Python to rows read with fixed statements | The registry's questions are by link, color, path and recommendation; in both, no SQL comes from the model |
+| `ECPQueryPlan` (`target_family`, `hex_code`, `link_search`, `min_votes`, `sort_by`, `limit`) compiled into three fixed SQL templates | QR Palette's QueryPlan (§7.4), applied in Python to rows read with fixed statements | The registry's questions are by link, color, path, section of short links and recommendation; in both, no SQL comes from the model |
 | Seven color families | Thirteen | The palette's own names, shared with Color Voats |
 | Tables `colors`, `links`, `qr_codes`, `voats`, `STRICT` | `colors`, `links`, `qr_codes`, `short_links`, `votes`, not `STRICT` | The registry's own schema (`user_version` 2, which added `short_links`) |
 | The DDL sets only `user_version` | The registry also sets `application_id` 0x51525041 ("QRPA"), checked on every open | It tells a QR Palette registry apart from any other SQLite file, and other programs find the registry by it. It stays in any future schema. |
@@ -634,7 +649,7 @@ program, so some parts are different, and some are absent:
 | A 2 s budget per statement | 2 s per visit | A call reads in one short visit |
 | Separate connect, first-byte and total timeouts | One timeout per request: 3 s to list models, 2 s for status, 45 s for plans | `http.client` has one timeout |
 | Only an exact `#RRGGBB` prompt skips inference | Also whole links, path-like text and single family words (§8.1) | They need no model; the spec leaves this open (decision (i)) |
-| Records: `hex`, `color_family`, `payload_url`, `file_path`, `net_votes`, `created_at` | The same, plus `id`, `color_name`, `rank`, `target_url`, `exists`; results add `colors` and `summary` | The window's needs, short links and recommendations |
+| Records: `hex`, `color_family`, `payload_url`, `file_path`, `net_votes`, `created_at` | The same, plus `id`, `color_name`, `rank`, `target_url`, `section`, `exists`; results add `colors` and `summary` | The window's needs, short links and recommendations |
 | Audit fields `sql_template_id` and `param_sha256` | Not recorded | There are no SQL templates; `plan_used` records what ran |
 
 ## 17. ECP and plain MCP

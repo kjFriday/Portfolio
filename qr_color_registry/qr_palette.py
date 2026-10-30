@@ -174,6 +174,7 @@ def make_engine(db_path, inference_url, timeout, values, model):
     engine["default_model"] = model
     engine["preset"] = values["colors"]["preset"]
     engine["audit_file"] = values["audit"]["file"] or default_audit_path()
+    engine["links"] = LINKS
     return engine
 
 
@@ -601,6 +602,14 @@ def selftest():
         check(not asked["ok"] and asked["kind"] == "args_invalid", "no query before a local model is chosen", failures)
         check(not local_inference.parse_endpoint("http://example.com:11434")["ok"], "inference must be on loopback",
               failures)
+        snapshot = ecp.read_environment(engine)
+        asked_local = ecp.ground(dict(ecp.empty_plan(), section="local"), "my local codes")[0]
+        ran = None
+        if snapshot["ok"]:
+            ran = ecp.run_plan(snapshot["value"], asked_local, swatch.DEFAULT_PRESET, LINKS)
+        check(ran is not None and len(ran["records"]) == 1 and ran["records"][0]["section"] == "local" and
+              ecp.ground(dict(ecp.empty_plan(), section="local"), "every code")[0]["section"] == "",
+              "ECP finds the local short links only when the question names the section", failures)
         server = mcp_server.new_server(engine)
         mcp_server.handle(server, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                                    "params": {"protocolVersion": "2025-11-25"}})
@@ -1948,4 +1957,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ea3dc889f15f290effab031e6dae9c936e0214840fae7928a28b5209873dd245 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=cee297ffb5036277e2ee7f9cd2ef4bc9314982e626d5a59008d61bf9b76b0e90 ====

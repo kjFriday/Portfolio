@@ -1,0 +1,93 @@
+{
+  "about": "Print sheets: how Print sheet in Find lays codes out on paper. Each layout has page_mm (width and height of the page), margins_mm (from the top and from the left to the first cell), columns and rows (the cells on one page), cell_mm (width and height of one cell, such as one label), gutter_mm (the space between cells across and down) and label (print the short address under codes that have one). All sizes are in millimetres. A code fills as much of its cell as it can, quiet zone included. Add your own layouts; edits apply the next time you print.",
+  "layouts": {
+    "A4 labels 3 x 8 (70 x 37 mm)": {
+      "about": "A4 sheets of 24 labels, 70 x 37 mm, with no space between them.",
+      "page_mm": [
+        210,
+        297
+      ],
+      "margins_mm": [
+        0.5,
+        0
+      ],
+      "columns": 3,
+      "rows": 8,
+      "cell_mm": [
+        70,
+        37
+      ],
+      "gutter_mm": [
+        0,
+        0
+      ],
+      "label": true
+    },
+    "US Letter labels 3 x 10 (2 5/8 x 1 in)": {
+      "about": "US Letter sheets of 30 address labels, 2 5/8 x 1 inch (the common 5160 layout).",
+      "page_mm": [
+        215.9,
+        279.4
+      ],
+      "margins_mm": [
+        12.7,
+        4.7625
+      ],
+      "columns": 3,
+      "rows": 10,
+      "cell_mm": [
+        66.675,
+        25.4
+      ],
+      "gutter_mm": [
+        3.175,
+        0
+      ],
+      "label": true
+    },
+    "A4 poster": {
+      "about": "One big code per A4 page.",
+      "page_mm": [
+        210,
+        297
+      ],
+      "margins_mm": [
+        20,
+        20
+      ],
+      "columns": 1,
+      "rows": 1,
+      "cell_mm": [
+        170,
+        257
+      ],
+      "gutter_mm": [
+        0,
+        0
+      ],
+      "label": true
+    },
+    "US Letter poster": {
+      "about": "One big code per US Letter page.",
+      "page_mm": [
+        215.9,
+        279.4
+      ],
+      "margins_mm": [
+        20,
+        20
+      ],
+      "columns": 1,
+      "rows": 1,
+      "cell_mm": [
+        175.9,
+        239.4
+      ],
+      "gutter_mm": [
+        0,
+        0
+      ],
+      "label": true
+    }
+  }
+}

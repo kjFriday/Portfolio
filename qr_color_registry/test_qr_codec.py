@@ -318,6 +318,87 @@ class CaptionTests(unittest.TestCase):
 
 
 SHORT = "HTTPS://GO.EXAMPLE.COM/12345678"
+LONG = "https://www.example.com/events/summer-market-2026?day=saturday&stall=14"
+
+
+def sample_logo(side):
+    """A logo for the tests: an orange disc with a dark blue square in it, on white."""
+    image = qr.make_image(side, side, 255)
+    image["rgb"] = bytearray(b"\xff") * (side * side * 3)
+    for y in range(side):
+        for x in range(side):
+            dx = x - side / 2.0 + 0.5
+            dy = y - side / 2.0 + 0.5
+            color = None
+            if dx * dx + dy * dy <= (side / 2.0) ** 2:
+                color = (240, 140, 20)
+            if abs(dx) < side / 5.0 and abs(dy) < side / 5.0:
+                color = (20, 40, 120)
+            if color is not None:
+                index = y * side + x
+                image["rgb"][3 * index:3 * index + 3] = bytes(color)
+                image["gray"][index] = (299 * color[0] + 587 * color[1] + 114 * color[2]) // 1000
+    return image
+
+
+class LogoTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="qr_palette_logo_")
+
+    def tearDown(self):
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+    def test_a_logo_code_reads_back_in_a_sample_of_usable_colors(self):
+        placed = qr.place_logo(SHORT, sample_logo(48))
+        self.assertTrue(placed["ok"], placed["error"])
+        for color in swatch.usable_colors()[::20]:
+            for kind in ("png", "svg"):
+                path = os.path.join(self.folder, color[1:] + "." + kind)
+                self.assertTrue(qr.save_matrix(placed["value"]["matrix"], path, 4, color, "", placed["value"]["logo"])["ok"])
+                picture = qr.read_qr_file(path)
+                self.assertTrue(picture["ok"], color + " " + kind + ": " + picture["error"])
+                self.assertEqual((picture["value"]["reading"]["text"], picture["value"]["color"]), (SHORT, color))
+
+    def test_the_logo_square(self):
+        for text in (SHORT, LONG):
+            placed = qr.place_logo(text, sample_logo(48))["value"]
+            matrix = placed["matrix"]
+            row, column, side = placed["logo"]["box"]
+            self.assertEqual(matrix["level"], "H")
+            self.assertLessEqual(side * side, 0.15 * matrix["size"] * matrix["size"])
+            self.assertEqual((row * 2 + side, column), (matrix["size"], row))  # in the very middle
+            protected = qr.protected_modules(matrix["version"])
+            for y in range(row, row + side):
+                for x in range(column, column + side):
+                    self.assertFalse(matrix["dark"][y][x])
+                    self.assertFalse(protected[y][x])
+        self.assertGreaterEqual(qr.place_logo(LONG, sample_logo(48))["value"]["matrix"]["version"], 7)  # over an
+        # alignment pattern, which may be covered
+
+    def test_too_much_logo_is_refused(self):
+        saved = qr.LOGO_SHARES
+        try:
+            qr.LOGO_SHARES = (0.5,)
+            refused = qr.place_logo(LONG, sample_logo(48))
+            self.assertFalse(refused["ok"])
+            self.assertIn("hide too much", refused["error"])
+        finally:
+            qr.LOGO_SHARES = saved
+        self.assertIn("too big", qr.place_logo(SHORT, qr.make_image(qr.MAX_LOGO_SIDE + 1, 10, 0))["error"])
+
+    def test_the_code_stays_the_first_path_of_a_drawing(self):
+        placed = qr.place_logo(SHORT, sample_logo(48))["value"]
+        svg = qr.matrix_to_svg(placed["matrix"], 4, "#3366cc", "GO.EXAMPLE.COM/12345678", placed["logo"])
+        self.assertEqual(qr.svg_color(svg), "#3366cc")
+        self.assertIn('fill="#f81"', svg)  # the disc, cut to 4 bits a channel
+        self.assertIn('fill="#127"', svg)  # the square
+        self.assertNotIn('fill="#fff"', svg)
+        self.assertEqual(qr.decode_matrix(qr.read_svg_matrix(svg)["value"])["value"]["text"], SHORT)
+        png = qr.picture_bytes(placed["matrix"], 4, "#3366cc", "png", "", placed["logo"])
+        self.assertEqual(png[25], 2)  # truecolor: the logo has colors of its own
+        image = qr.read_png(png)["value"]
+        middle = (image["height"] // 2) * image["width"] + image["width"] // 2
+        self.assertEqual(bytes(image["rgb"][3 * middle:3 * middle + 3]), bytes((20, 40, 120)))
 
 
 class RobustnessTests(unittest.TestCase):
@@ -430,4 +511,4 @@ class LimitTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=14d5e67755a55ad1ce8e569fc41b4b4394001cc439db340c4c2f018cc269dc50 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=54f67d03382d1a24cb0aaf18ab3a659feaaab165687a78c8bbb2f4749ced377d ====

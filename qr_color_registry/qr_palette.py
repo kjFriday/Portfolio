@@ -277,10 +277,11 @@ def plan_short_link(db_path, target, color, short):
     return with_registry(db_path, plan)
 
 
-def make_qr(db_path, link, color, level, path, scale, short=None):
+def make_qr(db_path, link, color, level, path, scale, short=None, logo=None):
     """Draw `link` as a QR code in `color`, save it to `path` (.png or .svg), read the file back to
     prove it scans, and register it -> Result Made. With `short` (see short_request), `link` is the
-    destination: the code holds a short link to it instead, with that address printed under it."""
+    destination: the code holds a short link to it instead, with that address printed under it.
+    With `logo` (an Image), the code is level H with the logo in its middle (qr_codec.place_logo)."""
     text = textsafe.clean(link, None).strip()
     if text == "":
         return fail("type a link or some text first")
@@ -305,12 +306,21 @@ def make_qr(db_path, link, color, level, path, scale, short=None):
         code = planned["value"]["code"]
         text = planned["value"]["url"]
         caption = shortlinks.caption(text)
-    made = qr_codec.encode_text(text, level, 1, -1)
-    if not made["ok"]:
-        return made
-    matrix = made["value"]
+    placed_logo = None
+    if logo is not None:
+        placed = qr_codec.place_logo(text, logo)
+        if not placed["ok"]:
+            return placed
+        matrix = placed["value"]["matrix"]
+        placed_logo = placed["value"]["logo"]
+        level = "H"
+    else:
+        made = qr_codec.encode_text(text, level, 1, -1)
+        if not made["ok"]:
+            return made
+        matrix = made["value"]
     path = registry.display_path(path)
-    saved = qr_codec.save_matrix(matrix, path, scale, color, caption)
+    saved = qr_codec.save_matrix(matrix, path, scale, color, caption, placed_logo)
     if not saved["ok"]:
         return saved
     picture = qr_codec.read_qr_file(path)
@@ -319,6 +329,9 @@ def make_qr(db_path, link, color, level, path, scale, short=None):
             os.remove(path)
         except OSError:
             pass
+        if placed_logo is not None:
+            return fail("with this logo the saved picture did not read back the same, so it was removed; try a "
+                        "smaller or lighter logo")
         return fail("the saved picture did not read back the same, so it was removed")
     entry = {"link": text, "color": color, "path": path, "format": qr_codec.file_kind(path), "ec_level": level,
              "version": matrix["version"], "origin": "made"}
@@ -581,6 +594,10 @@ def selftest():
         worn = qr_codec.robustness(qr_codec.picture_image(qr_codec.encode_text(sample, "H", 1, -1)["value"], 4,
                                                           "#000000"), sample)
         check(worn["ok"] and worn["value"]["passed"] == 9, "a code's robustness is scored (9 of 10 for this one)",
+              failures)
+        logo = make_qr(db_path, "https://example.com/logo", "#663399", "M", os.path.join(folder, "logo.png"), 4, None,
+                       qr_codec.make_image(16, 16, 40))
+        check(logo["ok"] and logo["value"]["level"] == "H", "a code with a logo in the middle is level H and reads back",
               failures)
         found = search(db_path, "color", "blue", False, 20)
         check(found["ok"] and len(found["value"]) == 1 and found["value"][0]["path"] == made["value"]["path"],
@@ -1962,4 +1979,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=1cf1b6372e9230f2ac5d6e7f88c352cdded3ad223eed0de782f21be06014c414 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=f4a06b2db93a28f9fb2c41cb2d2e01321c74037711d612897bb52826f6b4a1c2 ====

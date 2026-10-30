@@ -29,6 +29,7 @@ import settings
 import shortlinks
 import swatch
 from test_local_inference import QWEN_DIGEST, FakeOllama
+from test_qr_codec import sample_logo
 
 MODERN = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
           "io.modelcontextprotocol/clientCapabilities": {}}
@@ -101,6 +102,22 @@ class MakeTests(CoreCase):
     def test_control_characters_are_cleaned_before_encoding(self):
         made = self.make("clean.png", "https://example.com/\u202eabc\x07", "#3366cc")
         self.assertEqual(made["link"], "https://example.com/abc")
+
+    def test_a_logo_code_is_level_h_and_reads_back(self):
+        for name in ("logo.png", "logo.svg"):
+            made = qr_palette.make_qr(self.db, "https://shop.example.com/p/blue-mug", "#663399", "L", self.path(name), 4,
+                                      None, sample_logo(40))
+            self.assertTrue(made["ok"], made["error"])
+            self.assertEqual(made["value"]["level"], "H")
+            picture = qr_codec.read_qr_file(made["value"]["path"])
+            self.assertEqual((picture["value"]["reading"]["text"], picture["value"]["reading"]["level"]),
+                             ("https://shop.example.com/p/blue-mug", "H"))
+        found = qr_palette.search(self.db, "qr_code", "blue-mug", False, 20)["value"]
+        self.assertEqual(len(found), 2)
+        refused = qr_palette.make_qr(self.db, "https://shop.example.com/", "#663399", "M", self.path("big.png"), 4,
+                                     None, qr_codec.make_image(2000, 20, 0))
+        self.assertIn("too big", refused["error"])
+        self.assertFalse(os.path.exists(self.path("big.png")))
 
     def test_names(self):
         self.assertEqual(qr_palette.slug("https://www.Shop.example.com/sale?id=4"), "shop-example-com-sale-id-4")
@@ -441,4 +458,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4eb405681a22f197e8ca2c4521796455a76f19e0d98d9a55e9162d152ef0cdb5 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b65d693f1965423e789a0189c4ddf5dc06788f44884fc2166a6b57fc88a339e4 ====

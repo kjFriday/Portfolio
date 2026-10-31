@@ -400,6 +400,18 @@ def write_file(path, data):
     return ok_result(path)
 
 
+def print_sheet(db_path, numbers, layout, path):
+    """The registered codes `numbers` on a sheet at `path` -> Result {"files", "pages", "codes", "skipped"}."""
+    found = codes_from_registry(db_path, numbers)
+    if not found["ok"]:
+        return found
+    written = write_sheet(path, layout, found["value"]["codes"])
+    if not written["ok"]:
+        return written
+    written["value"]["skipped"] = found["value"]["skipped"]
+    return written
+
+
 def write_sheet(path, layout, codes):
     """Write the codes laid out to `path`: .pdf as one PDF, .svg as one drawing per page -> Result
     {"files": [paths], "pages": int, "codes": int}."""
@@ -423,4 +435,4 @@ def write_sheet(path, layout, codes):
             return written
     return ok_result({"files": paths, "pages": len(drawings), "codes": len(codes)})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f45ff14669538eb92238cbbf5f449de0e495fed1dfd5694c45749d9eeeabdfef ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a9ae6433451cea449f291d1de2f04b226103a8a761d9fc3ce530f82b88faa25b ====

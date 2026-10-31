@@ -72,6 +72,7 @@ import mcp_server
 import qr_codec
 import registry
 import settings
+import sheets
 import shortlinks
 import swatch
 import textsafe
@@ -97,7 +98,8 @@ PREVIEW = 340
 MIN_MODULE_MM = 0.4  # the smallest module most printers and phone cameras handle well
 DISTANCE_PER_MODULE = 250  # the 10:1 rule (scan from at most ten times a code's width) for a 25-module code
 MIN_CAPTION_MM = 1.5  # the smallest letters of a printed address most people can read
-CSV_COLUMNS = ("id", "color", "color_name", "family", "link", "destination", "short_id", "section", "path", "format",
+ROBUSTNESS_SCALE = 4  # pixels per module for the robustness score: decoding is pure Python
+CSV_COLUMNS =("id", "color", "color_name", "family", "link", "destination", "short_id", "section", "path", "format",
                "ec_level", "version", "origin", "created")
 LINKS = shortlinks.copy_links(shortlinks.DEFAULT_LINKS)  # links.json, put in place by apply_settings()
 LINK_SECTION = "local"  # the section new short links use: settings.json's links.use
@@ -726,15 +728,20 @@ def preview_png(link, color, level, version, caption=""):
     return fitted_png(made["value"], color, caption, PREVIEW - 20)
 
 
-def fitted_png(matrix, color, caption, room):
+def fitted_png(matrix, color, caption, room, logo=None):
     """The code as PNG bytes at the largest scale whose picture, caption included, fits `room` pixels."""
     scale = max(1, room // (matrix["size"] + 8))
     while True:
-        png = qr_codec.matrix_to_color_png(matrix, scale, 4, color, caption)
+        png = qr_codec.picture_bytes(matrix, scale, color, "png", caption, logo)
         width, height = struct.unpack(">II", png[16:24])
         if scale == 1 or (width <= room and height <= room):
             return png
         scale = scale - 1
+
+
+def robustness_score(matrix, text, color, caption, logo=None):
+    """How much wear the code in `matrix` survives, drawn as its PNG would be -> Result Score."""
+    return qr_codec.robustness(qr_codec.picture_image(matrix, ROBUSTNESS_SCALE, color, caption, logo), text)
 
 
 def reveal_command_line(path):
@@ -780,6 +787,9 @@ def selftest():
                        qr_codec.make_image(16, 16, 40))
         check(logo["ok"] and logo["value"]["level"] == "H", "a code with a logo in the middle is level H and reads back",
               failures)
+        printed = sheets.print_sheet(db_path, [made["value"]["id"], made_svg["value"]["id"]],
+                                     sheets.DEFAULT_SHEETS["layouts"]["A4 poster"], os.path.join(folder, "sheet.pdf"))
+        check(printed["ok"] and printed["value"]["pages"] == 2, "codes are printed on a sheet as a PDF", failures)
         found = search(db_path, "color", "blue", False, 20)
         check(found["ok"] and len(found["value"]) == 1 and found["value"][0]["path"] == made["value"]["path"],
               "found again by color, with its path", failures)
@@ -931,7 +941,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
              "picture_path": "", "picture_source": "", "results": [], "folder": folder, "models": [],
              "engine": engine, "model_id": "", "inference": "checking",
              "remembered_model": values["inference"]["model"], "short_candidate": "", "export_folders": {},
-             "server": None, "serve_index": None, "preview_text": "", "preview_caption": ""}
+             "server": None, "serve_index": None, "preview_text": "", "preview_caption": "", "preview_logo": None,
+             "logo": None, "level_before_logo": ""}
 
     window = tk.Tk()
     window.title("Generic Company Inc. — QR Palette " + __version__)
@@ -1417,6 +1428,9 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     preview.pack(anchor="nw")
     save_bar = ttk.Frame(preview_side)  # right under the preview, so a long note below never hides it
     save_bar.pack(anchor="w", pady=(6, 0))
+    logo_bar = ttk.Frame(preview_side)
+    logo_bar.pack(anchor="w", pady=(6, 0))
+    logo_text = tk.StringVar(value="No logo")
     make_info = tk.StringVar(value="Type a link and pick a color.")
     ttk.Label(preview_side, textvariable=make_info, wraplength=560, justify="left").pack(anchor="w", pady=4)
 
@@ -1499,6 +1513,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         state["photos"]["preview"] = None
         state["matrix"] = None
         state["preview_text"] = ""
+        state["preview_logo"] = None
         text = textsafe.clean(link_text.get(), None).strip()
         if text == "":
             make_info.set("Type a link and pick a color.")
@@ -1531,23 +1546,93 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 lead = lead + "Set your own nonlocal address in links.json before printing.\n"
             elif planned["value"]["made"]:
                 lead = lead + "\n"
-        made = qr_codec.encode_text(text, chosen_level(), 1, -1)
-        if not made["ok"]:
-            make_info.set(made["error"] + ".")
-            return
-        state["matrix"] = made["value"]
+        placed_logo = None
+        if state["logo"] is not None:
+            placed = qr_codec.place_logo(text, state["logo"])
+            if not placed["ok"]:
+                make_info.set(placed["error"] + ".")
+                return
+            matrix = placed["value"]["matrix"]
+            placed_logo = placed["value"]["logo"]
+            size = matrix["size"]
+            lead = lead + ("The logo's square covers " + str(100 * placed_logo["box"][2] * placed_logo["box"][2] //
+                                                             (size * size)) + "% of the modules.\n")
+        else:
+            made = qr_codec.encode_text(text, chosen_level(), 1, -1)
+            if not made["ok"]:
+                make_info.set(made["error"] + ".")
+                return
+            matrix = made["value"]
+        state["matrix"] = matrix
         state["preview_text"] = text
         state["preview_caption"] = caption
-        photo = photo_from_png(fitted_png(made["value"], color, caption, PREVIEW))
+        state["preview_logo"] = placed_logo
+        photo = photo_from_png(fitted_png(matrix, color, caption, PREVIEW, placed_logo))
         state["photos"]["preview"] = photo
         preview.create_image((PREVIEW + 20) // 2, (PREVIEW + 20) // 2, image=photo)
-        width, height = struct.unpack(">II", qr_codec.matrix_to_color_png(made["value"], DEFAULT_SCALE, 4, color,
-                                                                         caption)[16:24])
+        width, height = struct.unpack(">II", qr_codec.matrix_to_color_png(matrix, DEFAULT_SCALE, 4, color, caption)[16:24])
         hint = ""
         if state["picked"] == "":
             hint = " Pick a color to save it."
-        make_info.set(lead + "Version " + str(made["value"]["version"]) + ", level " + made["value"]["level"] +
+        make_info.set(lead + "Version " + str(matrix["version"]) + ", level " + matrix["level"] +
                       ". PNG will be " + str(width) + " × " + str(height) + " px." + hint)
+
+    def test_robustness():
+        """How much wear the code in the preview survives, as a job: decoding is slow in pure Python."""
+        if state["matrix"] is None:
+            status.set("Type a link first: the test is for the code in the preview")
+            return
+        matrix = state["matrix"]
+        text = state["preview_text"]
+        color = state["picked"] or qr_codec.INK
+        caption = state["preview_caption"]
+        logo = state["preview_logo"]
+
+        def done(outcome):
+            if not outcome["ok"]:
+                status.set("Robustness: " + outcome["error"])
+                return
+            status.set("Robustness of the code in the preview: " + qr_codec.describe_score(outcome["value"]))
+
+        start_job("Testing robustness", lambda: robustness_score(matrix, text, color, caption, logo), done)
+
+    def choose_logo():
+        path = filedialog.askopenfilename(title="A small picture for the middle of the code",
+                                          filetypes=[("PNG pictures", "*.png"), ("All files", "*.*")])
+        if not path:
+            return
+        path = registry.display_path(path)
+
+        def done(outcome):
+            if not outcome["ok"]:
+                messagebox.showerror("Logo", outcome["error"])
+                status.set("No logo chosen")
+                return
+            image = outcome["value"]
+            if image["width"] > qr_codec.MAX_LOGO_SIDE or image["height"] > qr_codec.MAX_LOGO_SIDE:
+                messagebox.showerror("Logo", "Pick a picture at most " + str(qr_codec.MAX_LOGO_SIDE) + " pixels a side.")
+                status.set("No logo chosen")
+                return
+            if state["logo"] is None:
+                state["level_before_logo"] = level_box.get()
+            state["logo"] = image
+            logo_text.set(os.path.basename(path) + "  (level H)")
+            level_box.set(level_names["H"])
+            level_box.config(state="disabled")
+            status.set("Logo: " + os.path.basename(path))
+            refresh_preview()
+
+        start_job("Reading the logo", lambda: qr_codec.load_image_file(path), done)
+
+    def clear_logo():
+        if state["logo"] is None:
+            return
+        state["logo"] = None
+        logo_text.set("No logo")
+        status.set("No logo")
+        level_box.config(state="readonly")
+        level_box.set(state["level_before_logo"])
+        refresh_preview()
 
     def schedule_preview(event=None):
         if state["make_after"] is not None:
@@ -1582,6 +1667,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             if state["short_candidate"] == "":
                 state["short_candidate"] = shortlinks.new_code(LINKS["id_digits"])
             short = short_request(state["short_candidate"], section_choice.get())
+        logo = state["logo"]
 
         def done(outcome):
             if not outcome["ok"]:
@@ -1603,7 +1689,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             refresh_footer()
             refresh_used()
 
-        start_job("Saving", lambda: make_qr(db_path, text, color, level, path, DEFAULT_SCALE, short), done)
+        start_job("Saving", lambda: make_qr(db_path, text, color, level, path, DEFAULT_SCALE, short, logo), done)
 
     def from_template():
         """A small dialog that builds the link from one of links.json's templates."""
@@ -1683,6 +1769,10 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     ttk.Button(save_bar, text="Save PNG…", command=lambda: save_as("png")).pack(side="left")
     ttk.Button(save_bar, text="Save SVG…", command=lambda: save_as("svg")).pack(side="left", padx=6)
     ttk.Button(save_bar, text="Print size…", command=print_size).pack(side="left", padx=(12, 0))
+    ttk.Button(save_bar, text="Test robustness", command=test_robustness).pack(side="left", padx=6)
+    ttk.Button(logo_bar, text="Logo…", command=choose_logo).pack(side="left")
+    ttk.Button(logo_bar, text="No logo", command=clear_logo).pack(side="left", padx=6)
+    ttk.Label(logo_bar, textvariable=logo_text, foreground="#555555").pack(side="left", padx=6)
 
     # --- Read tab ---------------------------------------------------------------------------------
     read_tab = ttk.Frame(tabs, padding=8)
@@ -2017,8 +2107,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             detail_preview.create_image(86, 86, image=photo)
         more = ""
         if len(results.selection()) > 1:
-            more = ("\n…and " + str(len(results.selection()) - 1) + " more selected: Change destination…, Redraw… and "
-                    "Forget record act on them all.")
+            more = ("\n…and " + str(len(results.selection()) - 1) + " more selected: Change destination…, Redraw…, "
+                    "Forget record and Print sheet… act on them all.")
         if shown["short_code"] != "":
             detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["target"], 300) +
                             "\nPrinted as: " + shown["link"] + short_note(shown) +
@@ -2194,6 +2284,74 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
 
         start_job("Forgetting", work, done)
 
+    def print_shown():
+        """The selected codes on a sheet of labels or as posters (sheets.json), as a PDF or SVG."""
+        chosen = selected_all()
+        if len(chosen) == 0:
+            status.set("Select the codes to print first (Ctrl+click or Shift+click picks several)")
+            return
+        loaded = sheets.load_sheets(os.path.join(HERE, "sheets.json"))
+        layouts = loaded["sheets"]["layouts"]
+        names = sorted(layouts)
+        dialog = tk.Toplevel(window)
+        dialog.title("Print sheet")
+        dialog.transient(window)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=str(len(chosen)) + " code(s) selected. Layout (sheets.json):").grid(row=0, column=0, sticky="w")
+        chooser = ttk.Combobox(body, values=names, state="readonly", width=40)
+        chooser.set(names[0])
+        chooser.grid(row=1, column=0, sticky="w", pady=4)
+        about = tk.StringVar(value="")
+        ttk.Label(body, textvariable=about, wraplength=420, justify="left", foreground="#555555").grid(row=2, column=0,
+                                                                                                       sticky="w")
+
+        def show_about_layout(event=None):
+            layout = layouts[chooser.get()]
+            per_page = layout["columns"] * layout["rows"]
+            pages = sheets.page_count(layout, len(chosen))
+            about.set(layout["about"] + " " + str(per_page) + " per page: " + str(pages) + " page(s).")
+
+        def make():
+            layout = layouts[chooser.get()]
+            path = filedialog.asksaveasfilename(title="Save the sheet", initialfile="qr-sheet.pdf",
+                                                defaultextension=".pdf", parent=dialog,
+                                                filetypes=[("PDF", "*.pdf"), ("SVG drawing, one per page", "*.svg")])
+            if not path:
+                return
+            path = registry.display_path(path)
+            dialog.destroy()
+            numbers = []
+            for shown in chosen:
+                numbers.append(shown["id"])
+
+            def done(outcome):
+                if not outcome["ok"]:
+                    messagebox.showerror("Print sheet", outcome["error"])
+                    return
+                value = outcome["value"]
+                message = ("Printed " + str(value["codes"]) + " code(s) on " + str(value["pages"]) + " page(s): " +
+                           value["files"][0])
+                if len(value["skipped"]) > 0:
+                    message = message + "; left out " + str(len(value["skipped"])) + ": " + value["skipped"][0]
+                status.set(message)
+                try:
+                    os.startfile(value["files"][0])
+                except (AttributeError, OSError) as error:
+                    status.set(message + " (cannot open it: " + str(error) + ")")
+
+            start_job("Printing the sheet", lambda: sheets.print_sheet(db_path, numbers, layout, path), done)
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=3, column=0, sticky="e", pady=(10, 0))
+        ttk.Button(buttons, text="Make the sheet…", command=make).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        chooser.bind("<<ComboboxSelected>>", show_about_layout)
+        show_about_layout()
+        if len(loaded["warnings"]) > 0:
+            status.set(loaded["warnings"][0])
+
     def find_from_picture(paste):
         if paste:
             temporary = os.path.join(tempfile.gettempdir(), "qr_palette_clipboard.png")
@@ -2343,8 +2501,9 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     ttk.Button(detail_changes, text="Change destination…", command=change_destination).pack(side="left")
     ttk.Button(detail_changes, text="Redraw…", command=redraw_shown).pack(side="left", padx=6)
     ttk.Button(detail_changes, text="Forget record", command=forget_shown).pack(side="left")
+    ttk.Button(detail_changes, text="Print sheet…", command=print_shown).pack(side="left", padx=6)
     ttk.Label(detail_changes, text="Ctrl+click or Shift+click to pick several.", foreground="#555555").pack(
-        side="left", padx=12)
+        side="left", padx=6)
     results.bind("<<TreeviewSelect>>", show_detail)
     find_entry.bind("<Return>", lambda event: run_search())
     color_entry.bind("<Return>", lambda event: run_search())
@@ -2512,4 +2671,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=6aa6a3bd3aabdffeb42d7cdc8324a4ac009888bc2497601d3214c90fc774bc93 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=df128f449b12b2228878d4f759323a57bd8c386bce75c93dc814a661a747d3df ====

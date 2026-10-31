@@ -283,6 +283,21 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
   - The new live test, run against qwen2.5:7b-instruct on this computer's Ollama, planned all four short-link questions correctly. It runs only when `QR_PALETTE_LIVE_MODEL` is set.
   - `stamp.py --check` is clean.
 
+## 2026-10-31
+
+**qr_color_registry** (robustness score, logo in the middle, print sheets)
+- *Test robustness* in Make: ten fixed kinds of wear on the code in the preview (shrinking, blur, noise, a tilt, low contrast, a covered corner), each decoded again, run as a job: "7 of 10 passed; failed: shrunk to a third, very low contrast, covered corner". The noise uses only `random()`, so a score is the same on every Python.
+- *Logo…* in Make: a small picture in the middle of a level H code, in a square of at most 15% of the modules, with a white margin.
+  - The square is the largest (15, 12 or 9%) whose code still reads with those modules blank, at the smallest version or one up. It never covers finder, timing, format or version modules; a code that does not read is refused.
+  - PNGs with a logo are truecolor. In SVG the code stays the first path, which is all the reader reads.
+- *Print sheet…* in Find: the selected codes on labels or posters, from `sheets.json` (A4 3 × 8, US Letter 3 × 10, a poster per page), as a PDF or as SVG drawings, one per page.
+  - The PDF is written by hand (PDF 1.4): filled rectangles only, no fonts, images or dates, so the same codes give the same bytes. The codes are drawn again from the registry, read on the read-only rail.
+- Checked:
+  - Tests pass on Python 3.14 (twice) and 3.11; `--selftest` (new checks for all three) and `--smoke` pass.
+  - The window was driven on a scratch registry through a logo, the robustness test, saving, selecting in Find and printing a sheet, with screenshots. That turned up the status line staying on "Reading the logo…", now fixed.
+  - pypdf reads the PDFs in strict mode with no warnings, and the poster's code reads back from a drawing of its page. No PDF viewer was run, and nothing has been printed on paper or scanned with a phone yet.
+  - `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

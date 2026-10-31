@@ -31,9 +31,9 @@ redirect pages of the short-link section in use (or `--section local|nonlocal`) 
 
 | Tab | What |
 |---|---|
-| Make | Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. *Print size…* says how wide to print it for a scanning distance (see below). |
+| Make | Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. *Print size…* says how wide to print it for a scanning distance, *Test robustness* how much wear it survives, and *Logo…* puts a small picture in its middle (see below). |
 | Read | Open or paste a picture of a QR code. It shows the text, the color it detects, and the codes in the registry that hold the same text. *Register this picture…* adds a PNG or SVG made elsewhere, in the color you confirm. |
-| Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), and *Forget record* removes them from the registry (the files stay). The **Ask** row asks in plain English through a local model you pick. |
+| Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), *Forget record* removes them from the registry (the files stay), and *Print sheet…* lays them out on labels or posters (see below). The **Ask** row asks in plain English through a local model you pick. |
 
 *File → Import votes from Color Voats…* brings in Color Voats' votes, with the newer vote winning for each color, so
 importing again changes nothing. The rest of the File menu: exporting and serving the redirect pages (below),
@@ -49,6 +49,41 @@ error-correction level gives the code's version, the module size, whether it is 
 that is, and how tall the printed address's letters come out. The rules of thumb: a module of at least 0.4 mm to
 print well, and the code at least a tenth as wide as the distance (a module at least 1/250 of it); address letters
 under 1.5 mm are flagged as hard to read. They are guidance, not guarantees: try a print before printing a batch.
+
+### Test robustness
+
+*Test robustness* in the Make tab wears the code in the preview ten ways and decodes each result, as a job since the
+decoder is plain Python: shrunk to half and to a third, a light and a heavy blur, light and heavy noise, tilted 5
+degrees, low and very low contrast, and a covered corner. It answers like "8 of 10 passed; failed: shrunk to a
+third, heavy blur". The tests are fixed (the noise is seeded), so the same code always scores the same and two
+choices can be compared. Darker colors and more error correction usually score better. It is a comparison, not a
+promise about a particular phone.
+
+### A logo in the middle
+
+*Logo…* in the Make tab picks a small picture (up to 1024 pixels a side) to draw in the middle of the code, in a
+square with a white margin. The code becomes level H, the most error correction (and the level box locks there until
+*No logo*).
+- **How big:** the square is the largest of 15%, 12% or 9% of the modules whose code still reads with those modules
+  blank, at the smallest version that fits or one larger. It never covers the finder patterns, the timing patterns,
+  or the format and version information. If no square reads, the logo is refused.
+- **Proof:** as with every code, the saved file is read back before it is registered; a logo that spoils it is
+  refused, and the file removed.
+- **Files:** a PNG with a logo is truecolor. In an SVG the code stays the first path, and the logo follows as small
+  squares, with colors cut to 4 bits a channel.
+- **Short links help:** a short address at level H is still small. The registry does not keep the logo, so
+  *Redraw…* and *Print sheet…* draw a code without it.
+
+### Print sheets
+
+Select codes in Find, then *Print sheet…*: choose a layout and a file, and it opens when done.
+- **Layouts** are in `sheets.json` beside the program, read each time: A4 labels 3 × 8 (70 × 37 mm), US Letter labels
+  3 × 10 (2 5/8 × 1 inch, the common 5160 layout), and one poster per A4 or US Letter page. Each gives the page
+  size, margins, columns, rows, cell size, gutter, and whether to print the label. Add your own.
+- **What is printed:** each code is drawn again from what it holds, as large as its cell allows with its quiet zone,
+  with its short address under it when it has one.
+- **Files:** a PDF (PDF 1.4 written by this program: only filled rectangles, so no fonts or images, and the same
+  codes always give the same bytes) or SVG drawings sized in millimetres, one per page (`name.svg`, `name-2.svg`, …).
 
 ### Keeping your data
 
@@ -161,6 +196,7 @@ section. *File → Open settings.json* opens yours.
 | `settings.json` | Where things are and how the program behaves. It lives next to the registry in `%LOCALAPPDATA%\Generic Company Inc\GenericCompany.QRPalette\` (or `--settings FILE`). The window writes it with every setting and its default the first time it runs. `settings.example.json` shows the same defaults. |
 | `presets/*.json` | Which algos rank the colors, and how they are mixed. |
 | `weights/*.json` | The numbers each algo uses. |
+| `sheets.json` | The layouts of *Print sheet…*: page, margins, columns, rows, cell, gutter and label, in millimetres. Read each time you print. |
 | `planner.json` | How a question in plain English becomes a query plan: what the local model is told, the worked examples it is shown, the words for color families ("navy" is blue), the words that name a section of short links or ask for short links, and the filler words taken off the ends of links and paths. `settings.json` can point to your own copy. A copy written before `section` and `short` existed still works. |
 | `links.json` | Short links: two sections, `local` and `nonlocal`, each with a base address (in capitals, ending in `/`) and the folder its exports start in; and, for both, the number of random digits per ID (4-12, default 7), whether **Short link** starts ticked, the tags added to destinations (`{id}` and `{hex}` are filled in) and the link templates (`{name}` is a field). `settings.json` can point to your own copy. |
 

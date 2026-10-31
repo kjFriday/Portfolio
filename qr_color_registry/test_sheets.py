@@ -252,8 +252,17 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(found["value"]["skipped"]), 1)
         self.assertFalse(sheets.codes_from_registry(os.path.join(self.folder, "none.db"), self.numbers)["ok"])
 
+    def test_a_sheet_of_registered_codes(self):
+        path = os.path.join(self.folder, "sheet.pdf")
+        printed = sheets.print_sheet(self.db, self.numbers + [999], layout("A4 labels 3 x 8 (70 x 37 mm)"), path)
+        self.assertTrue(printed["ok"], printed["error"])
+        self.assertEqual((printed["value"]["files"], printed["value"]["pages"], printed["value"]["codes"]), ([path], 1, 2))
+        self.assertEqual(len(printed["value"]["skipped"]), 1)
+        self.assertTrue(os.path.isfile(path))
+        self.assertFalse(sheets.print_sheet(self.db, [999], layout("A4 poster"), os.path.join(self.folder, "x.pdf"))["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a9e551e90a63c015374a90694c8fee6266db3f6dec6eca3a3da0235fbde02e0f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=be2d8937e4a28f28e38236d691e5a08dde9e43adbed06aa9cdc86f7f2395ba6d ====

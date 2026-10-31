@@ -225,6 +225,22 @@ class StoringTests(unittest.TestCase):
         self.assertEqual(qr_palette.matches_for_text(self.db, self.wifi["text"], "")["value"], [])
         self.assertEqual(len(qr_palette.search(self.db, "qr_code", "Cafe", False, 20)["value"]), 1)
 
+    def test_exports_and_backups_never_hold_the_password(self):
+        self.make()
+        for name in ("all.csv", "all.json"):
+            path = os.path.join(self.folder, name)
+            self.assertTrue(qr_palette.export_registry(self.db, path)["ok"])
+            handle = open(path, "rb")
+            data = handle.read()
+            handle.close()
+            self.assertNotIn(b"hunter2", data)
+            self.assertIn(b"********", data)
+        copy = os.path.join(self.folder, "copy.db")
+        self.assertTrue(registry.backup(self.db, copy)["ok"])
+        handle = open(copy, "rb")
+        self.assertNotIn(b"hunter2", handle.read())
+        handle.close()
+
     def test_redraw_refuses_what_the_registry_cannot_draw(self):
         made = self.make()
         refused = qr_palette.redraw_record(self.db, made["id"], "#006633", 4)
@@ -309,4 +325,4 @@ class KeyTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=9b2261925136b8efa6237ceb6fbeda7d801ce2e872c48101760c90aa2847b285 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ac59424ddf38f7190f1683829c278631cd7536840511244f89b407dac42486fd ====

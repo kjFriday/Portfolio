@@ -72,8 +72,9 @@ square with a white margin. The code becomes level H, the most error correction 
   refused, and the file removed.
 - **Files:** a PNG with a logo is truecolor. In an SVG the code stays the first path, and the logo follows as small
   squares, with colors cut to 4 bits a channel.
-- **Short links help:** a short address at level H is still small. The registry does not keep the logo, so
-  *Redraw…* and *Print sheet…* draw a code without it.
+- **Short links help:** a short address at level H is still small.
+- **The registry does not keep the logo.** So *Redraw…* refuses such a code rather than lose the logo from its file, and
+  *Print sheet…* and Find's preview draw the code without it, and say so. *Print size…* gives only level H.
 
 ### Print sheets
 
@@ -82,7 +83,8 @@ Select codes in Find, then *Print sheet…*: choose a layout and a file, and it 
   3 × 10 (2 5/8 × 1 inch, the common 5160 layout), and one poster per A4 or US Letter page. Each gives the page
   size, margins, columns, rows, cell size, gutter, and whether to print the label. Add your own.
 - **What is printed:** each code is drawn again from what it holds, as large as its cell allows with its quiet zone,
-  with its short address under it when it has one.
+  with its short address under it when it has one. If a code's modules come out under 0.4 mm on that layout, the window
+  says so: pick a larger layout or a shorter link.
 - **Files:** a PDF (PDF 1.4 written by this program: only filled rectangles, so no fonts or images, and the same
   codes always give the same bytes) or SVG drawings sized in millimetres, one per page (`name.svg`, `name-2.svg`, …).
 
@@ -157,10 +159,12 @@ not in an analytics report.
 
 - **Backups.** *File → Back up the registry…* copies `palette.db` with SQLite's own backup, consistent even while
   the window writes, into a new file (by default `backups\palette-DATE-TIME.db` in the data folder), and checks the
-  copy before saying it is done. To restore one, close the window and copy it over `palette.db`.
+  copy before saying it is done. To restore one, close the window and copy it over `palette.db`. `qr_palette.key`
+  (see "More kinds of code") is not in a backup, on purpose: keep a copy of it somewhere else.
 - **Exports.** *File → Export the registry (CSV or JSON)…* writes a CSV with one row per code (color, link,
-  destination, short-link ID and section, path, format, level, version, when) for spreadsheets, with a byte-order
-  mark so they read it as UTF-8, or a JSON file with everything: codes, short links and votes. A CSV cell that
+  destination, short-link ID and section, path, format, level, version, when, scans, whether a password is masked,
+  whether it has a logo) for spreadsheets, with a byte-order mark so they read it as UTF-8, or a JSON file with
+  everything: codes, short links with their history, schedules and scans, and votes. A CSV cell that
   starts with `=`, `+`, `-` or `@` gets a leading apostrophe, so a spreadsheet never runs a link as a formula.
 
 ## Short links: print once, change where it goes later
@@ -273,7 +277,8 @@ alone, not to the Generic Company hub, and every open checks its SQLite applicat
 | `scans` | a short link's scans per day and source: only counts |
 | `votes` | one Good or Bad vote per color |
 
-`qr_codes` also keeps `payload_hash` for a code whose text is masked (see "More kinds of code").
+`qr_codes` also keeps `payload_hash` for a code whose text is masked (see "More kinds of code"), and `has_logo` for one
+drawn with a logo.
 
 The schema is version 3 (version 2 added `short_links`, version 3 added the rest above). The window moves an older
 registry to version 3 the first time it opens it, after keeping a checked copy beside it (`palette-v2.db`), since older

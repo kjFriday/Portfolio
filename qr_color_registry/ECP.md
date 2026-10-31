@@ -427,7 +427,7 @@ any file is checked. In order:
    100, `EXPR_DEPTH` 10, `COMPOUND_SELECT` 3, `VDBE_OP` 25,000, `FUNCTION_ARG` 8, `ATTACHED` 0,
    `LIKE_PATTERN_LENGTH` 50, `VARIABLE_NUMBER` 10, `TRIGGER_DEPTH` 10.
 8. An allow-list authorizer: plain `SELECT`, reading the listed columns of `colors`, `links`, `qr_codes`,
-   `short_links`, `votes`, `scheduled_changes` and `scans`, and the function `count`. Everything else is denied (an
+   `short_links`, `votes`, `short_link_changes`, `scheduled_changes` and `scans`, and the function `count`. Everything else is denied (an
    error, never a silent null): other columns, other functions, `sqlite_master`, `PRAGMA`, `ATTACH`, writes and
    schema changes. ECP's own answers read `scans` only when `colors.scans_vote` is on, and never answer with
    `qr_codes.payload_hash`, the keyed hash of a code whose text is masked: `payload_url` then holds the masked text.
@@ -648,7 +648,7 @@ program, so some parts are different, and some are absent:
 | The inference address is a compile-time constant, 127.0.0.1:11434 | Any loopback IP literal or `localhost`, from `settings.json` or `--inference` | Every setting is meant to be editable JSON; names are still never resolved |
 | `ECPQueryPlan` (`target_family`, `hex_code`, `link_search`, `min_votes`, `sort_by`, `limit`) compiled into three fixed SQL templates | QR Palette's QueryPlan (§7.4), applied in Python to rows read with fixed statements | The registry's questions are by link, color, path, section of short links and recommendation; in both, no SQL comes from the model |
 | Seven color families | Thirteen | The palette's own names, shared with Color Voats |
-| Tables `colors`, `links`, `qr_codes`, `voats`, `STRICT` | `colors`, `links`, `qr_codes`, `short_links`, `votes`, `short_link_changes`, `scheduled_changes`, `scans`, not `STRICT` | The registry's own schema (`user_version` 3; 2 added `short_links`, 3 the other three and `qr_codes.payload_hash`) |
+| Tables `colors`, `links`, `qr_codes`, `voats`, `STRICT` | `colors`, `links`, `qr_codes`, `short_links`, `votes`, `short_link_changes`, `scheduled_changes`, `scans`, not `STRICT` | The registry's own schema (`user_version` 3; 2 added `short_links`, 3 the other three, `qr_codes.payload_hash` and `qr_codes.has_logo`) |
 | The DDL sets only `user_version` | The registry also sets `application_id` 0x51525041 ("QRPA"), checked on every open | It tells a QR Palette registry apart from any other SQLite file, and other programs find the registry by it. It stays in any future schema. |
 | Open with read-only flags and `NOFOLLOW`, no URI | A `file:` URI with `mode=ro` | The only read-only open in Python's `sqlite3`, which has no `NOFOLLOW` |
 | Also `ENABLE_ATTACH_CREATE`, `ENABLE_ATTACH_WRITE`, `ENABLE_COMMENTS`; limits `PARSER_DEPTH`, `SCHEMA`, `LIKE_PATTERN_LENGTH` 80 | Not set; `LIKE_PATTERN_LENGTH` 50 | Python's `sqlite3` does not expose them; `ATTACHED` 0 and the authorizer cover attaching, and `LIKE` is never used |

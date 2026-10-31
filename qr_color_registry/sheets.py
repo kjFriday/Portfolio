@@ -193,13 +193,10 @@ def page_count(layout, count):
     return max(1, (count + per_page - 1) // per_page)
 
 
-def code_shape(code, cell, label):
-    """A code drawn as large as its cell allows, quiet zone and label included, centred -> Shape.
-    Runs of dark modules along a row are one rectangle each; so are runs of a label's font pixels.
-    The label is laid out as the pictures lay it out, in sixteenths of a module."""
-    matrix = code["matrix"]
-    size = matrix["size"]
-    side = size + 2 * BORDER
+def code_size(code, cell, label):
+    """How a code fills its cell -> (module in mm, its height in modules with its label, label lines, font
+    pixel in sixteenths of a module)."""
+    side = code["matrix"]["size"] + 2 * BORDER
     grid = qr_codec.SVG_GRID
     lines = []
     pixel = 1
@@ -208,7 +205,29 @@ def code_shape(code, cell, label):
         lines, pixel = qr_codec.caption_layout(code["caption"], side * grid, grid)
         band = qr_codec.caption_size(lines, pixel, grid)[1]
     tall = side + band / float(grid)
-    module = min(cell["width"] / float(side), cell["height"] / tall)
+    return min(cell["width"] / float(side), cell["height"] / tall), tall, lines, pixel
+
+
+def smallest_module(layout, codes):
+    """The smallest module in mm the codes come out at on this layout, for telling when it is too small."""
+    smallest = None
+    cells = place(layout, len(codes))
+    for index in range(len(codes)):
+        module = code_size(codes[index], cells[index], layout["label"])[0]
+        if smallest is None or module < smallest:
+            smallest = module
+    return smallest
+
+
+def code_shape(code, cell, label):
+    """A code drawn as large as its cell allows, quiet zone and label included, centred -> Shape.
+    Runs of dark modules along a row are one rectangle each; so are runs of a label's font pixels.
+    The label is laid out as the pictures lay it out, in sixteenths of a module."""
+    matrix = code["matrix"]
+    size = matrix["size"]
+    side = size + 2 * BORDER
+    grid = qr_codec.SVG_GRID
+    module, tall, lines, pixel = code_size(code, cell, label)
     left = cell["left"] + (cell["width"] - side * module) / 2.0
     top = cell["top"] + (cell["height"] - tall * module) / 2.0
     rects = []
@@ -340,7 +359,8 @@ def sheet_pdf(layout, codes):
 
 def codes_from_registry(db_path, numbers):
     """The codes registered under `numbers` (record ids), in that order, ready to place -> Result
-    {"codes": [Code], "skipped": [str]}. Each is drawn again from the text it holds, at its own level
+    {"codes": [Code], "skipped": [str], "without_logo": how many are drawn without the logo their pictures
+    have, which the registry does not keep}. Each is drawn again from the text it holds, at its own level
     and at least its own version, with its short address as its label. A code whose text is masked (a
     Wi-Fi password the registry does not keep) is read from its picture instead, or left out. The
     registry is only read, on the read-only rail, and closed before any code is drawn."""
@@ -357,10 +377,13 @@ def codes_from_registry(db_path, numbers):
         registry.close(opened["value"])
     codes = []
     skipped = []
+    without_logo = 0
     for number, row in rows:
         if row is None:
             skipped.append("record " + str(number) + " is no longer in the registry")
             continue
+        if row["has_logo"]:
+            without_logo = without_logo + 1
         text = row["link"]
         if row["payload_hash"] is not None:
             picture = qr_codec.read_qr_file(row["path"])
@@ -377,7 +400,7 @@ def codes_from_registry(db_path, numbers):
         if row["short_code"] != "":
             caption = shortlinks.caption(row["link"])
         codes.append({"matrix": made["value"], "color": row["hex"], "caption": caption})
-    return ok_result({"codes": codes, "skipped": skipped})
+    return ok_result({"codes": codes, "skipped": skipped, "without_logo": without_logo})
 
 
 # --- Files ---------------------------------------------------------------------------------------
@@ -410,7 +433,8 @@ def write_file(path, data):
 
 
 def print_sheet(db_path, numbers, layout, path):
-    """The registered codes `numbers` on a sheet at `path` -> Result {"files", "pages", "codes", "skipped"}."""
+    """The registered codes `numbers` on a sheet at `path` -> Result {"files", "pages", "codes", "skipped",
+    "without_logo", "smallest_module_mm"}."""
     found = codes_from_registry(db_path, numbers)
     if not found["ok"]:
         return found
@@ -418,6 +442,8 @@ def print_sheet(db_path, numbers, layout, path):
     if not written["ok"]:
         return written
     written["value"]["skipped"] = found["value"]["skipped"]
+    written["value"]["without_logo"] = found["value"]["without_logo"]
+    written["value"]["smallest_module_mm"] = round(smallest_module(layout, found["value"]["codes"]), 2)
     return written
 
 
@@ -444,4 +470,4 @@ def write_sheet(path, layout, codes):
             return written
     return ok_result({"files": paths, "pages": len(drawings), "codes": len(codes)})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4349c881b13762e0b6ed4fe71695bc9241b2a85cc2f4bca0af045a619a041032 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=dd2eb46b050cc89d250b3a865c80bce1d8e4736d955bb4ff0d5db99dc916a9cd ====

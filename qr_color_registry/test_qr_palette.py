@@ -121,6 +121,38 @@ class MakeTests(CoreCase):
         self.assertIn("too big", refused["error"])
         self.assertFalse(os.path.exists(self.path("big.png")))
 
+    def test_a_logo_is_never_lost_by_redrawing(self):
+        made = qr_palette.make_qr(self.db, "https://shop.example.com/p/blue-mug", "#663399", "M", self.path("logo.png"), 4,
+                                  None, sample_logo(40))["value"]
+        handle = open(made["path"], "rb")
+        before = handle.read()
+        handle.close()
+        found = qr_palette.search(self.db, "qr_code", "blue-mug", False, 20)["value"]
+        self.assertTrue(found[0]["has_logo"])
+        refused = qr_palette.redraw_record(self.db, made["id"], "#006633", 4)
+        self.assertIn("has a logo", refused["error"])
+        handle = open(made["path"], "rb")
+        self.assertEqual(handle.read(), before)
+        handle.close()
+        plain = self.make("plain.png", "https://shop.example.com/p/green-mug", "#663399")
+        self.assertFalse(qr_palette.search(self.db, "qr_code", "green-mug", False, 20)["value"][0]["has_logo"])
+        self.assertTrue(qr_palette.redraw_record(self.db, plain["id"], "#006633", 4)["ok"])
+        made_again = qr_palette.make_qr(self.db, "https://shop.example.com/p/blue-mug", "#663399", "M",
+                                        self.path("logo.png"), 4)["value"]  # saved over, without a logo
+        self.assertEqual(made_again["id"], made["id"])
+        self.assertFalse(qr_palette.search(self.db, "qr_code", "blue-mug", False, 20)["value"][0]["has_logo"])
+
+    def test_print_advice_for_a_logo_is_level_h_at_its_version(self):
+        text = "https://shop.example.com/p/blue-mug"
+        everything = qr_palette.print_advice(text, 3, 0.3, "")["value"]
+        self.assertEqual([row["level"] for row in everything["levels"]], ["L", "M", "Q", "H"])
+        placed = qr_codec.place_logo(text, sample_logo(40))["value"]
+        version = placed["matrix"]["version"]
+        with_logo = qr_palette.print_advice(text, 3, 0.3, "", version)["value"]
+        self.assertEqual([(row["level"], row["version"]) for row in with_logo["levels"]], [("H", version)])
+        one_up = qr_palette.print_advice(text, 3, 0.3, "", version + 1)["value"]
+        self.assertEqual(one_up["levels"][0]["version"], version + 1)
+
     def test_names(self):
         self.assertEqual(qr_palette.slug("https://www.Shop.example.com/sale?id=4"), "shop-example-com-sale-id-4")
         self.assertEqual(qr_palette.slug("::"), "qr-code")
@@ -574,7 +606,7 @@ class ApplySettingsTests(unittest.TestCase):
         self.assertEqual(qr_palette.shown_from_record(record),
                          {"id": 3, "link": "https://example.com/a", "hex": "#3366cc", "name": "Blue", "family": "blue",
                           "path": "C:\\Codes\\a.png", "exists": None, "ec_level": "M", "version": 1,
-                          "short_code": "", "target": "", "scans": None})
+                          "short_code": "", "target": "", "scans": None, "has_logo": False})
         record["payload_url"] = "HTTPS://GO.EXAMPLE.COM/12345674"
         record["target_url"] = "https://example.com/a"
         shown = qr_palette.shown_from_record(record)
@@ -718,4 +750,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=3bb550bc85e59d8a4e3fc75af1d1c25efbddad85f629fcf2007e9baa23d385ca ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=e3bfe615a00d210cc2aeb8e601a43ca6feefe713b35d400d2267ee03b43129c7 ====

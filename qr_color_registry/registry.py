@@ -20,7 +20,8 @@ setting is in settings.json.
 
 Schema versions: 2 added short_links; 3 added short_link_changes (where a short link used to go),
 scheduled_changes (where it will go, from a day), scans (counts per short link and day, never who
-scanned) and qr_codes.payload_hash (for a code whose stored text is masked). A writable open keeps a
+scanned), qr_codes.payload_hash (for a code whose stored text is masked) and qr_codes.has_logo (the
+registry keeps no logo, so such a code cannot be drawn again whole). A writable open keeps a
 copy of an older registry beside it (NAME-vN.db) and moves it to the current version in one
 transaction; a read-only open reads older versions as they are, since it may not write. Version 3
 only adds to version 2: other programs that read the older tables and columns read them the same.
@@ -28,11 +29,13 @@ only adds to version 2: other programs that read the older tables and columns re
 Records
   Result     {"ok": bool, "error": str, "value": any}
   Row        {"id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format",
-              "ec_level", "version", "origin", "created", "short_code", "target", "payload_hash"} one QR
-              code; short_code and target are "" unless its link is a short link; payload_hash is None
-              unless link is masked (the code holds a secret the registry must not keep)
+              "ec_level", "version", "origin", "created", "short_code", "target", "payload_hash",
+              "has_logo"} one QR code; short_code and target are "" unless its link is a short link;
+              payload_hash is None unless link is masked (the code holds a secret the registry must not
+              keep); has_logo is 1 for a code drawn with a logo, 0 otherwise
   Entry      {"link", "color", "path", "format", "ec_level", "version", "origin",
-              "short": {"code", "target"} or absent, "payload_hash": str or absent}  a code to save
+              "short": {"code", "target"} or absent, "payload_hash": str or absent,
+              "has_logo": 1 or absent}                                               a code to save
   ShortLink  {"code", "url", "target", "hex", "created", "updated", "pictures"}
   Change     {"id", "old_target", "new_target", "changed"}                  a short link's history
   Scheduled  {"id", "code", "target", "from_day": "YYYY-MM-DD", "created"}  a change still to come
@@ -75,9 +78,10 @@ READ_COLUMNS = {
     "colors": ("id", "hex", "name", "family", "cube_index"),
     "links": ("id", "url"),
     "qr_codes": ("id", "link_id", "color_id", "path", "path_key", "format", "ec_level", "version", "origin",
-                 "created", "payload_hash"),
+                 "created", "payload_hash", "has_logo"),
     "votes": ("color_id", "voat", "voted"),
     "short_links": ("id", "code", "link_id", "color_id", "target", "created", "updated"),
+    "short_link_changes": ("id", "code", "old_target", "new_target", "changed"),
     "scheduled_changes": ("id", "code", "target", "from_day", "created", "applied"),
     "scans": ("code", "day", "source", "count"),
 }
@@ -91,13 +95,14 @@ READ_LIMITS = (("SQLITE_LIMIT_LENGTH", 1000000), ("SQLITE_LIMIT_SQL_LENGTH", 100
 LOOKUP_COLUMNS = ("SELECT q.id AS id, l.url AS link, c.hex AS hex, c.name AS name, c.family AS family, "
                   "c.cube_index AS cube_index, q.path AS path, q.path_key AS path_key, q.format AS format, "
                   "q.ec_level AS ec_level, q.version AS version, q.origin AS origin, q.created AS created")
-LOOKUP = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target, q.payload_hash AS payload_hash "
+LOOKUP = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target, q.payload_hash AS payload_hash, "
+          "q.has_logo AS has_logo "
           "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id "
           "LEFT JOIN short_links s ON s.link_id = l.id")
-LOOKUP_V2 = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target, NULL AS payload_hash "
+LOOKUP_V2 = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target, NULL AS payload_hash, 0 AS has_logo "
              "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id "
              "LEFT JOIN short_links s ON s.link_id = l.id")
-LOOKUP_V1 = (LOOKUP_COLUMNS + ", NULL AS short_code, NULL AS target, NULL AS payload_hash "
+LOOKUP_V1 = (LOOKUP_COLUMNS + ", NULL AS short_code, NULL AS target, NULL AS payload_hash, 0 AS has_logo "
              "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id")
 SHORT_LINKS = ("SELECT s.code, l.url, s.target, c.hex, s.created, s.updated, "
                "(SELECT count(*) FROM qr_codes q WHERE q.link_id = s.link_id) "
@@ -155,6 +160,7 @@ TO_VERSION_2 = (
 # Version 3: history, schedules, scans and masked payloads. Nothing older is renamed or dropped.
 TO_VERSION_3 = (
     "ALTER TABLE qr_codes ADD COLUMN payload_hash TEXT",
+    "ALTER TABLE qr_codes ADD COLUMN has_logo INTEGER NOT NULL DEFAULT 0",
     """CREATE TABLE short_link_changes (
         id INTEGER PRIMARY KEY,
         code TEXT NOT NULL REFERENCES short_links(code),
@@ -178,7 +184,7 @@ TO_VERSION_3 = (
         PRIMARY KEY (code, day, source))""",
 )
 ROW_KEYS = ("id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format", "ec_level",
-            "version", "origin", "created", "short_code", "target", "payload_hash")
+            "version", "origin", "created", "short_code", "target", "payload_hash", "has_logo")
 
 
 def ok_result(value):
@@ -519,13 +525,13 @@ def save_qr(connection, entry):
                 return fail("the short link ID " + short["code"] + " is already used for another address")
         connection.execute(
             "INSERT INTO qr_codes (link_id, color_id, path, path_key, format, ec_level, version, origin, created, "
-            "payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "payload_hash, has_logo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(path_key) DO UPDATE SET link_id = excluded.link_id, color_id = excluded.color_id, "
             "path = excluded.path, format = excluded.format, ec_level = excluded.ec_level, "
             "version = excluded.version, origin = excluded.origin, created = excluded.created, "
-            "payload_hash = excluded.payload_hash",
+            "payload_hash = excluded.payload_hash, has_logo = excluded.has_logo",
             (link, color, display_path(entry["path"]), key, entry["format"], entry["ec_level"], entry["version"],
-             entry["origin"], now_text(), entry.get("payload_hash")))
+             entry["origin"], now_text(), entry.get("payload_hash"), entry.get("has_logo", 0)))
         number = connection.execute("SELECT id FROM qr_codes WHERE path_key = ?", (key,)).fetchone()[0]
         drop_unused_links(connection)
         connection.execute("COMMIT")
@@ -899,6 +905,24 @@ def short_links(connection):
     return found
 
 
+def history_entries(connection):
+    """Everything versions 3 and later keep about short links, for exports -> {"short_link_changes",
+    "scheduled_changes", "scans"}, lists of records, empty for an older registry."""
+    found = {"short_link_changes": [], "scheduled_changes": [], "scans": []}
+    if schema_of(connection) < 3:
+        return found
+    for row in connection.execute("SELECT code, old_target, new_target, changed FROM short_link_changes "
+                                  "ORDER BY id").fetchall():
+        found["short_link_changes"].append({"code": row[0], "old_target": row[1], "new_target": row[2], "changed": row[3]})
+    for row in connection.execute("SELECT code, target, from_day, created, applied FROM scheduled_changes "
+                                  "ORDER BY id").fetchall():
+        found["scheduled_changes"].append({"code": row[0], "target": row[1], "from_day": row[2], "created": row[3],
+                                           "applied": row[4]})
+    for row in connection.execute("SELECT code, day, source, count FROM scans ORDER BY code, day, source").fetchall():
+        found["scans"].append({"code": row[0], "day": row[1], "source": row[2], "count": row[3]})
+    return found
+
+
 def short_links_on(connection, day):
     """Every short link as ShortLink, with the destination in force on `day`: the latest scheduled
     change whose day has come, even if it has not been applied yet."""
@@ -1035,4 +1059,4 @@ def find_rows(rows, filters, limit):
             found.append(row)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=39616dda14678a8432e3f8e892d28141875f39d5111bfd625aa359a51bb359ad ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=527d47a763a5e92d9b50c3e10be37bcb44f986e4782d3aa679ea670e4a914991 ====

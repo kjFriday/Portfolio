@@ -113,7 +113,7 @@ BATCH_COLUMNS = ("row", "status", "reason", "link", "color", "label", "path", "s
 WINDOWS_DEVICES = ("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
                    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
 CSV_COLUMNS = ("id", "color", "color_name", "family", "link", "destination", "short_id", "section", "path", "format",
-               "ec_level", "version", "origin", "created")
+               "ec_level", "version", "origin", "created", "scans_total", "scans_30_days", "password_masked", "has_logo")
 LINKS = shortlinks.copy_links(shortlinks.DEFAULT_LINKS)  # links.json, put in place by apply_settings()
 LINK_SECTION = "local"  # the section new short links use: settings.json's links.use
 SCANS_VOTE = False  # settings.json's colors.scans_vote: scans feed the ranking's scans algo
@@ -381,6 +381,8 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
              "version": matrix["version"], "origin": "made"}
     if code != "":
         entry["short"] = {"code": code, "target": target}
+    if placed_logo is not None:
+        entry["has_logo"] = 1
     filled = masked_entry(db_path, text, entry)
     if not filled["ok"]:
         return filled
@@ -565,10 +567,11 @@ def safe_cell(value):
     return text
 
 
-def export_registry(db_path, path):
-    """The registry as CSV (one row per QR code, for spreadsheets) or JSON (codes, short links and
-    votes), by `path`'s extension -> Result {"path", "codes", "short_links"}. Read on the read-only
-    rail, and written next to its place first."""
+def export_registry(db_path, path, today=""):
+    """The registry as CSV (one row per QR code, for spreadsheets) or JSON (codes, short links with
+    their history, schedules and scans, and votes), by `path`'s extension -> Result {"path", "codes",
+    "short_links"}. Scans up to `today` ("" for today). Read on the read-only rail, and written next to
+    its place first. A Wi-Fi password is never here: the registry only has it masked."""
     kind = os.path.splitext(path)[1].lower()
     if kind not in (".csv", ".json"):
         return fail("export to a .csv or a .json file")
@@ -579,6 +582,8 @@ def export_registry(db_path, path):
         codes = registry.all_rows(opened["value"])
         links = registry.short_links(opened["value"])
         votes = registry.vote_entries(opened["value"])
+        kept = registry.history_entries(opened["value"])
+        totals = registry.scan_totals(opened["value"], today or registry.today_text())
     except Exception as error:
         return fail("cannot read the registry: " + str(error))
     finally:
@@ -588,10 +593,16 @@ def export_registry(db_path, path):
         section = ""
         if row["short_code"] != "":
             section = shortlinks.section_of(LINKS, row["link"])
+        scanned = totals.get(row["short_code"], {"total": "", "recent": ""})
+        if row["short_code"] != "" and row["short_code"] not in totals:
+            scanned = {"total": 0, "recent": 0}
         rows.append({"id": row["id"], "color": row["hex"], "color_name": row["name"], "family": row["family"],
                      "link": row["link"], "destination": row["target"] or row["link"], "short_id": row["short_code"],
                      "section": section, "path": row["path"], "format": row["format"], "ec_level": row["ec_level"],
-                     "version": row["version"], "origin": row["origin"], "created": row["created"]})
+                     "version": row["version"], "origin": row["origin"], "created": row["created"],
+                     "scans_total": scanned["total"], "scans_30_days": scanned["recent"],
+                     "password_masked": "yes" if row["payload_hash"] is not None else "",
+                     "has_logo": "yes" if row["has_logo"] else ""})
     temporary = path + ".part"
     try:
         if kind == ".csv":
@@ -608,7 +619,8 @@ def export_registry(db_path, path):
                 handle.close()
         else:
             data = {"program": APP_NAME + " " + __version__, "exported": registry.now_text(), "codes": rows,
-                    "short_links": links, "votes": votes}
+                    "short_links": links, "short_link_changes": kept["short_link_changes"],
+                    "scheduled_changes": kept["scheduled_changes"], "scans": kept["scans"], "votes": votes}
             handle = open(temporary, "w", encoding="utf-8", newline="\n")
             try:
                 handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
@@ -624,12 +636,13 @@ def export_registry(db_path, path):
     return ok_result({"path": path, "codes": len(rows), "short_links": len(links)})
 
 
-def print_advice(text, width_cm, distance_m, caption):
+def print_advice(text, width_cm, distance_m, caption, logo_version=0):
     """How a code holding `text`, printed `width_cm` wide (the whole picture, quiet zone included),
     scans from `distance_m` -> Result {"need_mm", "levels": [{"level", "version", "modules",
     "module_mm", "fits", "min_width_cm", "caption_mm"}]}, one per error-correction level. Rules of
     thumb, not guarantees: a module at least MIN_MODULE_MM, and at least 1/DISTANCE_PER_MODULE of the
-    scanning distance; the printed address's letters at least MIN_CAPTION_MM tall."""
+    scanning distance; the printed address's letters at least MIN_CAPTION_MM tall. A code with a logo
+    is only ever level H, at the version place_logo chose: `logo_version`, 0 for no logo."""
     for value, low, high, name in ((width_cm, 0.5, 500, "the width is 0.5 to 500 cm"),
                                    (distance_m, 0.05, 50, "the distance is 0.05 to 50 m")):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
@@ -637,7 +650,9 @@ def print_advice(text, width_cm, distance_m, caption):
     need = max(MIN_MODULE_MM, distance_m * 1000.0 / DISTANCE_PER_MODULE)
     levels = []
     for level in registry.EC_LEVELS:
-        made = qr_codec.encode_text(text, level, 1, -1)
+        if logo_version > 0 and level != "H":
+            continue
+        made = qr_codec.encode_text(text, level, max(1, logo_version), -1)
         if not made["ok"]:
             continue
         side = made["value"]["size"] + 8
@@ -681,6 +696,9 @@ def redraw_record(db_path, number, color, scale):
     if row["payload_hash"] is not None:
         return fail(os.path.basename(row["path"]) + " holds a Wi-Fi password the registry does not keep, so it "
                     "cannot be drawn again here; make it again in the Make tab")
+    if row["has_logo"]:
+        return fail(os.path.basename(row["path"]) + " has a logo the registry does not keep, and redrawing would lose "
+                    "it; make it again in the Make tab")
     made = qr_codec.encode_text(row["link"], row["ec_level"], 1, -1)
     if not made["ok"]:
         return made
@@ -1020,7 +1038,7 @@ def shown_from_row(row, exists, totals=None):
         count = totals.get(row["short_code"], {"total": 0, "recent": 0})
     return {"id": row["id"], "link": row["link"], "hex": row["hex"], "name": row["name"], "family": row["family"],
             "path": row["path"], "exists": exists, "ec_level": row["ec_level"], "version": row["version"],
-            "short_code": row["short_code"], "target": row["target"], "scans": count}
+            "short_code": row["short_code"], "target": row["target"], "scans": count, "has_logo": bool(row["has_logo"])}
 
 
 def shown_from_record(record):
@@ -1031,7 +1049,8 @@ def shown_from_record(record):
         code = record["payload_url"].rstrip("/").split("/")[-1]
     return {"id": record["id"], "link": record["payload_url"], "hex": record["hex"], "name": record["color_name"],
             "family": record["color_family"], "path": record["file_path"], "exists": record["exists"],
-            "ec_level": "M", "version": 1, "short_code": code, "target": record["target_url"], "scans": None}
+            "ec_level": "M", "version": 1, "short_code": code, "target": record["target_url"], "scans": None,
+            "has_logo": False}
 
 
 def destination(shown):
@@ -1570,7 +1589,10 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             if not outcome["ok"]:
                 messagebox.showerror("Back up the registry", outcome["error"])
                 return
-            status.set("Backed up the registry to " + outcome["value"] + " (checked)")
+            note = ""
+            if os.path.isfile(localkey.key_path(db_path)):
+                note = "  ·  qr_palette.key is not in it: keep a copy of that too, away from the backup"
+            status.set("Backed up the registry to " + outcome["value"] + " (checked)" + note)
 
         start_job("Backing up the registry", lambda: registry.backup(db_path, target), done)
 
@@ -1702,6 +1724,9 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             status.set("Type a link first: the advice is for the code in the preview")
             return
         caption = state["preview_caption"]
+        logo_version = 0
+        if state["preview_logo"] is not None:
+            logo_version = state["matrix"]["version"]
         dialog = tk.Toplevel(window)
         dialog.title("Print size")
         dialog.transient(window)
@@ -1729,7 +1754,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             except ValueError:
                 answer.set("Type two numbers, such as 3 and 0.3.")
                 return
-            advice = print_advice(text, width, distance, caption)
+            advice = print_advice(text, width, distance, caption, logo_version)
             if not advice["ok"]:
                 answer.set(advice["error"] + ".")
                 return
@@ -2848,10 +2873,13 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 photo = photo.subsample(factor, factor)
                 state["photos"]["detail"] = photo
             detail_preview.create_image(86, 86, image=photo)
-        more = ""
+        logo_note = ""
+        if shown["has_logo"]:
+            logo_note = "\nIts picture has a logo the registry does not keep: this preview shows the code without it."
+        more = logo_note
         if len(results.selection()) > 1:
-            more = ("\n…and " + str(len(results.selection()) - 1) + " more selected: Change destination…, Redraw…, "
-                    "Forget record and Print sheet… act on them all.")
+            more = (logo_note + "\n…and " + str(len(results.selection()) - 1) + " more selected: Change destination…, "
+                    "Redraw…, Forget record and Print sheet… act on them all.")
         if shown["short_code"] != "":
             detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["target"], 300) +
                             "\nPrinted as: " + shown["link"] + short_note(shown) +
@@ -3238,6 +3266,11 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                            value["files"][0])
                 if len(value["skipped"]) > 0:
                     message = message + "; left out " + str(len(value["skipped"])) + ": " + value["skipped"][0]
+                if value["without_logo"] > 0:
+                    message = message + "; " + str(value["without_logo"]) + " drawn without their logos"
+                if value["smallest_module_mm"] < MIN_MODULE_MM:
+                    message = (message + "; modules come out as small as " + str(value["smallest_module_mm"]) +
+                               " mm, under the " + str(MIN_MODULE_MM) + " mm most printers and cameras handle well")
                 status.set(message)
                 try:
                     os.startfile(value["files"][0])
@@ -3575,4 +3608,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=8f71ec75e58ccb2f05c8d1b5a34a07e47c14b7ba254e5f0672dd2dafd923a3e7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=eca3f9a64758c0526cd6eef7567c1d8359a78f2754ec19fe6a2c14a6b2cb283e ====

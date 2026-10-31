@@ -327,6 +327,11 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
   - A push is never forced, and Git never waits for a password here. A failed push keeps the commit and repeats what Git said.
 - Checked: tests pass on Python 3.14 (twice) and 3.11, in temporary repositories, with pushes only to a bare repository in the same temporary folder, including a rejected one. `--selftest` and `--smoke` pass. The window was driven through a publish to such a repository. No real remote was pushed to: this computer has no Git Credential Manager right now, so a real push from here would fail and say so. `stamp.py --check` is clean.
 
+**qr_color_registry** (where these features meet the quick wins)
+- *Redraw…* refuses a code with a logo rather than lose the logo from its file: the registry keeps `qr_codes.has_logo` (schema version 3), not the logo. Find's preview and *Print sheet…* draw such a code without it, and say so.
+- *Print size…* gives only level H for a code with a logo, at the version it really has. *Print sheet…* says when a layout makes modules under 0.4 mm.
+- *Export the registry*: the CSV gains scans, whether a password is masked and whether there is a logo; the JSON gains history, schedules and scans. Neither holds a Wi-Fi password. The window says a backup does not hold `qr_palette.key`.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

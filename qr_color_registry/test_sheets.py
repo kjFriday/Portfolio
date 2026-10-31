@@ -252,6 +252,19 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(found["value"]["skipped"]), 1)
         self.assertFalse(sheets.codes_from_registry(os.path.join(self.folder, "none.db"), self.numbers)["ok"])
 
+    def test_a_sheet_says_how_small_its_modules_are(self):
+        path = os.path.join(self.folder, "sheet.pdf")
+        printed = sheets.print_sheet(self.db, self.numbers, layout("A4 poster"), path)
+        self.assertGreater(printed["value"]["smallest_module_mm"], 3)
+        long_code = code("https://shop.example.com/" + "p/" * 400, "#3366cc", "")
+        tiny = sheets.smallest_module(layout("US Letter labels 3 x 10 (2 5/8 x 1 in)"), [long_code])
+        self.assertLess(tiny, 0.4)
+        self.assertEqual(printed["value"]["without_logo"], 0)
+        opened = registry.connect(self.db, False)
+        opened["value"].execute("UPDATE qr_codes SET has_logo = 1")
+        registry.close(opened["value"])
+        self.assertEqual(sheets.print_sheet(self.db, self.numbers, layout("A4 poster"), path)["value"]["without_logo"], 2)
+
     def test_a_sheet_of_registered_codes(self):
         path = os.path.join(self.folder, "sheet.pdf")
         printed = sheets.print_sheet(self.db, self.numbers + [999], layout("A4 labels 3 x 8 (70 x 37 mm)"), path)
@@ -265,4 +278,4 @@ class RegistryTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=be2d8937e4a28f28e38236d691e5a08dde9e43adbed06aa9cdc86f7f2395ba6d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=dcb4b4cf2ccb179b79e0290ed0679c87b5edf9a89454445ce97dc853c14cddbb ====

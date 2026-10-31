@@ -4,8 +4,10 @@ Ten proposed features, written so that another session or developer can pick any
 conversation. Features 1-5 (serving local pages, backup and CSV/JSON export, the print-size advisor, bulk
 actions in Find, the audit log viewer with an outside anchor) are built and on main; see the LOG.
 
-Started: features 15 (done) and 12, 7 and 10 (their core) are on branch `worktree-qr-palette-6-15`, not yet on
-main. Check that branch and the LOG before starting, so as not to redo them.
+**All ten are built,** on branch `worktree-qr-palette-6-15`, not yet on main; see the LOG. What is left of them: feature
+6's `bridge.db` source, which waits for Data Bridge to be merged, and trying the new kinds of code, logos and
+printed sheets with real phones and a real printer. The text below is kept as the plan they were built from. Where
+the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the LOG says so and why.
 
 ## What to read first
 

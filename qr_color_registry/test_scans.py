@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 import unittest
 
+import ecp
 import qr_palette
 import scans
 import shortlinks
@@ -212,7 +213,37 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(mixer, qr_palette.board(self.db, "mixer")["value"]["order"])
 
 
+class EcpTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="qr_palette_scan_ecp_")
+        self.db = os.path.join(self.folder, "palette.db")
+        made = qr_palette.make_qr(self.db, "https://example.com/menu", "#3366cc", "M", os.path.join(self.folder, "a.png"),
+                                  4, qr_palette.short_request(FIRST, "nonlocal"))
+        self.assertTrue(made["ok"], made["error"])
+        path = os.path.join(self.folder, "r.csv")
+        handle = open(path, "w", encoding="utf-8")
+        handle.write("date,utm_content,count\n2026-10-28," + FIRST + "-3366cc,50\n")
+        handle.close()
+        self.assertTrue(qr_palette.import_scan_file(self.db, path)["ok"])
+
+    def tearDown(self):
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+    def first_color(self, scans_vote):
+        engine = ecp.new_engine(self.db, "http://127.0.0.1:1", 1.0, "0.1.0")
+        engine["scans_vote"] = scans_vote
+        snapshot = ecp.read_environment(engine)
+        self.assertTrue(snapshot["ok"], snapshot["detail"])
+        plan = ecp.empty_plan()
+        plan["intent"] = "recommend"
+        return ecp.run_plan(snapshot["value"], plan, "scans", engine["links"])["colors"][0]["hex"]
+
+    def test_recommendations_count_scans_only_when_turned_on(self):
+        self.assertNotEqual(self.first_color(False), "#3366cc")
+        self.assertEqual(self.first_color(True), "#3366cc")
+
+
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5e64d10fb7a5a22cf6ed34cd48d5953314b3a27f195a646d57ebefe3b9b6b8c2 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d2a1d77a21ee55040c84b7e6399bbcb64fef919380d8b71fffbac33c62d1695e ====

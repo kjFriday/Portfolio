@@ -332,6 +332,12 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - *Print size…* gives only level H for a code with a logo, at the version it really has. *Print sheet…* says when a layout makes modules under 0.4 mm.
 - *Export the registry*: the CSV gains scans, whether a password is masked and whether there is a logo; the JSON gains history, schedules and scans. Neither holds a Wi-Fi password. The window says a backup does not hold `qr_palette.key`.
 
+**qr_color_registry** (tamper check for stickers)
+- New short-link IDs are seven random digits, two tag digits and the Damm check digit: ten digits, still 25×25 at level M on `GO.EXAMPLE.COM`. The tag is cut from an HMAC under `qr_palette.key`, under a purpose of its own, so it can never stand in for the Wi-Fi hash. `tag_ids` in `links.json` turns it off; IDs made before stay valid.
+- The Read tab says *Made with your key*, *A short link of yours without a tag* or *Not yours*, and warns about an address that only looks like yours: one or two letters off, look-alike letters or digits (internationalized names too), your host starting a longer one, or your host before an `@`.
+- The limits are in the README: two digits are right by chance 1 time in 100, so this catches casual swaps and is no cryptographic guarantee. Losing the key makes old tags unverifiable, never invalid.
+- Checked: tests pass on Python 3.14 (twice) and 3.11; `--selftest` and `--smoke` pass. The Read tab was driven on a scratch registry with a code of each standing, with screenshots. `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

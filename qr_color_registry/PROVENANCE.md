@@ -48,4 +48,5 @@ committed files named here; the SHA-256 is of each source file at that commit.
 | The US Letter label layout: 30 labels of 2 5/8 × 1 inch | The common 5160 address-label sheet, its published measurements | `sheets.json` |
 | Code kinds: the `WIFI:` format and its escapes (ZXing's barcode contents), `SMSTO:`, vCard 3.0 (RFC 2426), iCalendar `VEVENT` and line folding (RFC 5545), `geo:` (RFC 5870), `mailto:` (RFC 6068), `tel:` (RFC 3966) | The formats, as published | `payloads.py` |
 | The access-log line: Common and Combined Log Format | NCSA HTTPd and Apache HTTP Server documentation | `scans.py` (`LOG_LINE`) |
+| How far apart two hosts are: optimal string alignment, the restricted form of Damerau-Levenshtein distance | F. J. Damerau, *A technique for computer detection and correction of spelling errors*, 1964 | `shortlinks.py` (`letters_apart`) |
 | The Box-Muller transform for the robustness score's grain | G. E. P. Box and M. E. Muller, *A Note on the Generation of Random Normal Deviates*, 1958 | `qr_codec.py` (`add_grain`) |

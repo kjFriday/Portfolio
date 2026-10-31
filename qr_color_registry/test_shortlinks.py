@@ -58,6 +58,64 @@ class IdTests(unittest.TestCase):
                     swapped = code[:place] + code[place + 1] + code[place] + code[place + 2:]
                     self.assertFalse(shortlinks.is_valid_code(swapped), swapped)
 
+    def test_tags_verify_and_the_check_digit_still_holds(self):
+        key = b"k" * 32
+        other = b"j" * 32
+        for attempt in range(40):
+            code = shortlinks.new_code(7, key)
+            self.assertEqual(len(code), 10)
+            self.assertTrue(shortlinks.is_valid_code(code))
+            self.assertTrue(shortlinks.has_valid_tag(code, key))
+        wrong = 0
+        for attempt in range(200):
+            if not shortlinks.has_valid_tag(shortlinks.new_code(7, other), key):
+                wrong = wrong + 1
+        self.assertGreater(wrong, 180)  # another key's tags pass only by chance, about 1 time in 100
+        self.assertFalse(shortlinks.has_valid_tag("5724", None))
+        self.assertFalse(shortlinks.has_valid_tag("123", key))
+        self.assertEqual(shortlinks.id_tag(key, "1234567"), shortlinks.id_tag(key, "1234567"))
+
+    def test_how_an_id_stands(self):
+        key = b"k" * 32
+        tagged = shortlinks.new_code(7, key)
+        body = "1234567"
+        plain = body + shortlinks.check_digit(body)
+        if shortlinks.has_valid_tag(plain, key):
+            plain = "7654321" + shortlinks.check_digit("7654321")  # the 1 in 100
+        typo = tagged[:len(tagged) - 1] + str((int(tagged[len(tagged) - 1]) + 1) % 10)
+        for code, the_key, known, standing in ((tagged, key, True, "tagged"), (tagged, key, False, "tagged"),
+                                               (plain, key, True, "untagged"), (plain, key, False, "foreign"),
+                                               (tagged, None, True, "unverified"), (tagged, None, False, "unknown"),
+                                               (typo, key, True, "foreign"), (typo, None, False, "foreign")):
+            self.assertEqual(shortlinks.code_standing(code, the_key, known), standing, (code, known))
+
+    def test_a_tagged_short_link_is_still_small(self):
+        url = shortlinks.short_url("HTTPS://GO.EXAMPLE.COM/", shortlinks.new_code(7, b"k" * 32))
+        self.assertEqual(qr_codec.choose_mode(url), qr_codec.MODE_ALPHANUMERIC)
+        self.assertEqual(qr_codec.encode_text(url, "M", 1, -1)["value"]["version"], 2)
+        self.assertEqual(qr_codec.encode_text(url, "H", 1, -1)["value"]["version"], 3)
+
+    def test_addresses_that_only_look_like_yours(self):
+        bases = ("HTTP://LOCALHOST:8000/", "HTTPS://GO.EXAMPLE.COM/")
+        for url in ("https://go.exampie.com/12345678", "HTTPS://GO.EXAMPLE.CON/1", "https://go.exmaple.com/1",
+                    "https://go.example.co/1", "https://goo.example.com/1", "https://go.examp1e.com/1",
+                    "https://g0.example.com/1", "https://go.example.com.example.net/1",
+                    "https://go.example.com@example.net/1", "https://GO.EXAMPLE.COM.:443@example.net/1",
+                    "https://g" + chr(0x043E) + ".example.com/1", "https://g" + chr(0x043E) + ".ex" + chr(0x0430) + "mple.com/1",
+                    "https://g" + chr(0x043E) + "." + chr(0x0435) + "x" + chr(0x0430) + "mpl" + chr(0x0435) + ".c" + chr(0x043E) + "m/1",
+                    "https://xn--g-0tb.example.com/1"):
+            self.assertEqual(shortlinks.lookalike(url, bases), "GO.EXAMPLE.COM", url)
+        for url in ("https://go.example.com/12345678", "HTTPS://GO.EXAMPLE.COM/1", "https://go.example.com:443/1",
+                    "https://www.go.example.com/1", "https://shop.example.net/1", "https://example.org/",
+                    "http://localhost:8000/1", "not a link", "https://"):
+            self.assertEqual(shortlinks.lookalike(url, bases), "", url)
+        self.assertEqual(shortlinks.lookalike("http://192.168.1.21:8000/1", ("HTTP://192.168.1.20:8000/",)), "")
+
+    def test_letters_apart(self):
+        for first, second, apart in (("ABC", "ABC", 0), ("ABC", "ABD", 1), ("ABC", "AB", 1), ("ABC", "ACB", 1),
+                                     ("ABCD", "BADC", 2), ("", "AB", 2), ("EXAMPLE", "EXMAPLE", 1)):
+            self.assertEqual(shortlinks.letters_apart(first, second), apart, (first, second))
+
     def test_short_links_fit_qr_alphanumeric_mode(self):
         url = shortlinks.short_url("HTTPS://GO.EXAMPLE.COM/", shortlinks.new_code(7))
         self.assertEqual(qr_codec.choose_mode(url), qr_codec.MODE_ALPHANUMERIC)
@@ -169,6 +227,7 @@ class LinksFileTests(unittest.TestCase):
         self.assertEqual((links["local"]["base"], links["nonlocal"]["base"], links["local"]["export_folder"]),
                          ("HTTP://LOCALHOST:8000/", "HTTPS://GO.EXAMPLE.COM/", ""))
         self.assertEqual((links["id_digits"], links["short_by_default"]), (7, False))
+        self.assertIs(links["tag_ids"], True)
         self.assertEqual((links["tags"], links["templates"]), ({}, {}))
         self.write(json.dumps({"local": "here"}))
         self.assertEqual(len(shortlinks.load_links(self.path)["warnings"]), 1)
@@ -308,4 +367,4 @@ class ServerTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=77a219dd37117453feaa7c8b8500a033a01bd3d756d675283847a3ae72bd8343 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=dfa9886144bd04b16d36bf9d684ba9f7d502f552968dce3c61c546c6dfc14dae ====

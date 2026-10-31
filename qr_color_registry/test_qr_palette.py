@@ -23,6 +23,7 @@ import unittest
 import audit
 import ecp
 import local_inference
+import localkey
 import mcp_server
 import qr_codec
 import qr_palette
@@ -311,6 +312,74 @@ class BatchTests(CoreCase):
         self.assertEqual(seen, [(0, 3), (1, 3)])
         self.assertEqual(made["rows"][2]["reason"], "stopped before this row")
         self.assertTrue(os.path.isfile(made["report"]))
+
+
+class TamperTests(CoreCase):
+    BASE = "HTTPS://GO.EXAMPLE.COM/"
+
+    def made(self, code="", link="https://example.com/menu"):
+        made = qr_palette.make_qr(self.db, link, "#3366cc", "M", self.path("a" + code + ".png"), 4,
+                                  qr_palette.short_request(code, "nonlocal"))
+        self.assertTrue(made["ok"], made["error"])
+        return made["value"]
+
+    def test_new_short_links_are_tagged_when_links_json_says_so(self):
+        code = self.made()["short_code"]
+        self.assertEqual(len(code), 10)
+        key = localkey.read_key(localkey.key_path(self.db))
+        self.assertTrue(shortlinks.has_valid_tag(code, key))
+        saved = qr_palette.LINKS["tag_ids"]
+        qr_palette.LINKS["tag_ids"] = False
+        try:
+            self.assertEqual(len(qr_palette.fresh_code(self.db, 7)), 8)
+        finally:
+            qr_palette.LINKS["tag_ids"] = saved
+
+    def test_a_key_that_cannot_be_made_never_stops_a_code(self):
+        handle = open(localkey.key_path(self.db), "w", encoding="utf-8")
+        handle.write("my own notes")
+        handle.close()
+        code = self.made()["short_code"]
+        self.assertEqual(len(code), 8)
+        self.assertEqual(qr_palette.tamper_verdict(self.db, self.BASE + code)["warning"], False)
+
+    def test_what_the_read_tab_says(self):
+        tagged = self.made()
+        self.assertIn("Made with your key", qr_palette.tamper_verdict(self.db, tagged["link"])["line"])
+        self.assertIn("Made with your key", qr_palette.tamper_verdict(self.db, tagged["link"].lower())["line"])
+        key = localkey.read_key(localkey.key_path(self.db))
+        body = "1234567"
+        while shortlinks.has_valid_tag(body + shortlinks.check_digit(body), key):
+            body = str(int(body) + 1)  # the 1 in 100
+        old = self.made(body + shortlinks.check_digit(body), "https://example.com/old-menu")
+        said = qr_palette.tamper_verdict(self.db, old["link"])
+        self.assertIn("without a tag", said["line"])
+        self.assertFalse(said["warning"])
+        body = str(int(body) + 1)
+        while shortlinks.has_valid_tag(body + shortlinks.check_digit(body), key):
+            body = str(int(body) + 1)
+        stranger = qr_palette.tamper_verdict(self.db, self.BASE + body + shortlinks.check_digit(body))
+        self.assertIn("Not yours", stranger["line"])
+        self.assertTrue(stranger["warning"])
+        wrong_digit = tagged["short_code"][:9] + str((int(tagged["short_code"][9]) + 1) % 10)
+        self.assertTrue(qr_palette.tamper_verdict(self.db, self.BASE + wrong_digit)["warning"])
+        imitation = qr_palette.tamper_verdict(self.db, "https://go.exampie.com/" + tagged["short_code"])
+        self.assertIn("only looks like your GO.EXAMPLE.COM", imitation["line"])
+        self.assertTrue(imitation["warning"])
+        for text in ("https://shop.example.net/1", "WIFI:T:WPA;S:Cafe;P:x;;", self.BASE, "plain words"):
+            self.assertEqual(qr_palette.tamper_verdict(self.db, text), {"line": "", "warning": False}, text)
+
+    def test_losing_the_key_makes_tags_unverifiable_never_invalid(self):
+        tagged = self.made()
+        os.remove(localkey.key_path(self.db))
+        said = qr_palette.tamper_verdict(self.db, tagged["link"])
+        self.assertIn("cannot be checked", said["line"])
+        self.assertFalse(said["warning"])
+        elsewhere = shortlinks.new_code(7, b"k" * 32)
+        said = qr_palette.tamper_verdict(self.db, self.BASE + elsewhere)
+        self.assertIn("cannot be checked", said["line"])
+        self.assertFalse(said["warning"])
+        self.assertTrue(shortlinks.is_valid_code(tagged["short_code"]))
 
 
 class ScheduleTests(CoreCase):
@@ -750,4 +819,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e3bfe615a00d210cc2aeb8e601a43ca6feefe713b35d400d2267ee03b43129c7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=67cda8fcff0cadf4919889a2e1a994c48afdbd7396fa927b8fa535006bb26315 ====

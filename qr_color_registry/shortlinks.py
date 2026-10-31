@@ -10,9 +10,12 @@
 change later without reprinting the code.
 
 A short link is the base address plus an ID, for example HTTPS://GO.EXAMPLE.COM/73491205:
-  * The ID is random digits and one Damm check digit, so a mistyped ID is caught. Digits cannot be
-    misread as letters, and they have no case: static web hosts treat /ABC and /abc as different
-    pages, so a typed fallback with letters breaks when someone types it in lower case.
+  * The ID is random digits, two tag digits and one Damm check digit, so a mistyped ID is caught.
+    Digits cannot be misread as letters, and they have no case: static web hosts treat /ABC and /abc as
+    different pages, so a typed fallback with letters breaks when someone types it in lower case.
+  * The tag is cut from a keyed hash of the random digits (localkey.py), so the Read tab can tell your
+    printed codes from a sticker put over them. Two digits are right by chance 1 time in 100: this
+    catches casual swaps, and is no cryptographic guarantee. IDs without a tag stay valid.
   * The base is in capitals, so the whole address fits QR's alphanumeric mode: a smaller code, or
     more error correction at the same size.
   * The registry keeps ID -> destination. export_pages() writes one small redirect page per ID into
@@ -27,7 +30,7 @@ links.json also holds the ID length, the tags and the link templates, shared by 
 
 Records
   Result     {"ok": bool, "error": str, "value": any}
-  Links      {"about", "local": Section, "nonlocal": Section, "id_digits", "short_by_default",
+  Links      {"about", "local": Section, "nonlocal": Section, "id_digits", "tag_ids", "short_by_default",
               "tags": {name: value}, "templates": {name: pattern}}           links.json, checked
   Section    {"about", "base", "export_folder"}; nonlocal also has "publish": {"kind": "" | "git" | "folder",
              "folder"}, where File > Publish nonlocal pages... writes them (publish.py)
@@ -49,6 +52,7 @@ import secrets
 import threading
 import urllib.parse
 
+import localkey
 import textsafe
 
 # The Damm algorithm's table (H. Michael Damm, 2004): a check digit that catches every single
@@ -71,8 +75,10 @@ DEFAULT_LINKS = {
              "pages are made. There are two sections, local and nonlocal, each with its own base (the address "
              "printed before the ID, in capitals and ending in /) and export_folder (where Export starts; empty "
              "means your home folder). The Make tab switches between them, and settings.json remembers which "
-             "one is in use. id_digits: random digits per ID; one check digit is added. short_by_default: tick "
-             "Short link when the window opens. tags: query parameters added to every destination when the "
+             "one is in use. id_digits: random digits per ID; one check digit is added. tag_ids: add two digits "
+             "cut from a hash under this computer's key, so the Read tab can tell your codes from others. "
+             "short_by_default: tick Short link when the window opens. tags: query parameters added to every "
+             "destination when the "
              "pages are exported; {id} becomes the ID and {hex} the code's color without #. templates: links "
              "you build from fields with From template; {name} is a field you fill in. Edit, save and restart.",
     "local": {
@@ -95,6 +101,7 @@ DEFAULT_LINKS = {
         "publish": {"kind": "", "folder": ""},
     },
     "id_digits": 7,
+    "tag_ids": True,
     "short_by_default": False,
     "tags": {"utm_source": "qr", "utm_medium": "print", "utm_content": "{id}-{hex}"},
     "templates": {
@@ -146,12 +153,124 @@ def is_valid_code(code):
     return damm_interim(code) == 0
 
 
-def new_code(id_digits):
-    """A fresh random ID: `id_digits` random digits and the check digit."""
+def id_tag(key, body):
+    """The two tag digits of an ID's random digits, under the local key."""
+    return "%02d" % (int(localkey.tag(key, "id", body), 16) % 100)
+
+
+def new_code(id_digits, key=None):
+    """A fresh random ID: `id_digits` random digits, with a key their two tag digits, and the check digit."""
     body = ""
     for index in range(id_digits):
         body = body + str(secrets.randbelow(10))
+    if key is not None:
+        body = body + id_tag(key, body)
     return body + check_digit(body)
+
+
+def has_valid_tag(code, key):
+    """True when an ID's two digits before its check digit are the tag of the digits before them. One
+    ID in 100 that was never tagged passes by chance."""
+    if key is None or not is_valid_code(code) or len(code) < 4:
+        return False
+    return id_tag(key, code[:len(code) - 3]) == code[len(code) - 3:len(code) - 1]
+
+
+def code_standing(code, key, known):
+    """How an ID on one of your addresses stands -> "tagged" (made with your key), "untagged" (a short
+    link in your registry without a tag: made before tags, or with another key), "unverified" (in your
+    registry, with no key here to check it), "unknown" (not in this registry, with no key here to check
+    it), or "foreign" (not in this registry, and its tag or its check digit is wrong). `known`: it is in
+    this registry. Losing the key makes a tag unverifiable, never invalid."""
+    if not is_valid_code(code):
+        return "foreign"
+    if has_valid_tag(code, key):
+        return "tagged"
+    if known:
+        if key is None:
+            return "unverified"
+        return "untagged"
+    if key is None:
+        return "unknown"
+    return "foreign"
+
+
+# --- Addresses that only look like yours --------------------------------------------------------------
+
+# Letters of other alphabets that look like Latin capitals, and digits that look like letters. Written as
+# code points: such characters are never written literally in this source.
+LOOKS_LIKE = {0x0410: "A", 0x0430: "A", 0x0412: "B", 0x0421: "C", 0x0441: "C", 0x0415: "E", 0x0435: "E", 0x041D: "H",
+              0x0406: "I", 0x0456: "I", 0x0408: "J", 0x0458: "J", 0x041A: "K", 0x041C: "M", 0x041E: "O", 0x043E: "O",
+              0x0420: "P", 0x0440: "P", 0x0405: "S", 0x0455: "S", 0x0422: "T", 0x0423: "Y", 0x0443: "Y", 0x0425: "X",
+              0x0445: "X", 0x0391: "A", 0x0392: "B", 0x0395: "E", 0x0397: "H", 0x0399: "I", 0x039A: "K", 0x039C: "M",
+              0x039D: "N", 0x039F: "O", 0x03BF: "O", 0x03A1: "P", 0x03A4: "T", 0x03A5: "Y", 0x03A7: "X",
+              ord("0"): "O", ord("1"): "I", ord("L"): "I", ord("5"): "S"}
+MIN_LOOKALIKE_HOST = 5
+
+
+def plain_host(host):
+    """A host in capitals, its xn-- labels (internationalized names) read back into their letters."""
+    if "xn--" in host.lower():
+        try:
+            host = host.lower().encode("ascii").decode("idna")
+        except UnicodeError:
+            pass
+    return host.upper()
+
+
+def skeleton(host):
+    """A host with every character that looks like another replaced by that one."""
+    kept = []
+    for character in host:
+        kept.append(LOOKS_LIKE.get(ord(character), character))
+    return "".join(kept)
+
+
+def letters_apart(first, second):
+    """How many letters apart two texts are: changed, added, removed, or two neighbours swapped."""
+    previous = None
+    row = list(range(len(second) + 1))
+    for i in range(1, len(first) + 1):
+        before = previous
+        previous = row
+        row = [i] + [0] * len(second)
+        for j in range(1, len(second) + 1):
+            cost = 0 if first[i - 1] == second[j - 1] else 1
+            row[j] = min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + cost)
+            if i > 1 and j > 1 and first[i - 1] == second[j - 2] and first[i - 2] == second[j - 1]:
+                row[j] = min(row[j], before[j - 2] + 1)
+    return row[len(second)]
+
+
+def lookalike(url, bases):
+    """The base host a link's host imitates, without being it -> that host, or "". Imitating is one or two
+    letters off, letters from another alphabet or digits that look the same, your host as the start of
+    a longer one (GO.EXAMPLE.COM.EXAMPLE.NET), or your host put before an @, where it means nothing."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = plain_host(parts.hostname or "").rstrip(".")
+        user = (parts.username or "").upper().rstrip(".")
+    except ValueError:
+        return ""
+    if host == "":
+        return ""
+    for base in bases:
+        theirs = host_of(base).split(":")[0]
+        if host == theirs or len(theirs) < MIN_LOOKALIKE_HOST or is_ip_address(theirs):
+            continue
+        if user == theirs or host.startswith(theirs + "."):
+            return theirs
+        if letters_apart(host, theirs) <= 2 or skeleton(host) == skeleton(theirs):
+            return theirs
+    return ""
+
+
+def is_ip_address(host):
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def short_url(base, code):
@@ -369,6 +488,11 @@ def load_links(path):
             links["id_digits"] = digits
         else:
             warnings.append("links: id_digits must be a whole number from 4 to 12")
+    if "tag_ids" in data:
+        if isinstance(data["tag_ids"], bool):
+            links["tag_ids"] = data["tag_ids"]
+        else:
+            warnings.append("links: tag_ids must be true or false")
     if "short_by_default" in data:
         if isinstance(data["short_by_default"], bool):
             links["short_by_default"] = data["short_by_default"]
@@ -585,4 +709,4 @@ def stop_server(running):
     running["server"].server_close()
     running["thread"].join(5)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ff262e4e41650aaebed6979c15fc8ca1826cdfe10feebda9bef7c44e63943ec3 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=2032d1a462b20f304baef0f5127f14a109a5cb07b6a343e1e3a14fab757b2290 ====

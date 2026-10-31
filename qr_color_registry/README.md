@@ -32,7 +32,7 @@ redirect pages of the short-link section in use (or `--section local|nonlocal`) 
 | Tab | What |
 |---|---|
 | Make | Choose a **Kind** (a web link, or see "More kinds of code" below). Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. *Print size…* says how wide to print it for a scanning distance, *Test robustness* how much wear it survives, and *Logo…* puts a small picture in its middle (see below). |
-| Read | Open or paste a picture of a QR code. It shows the text, the color it detects, and the codes in the registry that hold the same text. *Register this picture…* adds a PNG or SVG made elsewhere, in the color you confirm. |
+| Read | Open or paste a picture of a QR code. It shows the text, the kind of code, the color it detects, whether it looks like one of yours (see "Is this code yours?"), and the codes in the registry that hold the same text. *Register this picture…* adds a PNG or SVG made elsewhere, in the color you confirm. |
 | Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), *Forget record* removes them from the registry (the files stay), and *Print sheet…* lays them out on labels or posters (see below). *History…* shows where a short link has gone, and schedules where it goes next. The **Scans** column shows a short link's scans, in all and in the last 30 days. The **Ask** row asks in plain English through a local model you pick. |
 
 *File → Import votes from Color Voats…* brings in Color Voats' votes, with the newer vote winning for each color, so
@@ -173,8 +173,9 @@ With **Short link** ticked, the code holds a short address such as `HTTPS://GO.E
 the link itself, and that address is printed under the code for anyone whose camera cannot scan it.
 - **Smaller codes.** The address is all capitals and digits, which QR codes store in their compact
   alphanumeric mode: `https://shop.example.com/hours` needs a 29×29 code at level M, the short address 25×25.
-- **IDs you can type.** Seven random digits and a check digit (the Damm algorithm), so a mistyped ID is caught.
-  Digits have no upper or lower case, which web hosts would treat as different pages.
+- **IDs you can type.** Seven random digits, two tag digits (see "Is this code yours?") and a check digit (the Damm
+  algorithm), so a mistyped ID is caught. Digits have no upper or lower case, which web hosts would treat as different
+  pages. IDs made before tags have eight digits, and stay valid.
 - **One ID per link and color.** A PNG and an SVG of the same code share their ID; the same link in another
   color gets its own, so scans can be told apart by color.
 - **Change destinations without reprinting.** *Change destination…* in Find sends a short link somewhere else.
@@ -227,6 +228,23 @@ as `links.use`. The Find tab marks each short link local or nonlocal.
   `….LOCAL`) is refused with a warning, so printed codes never point at your own network by mistake. Use a domain
   or subdomain you control and will keep: every printed code depends on it, and whoever owned a lapsed domain could
   send your codes anywhere. `GO.EXAMPLE.COM` is only a placeholder, and the window says so.
+
+### Is this code yours?
+
+A sticker put over a printed code can send people anywhere. The Read tab helps you check a code you find:
+
+| It says | Which means |
+|---|---|
+| *Made with your key* | its ID's two tag digits match this computer's key |
+| *A short link of yours without a tag* | it is in your registry, but was made before tags, or with another key |
+| *Not yours* (in red) | it is on your address, but it is not in this registry and its tag or check digit is wrong |
+| *Careful: this address only looks like your …* (in red) | its host is one or two letters off yours, uses look-alike letters or digits, or starts with your host and goes on (`GO.EXAMPLE.COM.EXAMPLE.NET`), or puts your host before an `@` |
+
+- **The limits:** two digits are right by chance 1 time in 100. This catches casual swaps; it is not a cryptographic
+  guarantee. An address of someone else's entirely says nothing here: only the Read tab's text tells you where it goes.
+- **The key** is `qr_palette.key` beside the registry (see "More kinds of code"), never in `settings.json` or the
+  registry. Losing it makes old tags unverifiable, never invalid: the codes keep working, and the window says it cannot tell.
+- **Turning it off:** `tag_ids` in `links.json`. IDs are then eight digits again.
 
 ### Publishing the nonlocal pages
 
@@ -288,7 +306,7 @@ other programs that read the older tables and columns, such as Data Bridge, read
 The registry holds data only; every setting is in `settings.json` (below).
 - **Pictures:** saved where you choose, by default in your Pictures folder under `QR Palette`. If Windows keeps
   Pictures in OneDrive, OneDrive syncs them.
-- **Uninstalling:** removes the registry, `settings.json` and the audit log, but never the pictures.
+- **Uninstalling:** removes the registry, `settings.json`, `qr_palette.key` and the audit log, but never the pictures.
 - **ECP:** opens the registry read-only, behind an allow-list of tables, columns and functions, with SQLite's
   hardening settings and a time limit ([ECP.md](ECP.md) §10). Only the window writes.
 
@@ -305,7 +323,7 @@ section. *File → Open settings.json* opens yours.
 | `qr_palette.key` | Not a setting: a secret beside the registry, made on first need (see "More kinds of code"). It is never in `settings.json` or the registry. |
 | `sheets.json` | The layouts of *Print sheet…*: page, margins, columns, rows, cell, gutter and label, in millimetres. Read each time you print. |
 | `planner.json` | How a question in plain English becomes a query plan: what the local model is told, the worked examples it is shown, the words for color families ("navy" is blue), the words that name a section of short links or ask for short links, and the filler words taken off the ends of links and paths. `settings.json` can point to your own copy. A copy written before `section` and `short` existed still works. |
-| `links.json` | Short links: two sections, `local` and `nonlocal`, each with a base address (in capitals, ending in `/`) and the folder its exports start in; and, for both, the number of random digits per ID (4-12, default 7), whether **Short link** starts ticked, the tags added to destinations (`{id}` and `{hex}` are filled in) and the link templates (`{name}` is a field). `settings.json` can point to your own copy. |
+| `links.json` | Short links: two sections, `local` and `nonlocal`, each with a base address (in capitals, ending in `/`) and the folder its exports start in, and for `nonlocal` where to publish; and, for both, the number of random digits per ID (4-12, default 7), whether IDs carry tag digits (`tag_ids`), whether **Short link** starts ticked, the tags added to destinations (`{id}` and `{hex}` are filled in) and the link templates (`{name}` is a field). `settings.json` can point to your own copy. |
 
 `settings.json`, section by section:
 
@@ -319,6 +337,7 @@ section. *File → Open settings.json* opens yours.
 | `colors.minimum_contrast` | `3.0` | contrast against white a color needs to be offered (4.5 keeps 77 colors) |
 | `colors.near_distance` | `0.08` | how close in OKLab counts as "near" a color |
 | `colors.rankings_folder` | `""` | the folder holding `presets/` and `weights/`; empty means beside the program |
+| `colors.scans_vote` | `false` | let imported scans count in rankings that use the `scans` algo (the `scans` preset, or your own) |
 | `inference.url` | `"http://127.0.0.1:11434"` | the local model server; loopback only |
 | `inference.model` | `""` | the default model for queries that name none, and the one the window selects at start |
 | `inference.require_cloud_disabled` | `true` | refuse to plan unless Ollama reports its cloud features off (`OLLAMA_NO_CLOUD=1`) |

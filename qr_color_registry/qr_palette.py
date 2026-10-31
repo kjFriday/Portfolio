@@ -21,10 +21,16 @@ come in two sections, switched in the Make tab: local (this computer or your own
 trying codes) and nonlocal (your internet address, for printing). The window exports each
 section's redirect pages for a web server to serve.
 
+A code can also hold a Wi-Fi network, a contact card, a calendar event and more (payloads.py), with a
+logo in its middle. Whole print runs come from a list; label sheets and posters come from sheets.py. The
+registry keeps each short link's history, scheduled changes and scan counts (scans.py), publish.py puts
+the redirect pages where a web host serves them, and tag digits under a local key (localkey.py) tell
+your printed codes from others.
+
 Everything a user may change is plain, human-readable JSON: settings.json (in the program's data
 folder, written with every setting and its default on the first run), presets/ and weights/ (how
-colors are ranked), planner.json (how questions become query plans) and links.json (short links).
-The options below override settings.json for one run.
+colors are ranked), planner.json (how questions become query plans), links.json (short links) and
+sheets.json (print sheets). The options below override settings.json for one run.
 
 Standard library only, written to port easily like QR Studio and Color Voats: plain functions and
 records, explicit loops, failures as Result records, and a CORE that never touches the GUI.
@@ -34,8 +40,8 @@ Records
   Made     {"id": int, "path": str, "link": str, "color": "#rrggbb", "version": int, "level": str,
             "short_code": str, "target": str}            link is what the code holds; "" when not short
   Picture  {"reading": Reading, "format": "png" | "svg" | "other", "color": "#rrggbb", "image": Image or None}
-  Shown    {"id", "link", "hex", "name", "family", "path", "exists", "ec_level", "version",
-            "short_code", "target"}                                                   a result row
+  Shown    {"id", "link", "hex", "name", "family", "path", "exists", "ec_level", "version", "short_code",
+            "target", "scans": registry's ScanCount or None, "has_logo": bool}        a result row
   BatchRow {"row": its row in the file, "link", "color", "label", "file", "problem": "" when it can be made}
   BatchReport {"made": int, "skipped": int, "report": path of its CSV, "stopped": bool, "rows": one dict per
             row, the columns of BATCH_COLUMNS}
@@ -282,6 +288,17 @@ def short_request(code, section):
     return {"base": LINKS[section]["base"], "digits": LINKS["id_digits"], "code": code, "section": section}
 
 
+def fresh_code(db_path, digits):
+    """A new short-link ID, tagged when links.json says so and the registry's key can be had; an ID without
+    a tag works just the same, so a key that cannot be made never stops a code being made."""
+    key = None
+    if LINKS["tag_ids"]:
+        found = localkey.key_for(db_path)
+        if found["ok"]:
+            key = found["value"]
+    return shortlinks.new_code(digits, key)
+
+
 def plan_short_link(db_path, target, color, short):
     """The short link a code for `target` in `color` prints -> Result {"code", "url", "made": bool}:
     the one already made on short["base"] for this destination in this color, else a new one there
@@ -297,7 +314,7 @@ def plan_short_link(db_path, target, color, short):
             tries = tries + 1
             if tries > 50:
                 return fail("cannot find a free short-link ID; raise id_digits in links.json")
-            code = shortlinks.new_code(short["digits"])
+            code = fresh_code(db_path, short["digits"])
         return ok_result({"code": code, "url": shortlinks.short_url(short["base"], code), "made": False})
 
     return with_registry(db_path, plan)
@@ -535,6 +552,52 @@ def publish_now(db_path, day=""):
         return rows
     target = LINKS["nonlocal"]["publish"]
     return publish.publish(target["folder"], target["kind"], rows["value"], LINKS["nonlocal"]["base"], LINKS["tags"])
+
+
+def tamper_verdict(db_path, text):
+    """What the Read tab says about a scanned link -> {"line": str, "warning": bool}, "" for a link that
+    has nothing to do with your addresses. A warning is for an address that only looks like yours, or
+    an ID on your address that is not yours. Limits: two tag digits are right by chance 1 time in 100."""
+    verdict = {"line": "", "warning": False}
+    if not qr_codec.is_link(text):
+        return verdict
+    bases = (LINKS["local"]["base"], LINKS["nonlocal"]["base"])
+    imitated = shortlinks.lookalike(text, bases)
+    if imitated != "":
+        verdict["line"] = ("Careful: this address only looks like your " + imitated + ". It goes somewhere else, "
+                           "so it may be a sticker over your code.")
+        verdict["warning"] = True
+        return verdict
+    lifted = text.upper()
+    section = ""
+    for name in shortlinks.SECTIONS:
+        if lifted.startswith(LINKS[name]["base"]):
+            section = name
+    if section == "":
+        return verdict
+    code = text.split("?")[0].rstrip("/").split("/")[-1]
+    if not code.isdigit() or not code.isascii():
+        return verdict
+
+    def read(connection):
+        return ok_result(registry.code_taken(connection, code))
+
+    known = with_registry(db_path, read)
+    standing = shortlinks.code_standing(code, localkey.read_key(localkey.key_path(db_path)), known["ok"] and known["value"])
+    if standing == "tagged":
+        verdict["line"] = "Made with your key: short link " + code + " (" + section + ")."
+    elif standing == "untagged":
+        verdict["line"] = ("A short link of yours without a tag (" + section + "): made before tags, or with another "
+                           "key.")
+    elif standing == "unverified":
+        verdict["line"] = "A short link in your registry (" + section + "). Its tag cannot be checked: no key here."
+    elif standing == "unknown":
+        verdict["line"] = "On your address, but not in this registry, and its tag cannot be checked: no key here."
+    else:
+        verdict["line"] = ("Not yours: this ID is on your address (" + section + "), but it is not in this registry and "
+                           "its tag or check digit is wrong. It may be a sticker over your code.")
+        verdict["warning"] = True
+    return verdict
 
 
 def short_note(shown):
@@ -1213,6 +1276,12 @@ def selftest():
         code = local["value"]["short_code"]
         retarget_link(db_path, code, "https://example.com/later-still")
         schedule_link_change(db_path, code, "https://example.com/next-year", "2099-01-01")
+        tagged = fresh_code(db_path, 7)
+        key = localkey.read_key(localkey.key_path(db_path))
+        check(shortlinks.is_valid_code(tagged) and shortlinks.has_valid_tag(tagged, key) and
+              tamper_verdict(db_path, local["value"]["link"])["warning"] is False and
+              tamper_verdict(db_path, "https://go.exampie.com/1")["warning"],
+              "new IDs carry a tag under the local key, and an address that only looks like yours is called out", failures)
         undone = undo_link_change(db_path, code)
         known = link_history(db_path, code)
         check(undone["ok"] and undone["value"] == "https://example.com/later" and known["ok"] and
@@ -2269,7 +2338,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 make_info.set(checked["error"] + ".")
                 return
             if state["short_candidate"] == "":
-                state["short_candidate"] = shortlinks.new_code(LINKS["id_digits"])
+                state["short_candidate"] = fresh_code(db_path, LINKS["id_digits"])
             section = section_choice.get()
             planned = plan_short_link(db_path, checked["value"], color, short_request(state["short_candidate"], section))
             if not planned["ok"]:
@@ -2419,7 +2488,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         short = None
         if code_kind == "link" and short_choice.get():
             if state["short_candidate"] == "":
-                state["short_candidate"] = shortlinks.new_code(LINKS["id_digits"])
+                state["short_candidate"] = fresh_code(db_path, LINKS["id_digits"])
             short = short_request(state["short_candidate"], section_choice.get())
         logo = state["logo"]
 
@@ -2555,6 +2624,9 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     detected_swatch.pack(side="left")
     detected_text = tk.StringVar(value="")
     ttk.Label(detected_row, textvariable=detected_text).pack(side="left", padx=6)
+    verdict_text = tk.StringVar(value="")
+    verdict_label = ttk.Label(read_side, textvariable=verdict_text, wraplength=520, justify="left")
+    verdict_label.pack(anchor="w", pady=(4, 0))
     ttk.Label(read_side, text="In the registry").pack(anchor="w", pady=(10, 0))
     read_table = ttk.Treeview(read_side, columns=("hex", "path"), show="tree headings", height=6)
     read_table.heading("#0", text="Color")
@@ -2571,6 +2643,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         picture_canvas.delete("all")
         detected_swatch.delete("all")
         detected_text.set("")
+        verdict_text.set("")
         read_text.delete("1.0", "end")
         for item in read_table.get_children():
             read_table.delete(item)
@@ -2588,6 +2661,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                          (" Kind: " + payloads.TITLES[kind] + "." if kind not in ("", "link") else ""))
         detected_swatch.create_rectangle(0, 0, 24, 24, fill=picture["color"], outline="")
         detected_text.set("detected ≈ " + picture["color"] + " (" + swatch.color_name(picture["color"]) + ")")
+        verdict_text.set(outcome["value"]["verdict"]["line"])
+        verdict_label.config(foreground="#b00020" if outcome["value"]["verdict"]["warning"] else "")
         png = preview_png(reading["text"], picture["color"], reading["level"], reading["version"])
         photo = None
         if picture["format"] != "svg" and state["picture_path"].lower().endswith((".png", ".gif")):
@@ -2635,7 +2710,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             matches = matches_for_text(db_path, picture["value"]["reading"]["text"], own_path)
             if not matches["ok"]:
                 return matches
-            return ok_result({"picture": picture["value"], "matches": matches["value"]})
+            return ok_result({"picture": picture["value"], "matches": matches["value"],
+                              "verdict": tamper_verdict(db_path, picture["value"]["reading"]["text"])})
 
         start_job("Reading " + source, work, show_reading)
 
@@ -3608,4 +3684,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=eca3f9a64758c0526cd6eef7567c1d8359a78f2754ec19fe6a2c14a6b2cb283e ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=9955a94ec1a11cccd4f03da4a3d034cc7728fd2ed0827271fcef9036084223fe ====

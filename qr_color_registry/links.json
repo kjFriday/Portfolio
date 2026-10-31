@@ -1,5 +1,5 @@
 {
-  "about": "Short links: what QR Palette prints in a code when Short link is ticked, and how the redirect pages are made. There are two sections, local and nonlocal, each with its own base (the address printed before the ID, in capitals and ending in /) and export_folder (where Export starts; empty means your home folder). The Make tab switches between them, and settings.json remembers which one is in use. id_digits: random digits per ID; one check digit is added. short_by_default: tick Short link when the window opens. tags: query parameters added to every destination when the pages are exported; {id} becomes the ID and {hex} the code's color without #. templates: links you build from fields with From template; {name} is a field you fill in. Edit, save and restart.",
+  "about": "Short links: what QR Palette prints in a code when Short link is ticked, and how the redirect pages are made. There are two sections, local and nonlocal, each with its own base (the address printed before the ID, in capitals and ending in /) and export_folder (where Export starts; empty means your home folder). The Make tab switches between them, and settings.json remembers which one is in use. id_digits: random digits per ID; one check digit is added. tag_ids: add two digits cut from a hash under this computer's key, so the Read tab can tell your codes from others. short_by_default: tick Short link when the window opens. tags: query parameters added to every destination when the pages are exported; {id} becomes the ID and {hex} the code's color without #. templates: links you build from fields with From template; {name} is a field you fill in. Edit, save and restart.",
   "local": {
     "about": "Short links that work on this computer or your own network, for trying codes before you have a domain. Export the local pages and serve that folder from this computer (README.md shows the command). LOCALHOST works in this computer's own browser; for phones on the same Wi-Fi, put this computer's network address instead, such as HTTP://192.168.1.20:8000/.",
     "base": "HTTP://LOCALHOST:8000/",
@@ -15,6 +15,7 @@
     }
   },
   "id_digits": 7,
+  "tag_ids": true,
   "short_by_default": false,
   "tags": {
     "utm_source": "qr",

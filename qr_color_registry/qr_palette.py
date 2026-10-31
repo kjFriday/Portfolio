@@ -75,6 +75,7 @@ import local_inference
 import localkey
 import mcp_server
 import payloads
+import publish
 import qr_codec
 import registry
 import scans
@@ -501,6 +502,37 @@ def export_redirects(db_path, folder, section, day=""):
     finally:
         registry.close(opened["value"])
     return shortlinks.export_pages(folder, rows, LINKS[section]["base"], LINKS["tags"])
+
+
+def publish_rows(db_path, day):
+    """The short links as they should be published on `day` ("" for today) -> Result [ShortLink]."""
+    opened = registry.connect(db_path, True)
+    if not opened["ok"]:
+        return opened
+    try:
+        return ok_result(registry.short_links_on(opened["value"], day or registry.today_text()))
+    except Exception as error:
+        return fail("cannot read the short links: " + str(error))
+    finally:
+        registry.close(opened["value"])
+
+
+def publish_plan(db_path, day=""):
+    """What publishing the nonlocal pages would change, with nothing touched -> Result publish.Changes."""
+    rows = publish_rows(db_path, day)
+    if not rows["ok"]:
+        return rows
+    target = LINKS["nonlocal"]["publish"]
+    return publish.plan_pages(target["folder"], target["kind"], rows["value"], LINKS["nonlocal"]["base"], LINKS["tags"])
+
+
+def publish_now(db_path, day=""):
+    """Publish the nonlocal pages where links.json says -> Result of publish.publish."""
+    rows = publish_rows(db_path, day)
+    if not rows["ok"]:
+        return rows
+    target = LINKS["nonlocal"]["publish"]
+    return publish.publish(target["folder"], target["kind"], rows["value"], LINKS["nonlocal"]["base"], LINKS["tags"])
 
 
 def short_note(shown):
@@ -1167,6 +1199,12 @@ def selftest():
         check(undone["ok"] and undone["value"] == "https://example.com/later" and known["ok"] and
               len(known["value"]["changes"]) == 2 and len(known["value"]["coming"]) == 1,
               "a short link keeps its history, undoes a change and schedules another", failures)
+        outbox = os.path.join(folder, "synced")
+        planned = publish.plan_pages(outbox, "folder", [{"code": code, "url": "HTTPS://GO.EXAMPLE.SHOP/" + code,
+                                                         "target": "https://example.com/a", "hex": "#006633"}],
+                                     "HTTPS://GO.EXAMPLE.SHOP/", {})
+        check(planned["ok"] and code + "/index.html" in planned["value"]["added"] and not os.path.exists(outbox),
+              "publishing says what would change first, with nothing touched", failures)
         report = os.path.join(folder, "report.csv")
         handle = open(report, "w", encoding="utf-8")
         handle.write("date,utm_content,count\n2026-10-28," + code + "-006633,5\n")
@@ -1871,6 +1909,66 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         stop_button.pack(side="left", padx=6)
         ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left")
 
+    def publish_pages():
+        """Publish the nonlocal pages: first what would change, with nothing touched; then, if the person
+        says so, write them, and for a Git folder commit and push."""
+        target = LINKS["nonlocal"]["publish"]
+        if target["kind"] == "":
+            messagebox.showinfo("Publish nonlocal pages", "Say where to publish first: nonlocal.publish in links.json. "
+                                "Its kind is git (a folder in a Git repository, such as one GitHub Pages serves) or "
+                                "folder (a folder something else syncs), and its folder is where. README.md shows how.")
+            return
+
+        def planned(outcome):
+            if not outcome["ok"]:
+                status.set("Nothing published")
+                messagebox.showerror("Publish nonlocal pages", outcome["error"])
+                return
+            value = outcome["value"]
+            total = len(value["added"]) + len(value["changed"]) + len(value["removed"])
+            if total == 0:
+                status.set("Nothing to publish: " + target["folder"] + " already has these pages")
+                return
+            lines = [str(len(value["added"])) + " page(s) to add, " + str(len(value["changed"])) + " to change, " +
+                     str(len(value["removed"])) + " to remove, in\n" + target["folder"]]
+            for word, paths in (("add", value["added"]), ("change", value["changed"]), ("remove", value["removed"])):
+                for path in paths[:5]:
+                    lines.append(word + "  " + path)
+            if total > 15:
+                lines.append("…")
+            if len(value["skipped"]) > 0:
+                lines.append(str(len(value["skipped"])) + " short link(s) on other addresses are left out.")
+            ask = "Write these pages there?"
+            if target["kind"] == "git":
+                ask = "Commit them and push the branch? (Never forced.)"
+            if not messagebox.askyesno("Publish nonlocal pages", "\n".join(lines) + "\n\n" + ask):
+                status.set("Nothing published")
+                return
+            start_job("Publishing the pages", lambda: publish_now(db_path), published)
+
+        def published(outcome):
+            if not outcome["ok"]:
+                status.set("Not published")
+                messagebox.showerror("Publish nonlocal pages", outcome["error"])
+                return
+            value = outcome["value"]
+            changes = value["changes"]
+            message = (str(len(changes["added"])) + " page(s) added, " + str(len(changes["changed"])) + " changed, " +
+                       str(len(changes["removed"])) + " removed in " + target["folder"])
+            if target["kind"] == "git":
+                if value["commit"] == "":
+                    message = message + "; Git saw nothing new to commit"
+                elif value["pushed"]:
+                    message = message + "; committed " + value["commit"] + " and pushed"
+                else:
+                    message = message + "; committed " + value["commit"] + " but not pushed"
+                    messagebox.showerror("Publish nonlocal pages", "The pages are committed (" + value["commit"] +
+                                         ") but the push failed:\n\n" + value["push_error"] +
+                                         "\n\nPush that folder with your Git client.")
+            status.set(message)
+
+        start_job("Checking what would change", lambda: publish_plan(db_path), planned)
+
     def import_scans_file():
         """Scan counts from an analytics report or a server log. Only counts are kept."""
         path = filedialog.askopenfilename(title="An analytics report or a server log",
@@ -1903,6 +2001,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     file_menu.add_command(label="Import votes from Color Voats…", command=import_votes)
     file_menu.add_command(label="Export local redirect pages…", command=lambda: export_pages("local"))
     file_menu.add_command(label="Export nonlocal redirect pages…", command=lambda: export_pages("nonlocal"))
+    file_menu.add_command(label="Publish nonlocal pages…", command=publish_pages)
     file_menu.add_command(label="Serve local pages", command=serve_pages)
     state["serve_index"] = file_menu.index("end")
     file_menu.add_separator()
@@ -3476,4 +3575,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=3c208430c113c3d2fd2a556ae4255493cef77228ad7ceee3be8f7d59d1662ef9 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=8f71ec75e58ccb2f05c8d1b5a34a07e47c14b7ba254e5f0672dd2dafd923a3e7 ====

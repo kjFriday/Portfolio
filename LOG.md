@@ -320,6 +320,13 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
   - No code of these kinds has been scanned with a phone yet: reading them back is the decoder's word, not a phone's.
   - `stamp.py --check` is clean.
 
+**qr_color_registry** (one-click publishing)
+- *File → Publish nonlocal pages…* (`publish.py`): `links.json`'s `nonlocal.publish` names a folder in a Git repository (with `CNAME` and `.nojekyll`, committed and pushed) or a folder something else syncs.
+  - It first exports into a temporary folder and compares, so it can show the pages it would add, change and remove with nothing touched, and ask.
+  - Only this program's pages are touched: an ID-named folder's `index.html`, and the top-level pages. A commit holds only those paths, even when other work is staged in that repository.
+  - A push is never forced, and Git never waits for a password here. A failed push keeps the commit and repeats what Git said.
+- Checked: tests pass on Python 3.14 (twice) and 3.11, in temporary repositories, with pushes only to a bare repository in the same temporary folder, including a rejected one. `--selftest` and `--smoke` pass. The window was driven through a publish to such a repository. No real remote was pushed to: this computer has no Git Credential Manager right now, so a real push from here would fail and say so. `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

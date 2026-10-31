@@ -29,7 +29,8 @@ Records
   Result     {"ok": bool, "error": str, "value": any}
   Links      {"about", "local": Section, "nonlocal": Section, "id_digits", "short_by_default",
               "tags": {name: value}, "templates": {name: pattern}}           links.json, checked
-  Section    {"about", "base", "export_folder"}
+  Section    {"about", "base", "export_folder"}; nonlocal also has "publish": {"kind": "" | "git" | "folder",
+             "folder"}, where File > Publish nonlocal pages... writes them (publish.py)
   ShortLink  {"code", "url", "target", "hex", ...}               one short link from the registry
   Server     {"server", "thread", "address", "port", "folder", "base"}    the local pages, served
 
@@ -85,9 +86,13 @@ DEFAULT_LINKS = {
     "nonlocal": {
         "about": "Short links for codes you print for everyone: an internet address on a domain or subdomain "
                  "of your own, which will serve the exported nonlocal pages. GO.EXAMPLE.COM is only a "
-                 "placeholder. Pick a domain you will keep: every printed code depends on it.",
+                 "placeholder. Pick a domain you will keep: every printed code depends on it. publish: where File > "
+                 "Publish nonlocal pages writes them, after showing what would change and asking. kind git: folder "
+                 "is in a Git repository (GitHub Pages, say); the pages, CNAME and .nojekyll are committed and "
+                 "pushed, never forced. kind folder: a folder something else syncs. Empty kind: not set up.",
         "base": "HTTPS://GO.EXAMPLE.COM/",
         "export_folder": "",
+        "publish": {"kind": "", "folder": ""},
     },
     "id_digits": 7,
     "short_by_default": False,
@@ -308,6 +313,8 @@ def copy_links(links):
             inner = {}
             for name in value:
                 inner[name] = value[name]
+                if isinstance(value[name], dict):
+                    inner[name] = dict(value[name])
             value = inner
         copied[key] = value
     return copied
@@ -332,6 +339,13 @@ def read_section(links, data, section, warnings):
             links[section]["export_folder"] = expand(found["export_folder"])
         else:
             warnings.append("links: " + section + ".export_folder must be text")
+    if section == "nonlocal" and "publish" in found:
+        publish = found["publish"]
+        if (isinstance(publish, dict) and publish.get("kind", "") in ("", "git", "folder") and
+                isinstance(publish.get("folder", ""), str)):
+            links[section]["publish"] = {"kind": publish.get("kind", ""), "folder": expand(publish.get("folder", ""))}
+        else:
+            warnings.append('links: nonlocal.publish must be {"kind": "git" or "folder", "folder": a folder}')
 
 
 def load_links(path):
@@ -571,4 +585,4 @@ def stop_server(running):
     running["server"].server_close()
     running["thread"].join(5)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=7f06570e4d3f38be064617cb6690640ec9975c9ddcb7dcb093e59511a2145c35 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ff262e4e41650aaebed6979c15fc8ca1826cdfe10feebda9bef7c44e63943ec3 ====

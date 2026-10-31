@@ -6,9 +6,13 @@
     "export_folder": ""
   },
   "nonlocal": {
-    "about": "Short links for codes you print for everyone: an internet address on a domain or subdomain of your own, which will serve the exported nonlocal pages. GO.EXAMPLE.COM is only a placeholder. Pick a domain you will keep: every printed code depends on it.",
+    "about": "Short links for codes you print for everyone: an internet address on a domain or subdomain of your own, which will serve the exported nonlocal pages. GO.EXAMPLE.COM is only a placeholder. Pick a domain you will keep: every printed code depends on it. publish: where File > Publish nonlocal pages writes them, after showing what would change and asking. kind git: folder is in a Git repository (GitHub Pages, say); the pages, CNAME and .nojekyll are committed and pushed, never forced. kind folder: a folder something else syncs. Empty kind: not set up.",
     "base": "HTTPS://GO.EXAMPLE.COM/",
-    "export_folder": ""
+    "export_folder": "",
+    "publish": {
+      "kind": "",
+      "folder": ""
+    }
   },
   "id_digits": 7,
   "short_by_default": false,

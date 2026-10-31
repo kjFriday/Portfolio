@@ -36,8 +36,8 @@ redirect pages of the short-link section in use (or `--section local|nonlocal`) 
 | Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), *Forget record* removes them from the registry (the files stay), and *Print sheet…* lays them out on labels or posters (see below). *History…* shows where a short link has gone, and schedules where it goes next. The **Scans** column shows a short link's scans, in all and in the last 30 days. The **Ask** row asks in plain English through a local model you pick. |
 
 *File → Import votes from Color Voats…* brings in Color Voats' votes, with the newer vote winning for each color, so
-importing again changes nothing. The rest of the File menu: *Make from a list…* and *Import scans…* (below), exporting
-and serving the redirect pages (below), *Back up the registry…*, *Export the registry (CSV or JSON)…*, *Audit log…*
+importing again changes nothing. The rest of the File menu: *Make from a list…* and *Import scans…* (below), exporting,
+publishing and serving the redirect pages (below), *Back up the registry…*, *Export the registry (CSV or JSON)…*, *Audit log…*
 and *Open settings.json*.
 
 The window runs one slow task at a time and queues the rest, so Save or Find asked for while a model loads simply
@@ -184,6 +184,8 @@ the link itself, and that address is printed under the code for anyone whose cam
   pages…* (or `--export-redirects DIR --section local|nonlocal`) write one small page per ID that forwards to its
   destination, plus `index.html`, `404.html` and a `robots.txt` that keeps the pages out of search engines. Export
   again after a change.
+- **Or publish them in one step.** *File → Publish nonlocal pages…* (below) writes them where `links.json` says, shows what
+  would change first, and asks.
 - **Tags in the page, not in the code.** The tracking tags in `links.json` (by default
   `utm_source=qr&utm_medium=print&utm_content=ID-color`) are added to each destination when the pages are written,
   so the code stays small. A link's own tags are never replaced.
@@ -221,6 +223,25 @@ as `links.use`. The Find tab marks each short link local or nonlocal.
   `….LOCAL`) is refused with a warning, so printed codes never point at your own network by mistake. Use a domain
   or subdomain you control and will keep: every printed code depends on it, and whoever owned a lapsed domain could
   send your codes anywhere. `GO.EXAMPLE.COM` is only a placeholder, and the window says so.
+
+### Publishing the nonlocal pages
+
+*File → Publish nonlocal pages…* publishes without copying files by hand. Say where in `links.json`, under `nonlocal`:
+
+```json
+"publish": {"kind": "git", "folder": "C:\\path\\to\\the\\repository"}
+```
+
+- **`git`:** a folder in a Git repository, such as one GitHub Pages serves. `CNAME` (the base's host) and `.nojekyll` are
+  written too, and the pages are committed and pushed.
+- **`folder`:** a folder something else syncs. The pages are written there, and that is all.
+- **You see it first.** It lists the pages it would add, change and remove, with nothing touched, and asks. If nothing
+  changed, it says so.
+- **It touches only its own pages.** A page is removed only when its short link is gone, and only an ID-named folder's
+  `index.html`. A commit holds only those pages: whatever else is staged or lying in that repository stays as it is.
+- **A push is never forced.** If it fails (the remote has moved on, or Git has no credentials here), the commit stays and
+  the window repeats what Git said, so you can push it with your own Git client. Git is never left waiting for a password.
+- **Uses the day in force:** a change scheduled for today or earlier goes out even if it has not been applied yet.
 
 ## Colors
 

@@ -24,6 +24,7 @@
     {"from": "payloads.py"},
     {"from": "scans.py"},
     {"from": "localkey.py"},
+    {"from": "publish.py"},
     {"from": "planner.json"},
     {"from": "links.json"},
     {"from": "sheets.json"},

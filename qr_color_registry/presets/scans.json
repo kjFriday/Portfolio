@@ -1,0 +1,8 @@
+{
+  "about": "Colors like your upvoats, then the colors whose short links get scanned. Scans count only when colors.scans_vote is on in settings.json; until then this ranks by your votes alone.",
+  "algo": "blend",
+  "uses": {
+    "similar": 0.6,
+    "scans": 0.4
+  }
+}

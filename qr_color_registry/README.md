@@ -31,14 +31,14 @@ redirect pages of the short-link section in use (or `--section local|nonlocal`) 
 
 | Tab | What |
 |---|---|
-| Make | Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. *Print size…* says how wide to print it for a scanning distance, *Test robustness* how much wear it survives, and *Logo…* puts a small picture in its middle (see below). |
+| Make | Choose a **Kind** (a web link, or see "More kinds of code" below). Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. *Print size…* says how wide to print it for a scanning distance, *Test robustness* how much wear it survives, and *Logo…* puts a small picture in its middle (see below). |
 | Read | Open or paste a picture of a QR code. It shows the text, the color it detects, and the codes in the registry that hold the same text. *Register this picture…* adds a PNG or SVG made elsewhere, in the color you confirm. |
-| Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), *Forget record* removes them from the registry (the files stay), and *Print sheet…* lays them out on labels or posters (see below). The **Ask** row asks in plain English through a local model you pick. |
+| Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), *Forget record* removes them from the registry (the files stay), and *Print sheet…* lays them out on labels or posters (see below). *History…* shows where a short link has gone, and schedules where it goes next. The **Scans** column shows a short link's scans, in all and in the last 30 days. The **Ask** row asks in plain English through a local model you pick. |
 
 *File → Import votes from Color Voats…* brings in Color Voats' votes, with the newer vote winning for each color, so
-importing again changes nothing. The rest of the File menu: *Make from a list…* (below), exporting and serving the
-redirect pages (below), *Back up the registry…*, *Export the registry (CSV or JSON)…*, *Audit log…* and *Open
-settings.json*.
+importing again changes nothing. The rest of the File menu: *Make from a list…* and *Import scans…* (below), exporting
+and serving the redirect pages (below), *Back up the registry…*, *Export the registry (CSV or JSON)…*, *Audit log…*
+and *Open settings.json*.
 
 The window runs one slow task at a time and queues the rest, so Save or Find asked for while a model loads simply
 waits its turn.
@@ -108,6 +108,51 @@ https://shop.example.com/p/green-mug,#006633,Green mug,green.svg
 - **Report:** `made-DATE-TIME.csv` beside the pictures says what happened to every row. *Stop* in the dialog stops after
   the current code, and the report says which rows were not made.
 
+### More kinds of code
+
+The **Kind** box in the Make tab swaps the Link box for a small form. The preview and the note below it show what
+the code will hold. Short links and templates are for web links only.
+
+| Kind | The code holds | Opens |
+|---|---|---|
+| Wi-Fi join | `WIFI:T:WPA;S:name;P:password;;` (with `\ ; , : "` escaped) | joins the network |
+| Contact card | a vCard 3.0 | adds a contact |
+| Calendar event | an iCalendar `VEVENT`, with its times as typed, on the phone's own clock | adds an event |
+| Map location | `geo:52.37,4.89` | opens a map |
+| Email | `mailto:…?subject=…&body=…` | starts an email |
+| Phone call | `tel:+15550100` | starts a call |
+| Text message | `SMSTO:+15550100:message` | starts a text message |
+
+**A Wi-Fi password is never stored in the registry.** It goes into the code and its picture file, so **anyone who can
+see the code or the file can join the network**: print it only where that is what you want. This applies to
+however a Wi-Fi code arrives: made in the form, typed in the Link box, in a list of codes, or registered from a picture.
+- **What is kept:** the text with the password masked (always the same length, so it says nothing about the password),
+  and a keyed hash of the real text, so scanning or opening the code in the Read tab still finds its record. The hash
+  uses a key in `qr_palette.key` beside the registry, not a plain SHA-256, because Wi-Fi passwords are often weak
+  enough to guess: without the key, the registry file or a backup cannot be used to try passwords.
+- **What follows:** exports, reports, file names, ECP's answers and the Print size dialog only ever see the masked text. Find
+  has no preview of such a code, and *Redraw…* refuses it, since the registry cannot draw it again; make it again in
+  the Make tab. *Print sheet…* reads the real text from the picture file, and leaves the code out if the file is gone.
+- **The key:** made the first time it is needed. Back it up with the registry if you move to another computer. Without
+  it nothing breaks, but these codes are no longer found by scanning them.
+
+### Scans
+
+*File → Import scans…* reads how often your short links were opened, and Find shows it per code: in all, and in the
+last 30 days. Only a short link's ID, a day and a count are kept: never an address, a user agent or anything else.
+- **An analytics report:** a CSV with a date column (`YYYY-MM-DD` or `YYYYMMDD`), a column with the `utm_content` tag
+  the redirect pages add (`ID-color`, such as `73491205-3366cc`) and a count column (`count`, `sessions`, `views`,
+  `clicks`, …). A newer report corrects the days it covers.
+- **A web server's access log:** Common or Combined Log Format, or gzipped. `GET /ID/` or `/ID` with a 2xx or 3xx status
+  counts, per day as the log dates it. A log that grew or was rotated imports over itself; a new log file adds to it.
+- **Importing the same file twice changes nothing,** and IDs that are not short links here are named and left out.
+- **Scans can feed the ranking.** Turn on `colors.scans_vote` and choose the `scans` preset (colors like your Good votes,
+  then colors whose codes get scanned): a color scores its scans per short link, pulled down a little for colors with
+  few links (`weights/scans.json`). It is off by default, and presets that do not name the `scans` algo never change.
+
+Scans measure what each file counts: a page view is not always a person, and a scanner that blocks tracking tags is
+not in an analytics report.
+
 ### Keeping your data
 
 - **Backups.** *File → Back up the registry…* copies `palette.db` with SQLite's own backup, consistent even while
@@ -130,6 +175,11 @@ the link itself, and that address is printed under the code for anyone whose cam
   color gets its own, so scans can be told apart by color.
 - **Change destinations without reprinting.** *Change destination…* in Find sends a short link somewhere else.
   The pictures stay as they are, and forgetting a picture keeps its short link, since printed copies still use it.
+- **Never lose where it used to go.** *History…* in Find lists every change. *Undo last change* sends it back, which
+  is written in the history too.
+- **Change it on a date.** *Schedule a change…* in *History…* takes a day and a destination. Exports use the destination
+  in force on the day they run, even before the change is applied. When the window starts, it offers to apply
+  changes that are due. Either way, export again on that day to publish it: nothing runs while the window is closed.
 - **Publish with any static web host.** *File → Export local redirect pages…* and *Export nonlocal redirect
   pages…* (or `--export-redirects DIR --section local|nonlocal`) write one small page per ID that forwards to its
   destination, plus `index.html`, `404.html` and a `robots.txt` that keeps the pages out of search engines. Export
@@ -197,10 +247,17 @@ alone, not to the Generic Company hub, and every open checks its SQLite applicat
 | `links` | the text each QR code holds |
 | `qr_codes` | one row per picture file: its path, its link, its color, PNG or SVG, error-correction level, QR version, made here or registered, and when |
 | `short_links` | one row per short link: its ID, the link row of the address it prints, the color it was made in, where it sends people, and when it was made and last changed |
+| `short_link_changes` | a short link's history: where it went, where it goes after, and when |
+| `scheduled_changes` | changes to come: which short link, where to, from which day, and when it was applied |
+| `scans` | a short link's scans per day and source: only counts |
 | `votes` | one Good or Bad vote per color |
 
-The schema is version 2 (version 1 had no `short_links`). The window moves a version 1 registry to version 2 the
-first time it opens it; read-only readers, such as ECP, read either.
+`qr_codes` also keeps `payload_hash` for a code whose text is masked (see "More kinds of code").
+
+The schema is version 3 (version 2 added `short_links`, version 3 added the rest above). The window moves an older
+registry to version 3 the first time it opens it, after keeping a checked copy beside it (`palette-v2.db`), since older
+versions of this program cannot open version 3. Read-only readers, such as ECP, read any of them. Version 3 only adds:
+other programs that read the older tables and columns, such as Data Bridge, read them as before.
 
 The registry holds data only; every setting is in `settings.json` (below).
 - **Pictures:** saved where you choose, by default in your Pictures folder under `QR Palette`. If Windows keeps
@@ -219,6 +276,7 @@ section. *File → Open settings.json* opens yours.
 | `settings.json` | Where things are and how the program behaves. It lives next to the registry in `%LOCALAPPDATA%\Generic Company Inc\GenericCompany.QRPalette\` (or `--settings FILE`). The window writes it with every setting and its default the first time it runs. `settings.example.json` shows the same defaults. |
 | `presets/*.json` | Which algos rank the colors, and how they are mixed. |
 | `weights/*.json` | The numbers each algo uses. |
+| `qr_palette.key` | Not a setting: a secret beside the registry, made on first need (see "More kinds of code"). It is never in `settings.json` or the registry. |
 | `sheets.json` | The layouts of *Print sheet…*: page, margins, columns, rows, cell, gutter and label, in millimetres. Read each time you print. |
 | `planner.json` | How a question in plain English becomes a query plan: what the local model is told, the worked examples it is shown, the words for color families ("navy" is blue), the words that name a section of short links or ask for short links, and the filler words taken off the ends of links and paths. `settings.json` can point to your own copy. A copy written before `section` and `short` existed still works. |
 | `links.json` | Short links: two sections, `local` and `nonlocal`, each with a base address (in capitals, ending in `/`) and the folder its exports start in; and, for both, the number of random digits per ID (4-12, default 7), whether **Short link** starts ticked, the tags added to destinations (`{id}` and `{hex}` are filled in) and the link templates (`{name}` is a field). `settings.json` can point to your own copy. |

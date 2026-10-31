@@ -335,7 +335,7 @@ receives stored data (§13), what it proposes cannot be shaped by what the regis
     `queries.max_limit`).
 - **Recommend.** The usable colors (§8.4) come from the preset named in `settings.json`, best first, optionally
   of one family. Presets and their weights are JSON files too: a preset names the algos, and each algo's weights
-  file holds its numbers.
+  file holds its numbers. With `colors.scans_vote` on, a preset that uses the `scans` algo also counts scans.
 - **Summary.** It is written from a template, never by the model.
 
 ### 8.4 Usable colors
@@ -415,9 +415,9 @@ Every call opens its own connection, reads everything its answer needs in one sh
 any file is checked. In order:
 1. Open the registry through a `file:` URI with `mode=ro`, so the file cannot be created or written. A missing
    file is `db_unavailable` ("no registry yet"), and nothing is created.
-2. Check the header marks: `application_id` 0x51525041 and `user_version` 2, or 1 (a registry the window has not
-   opened since short links came; the rail reads it as it is, without short links, since it may not write). Any
-   other file is refused.
+2. Check the header marks: `application_id` 0x51525041 and `user_version` 3, or 2 or 1 (a registry the window has
+   not opened since then; the rail reads it as it is, without what came later, since it may not write). Any other
+   file is refused.
 3. `PRAGMA query_only=ON` and `PRAGMA trusted_schema=OFF`.
 4. Where Python's `sqlite3` can set them (3.12 and later): `DEFENSIVE` on; trusted schema, triggers, views and
    double-quoted string literals off.
@@ -427,8 +427,10 @@ any file is checked. In order:
    100, `EXPR_DEPTH` 10, `COMPOUND_SELECT` 3, `VDBE_OP` 25,000, `FUNCTION_ARG` 8, `ATTACHED` 0,
    `LIKE_PATTERN_LENGTH` 50, `VARIABLE_NUMBER` 10, `TRIGGER_DEPTH` 10.
 8. An allow-list authorizer: plain `SELECT`, reading the listed columns of `colors`, `links`, `qr_codes`,
-   `short_links` and `votes`, and the function `count`. Everything else is denied (an error, never a silent
-   null): other columns, other functions, `sqlite_master`, `PRAGMA`, `ATTACH`, writes and schema changes.
+   `short_links`, `votes`, `scheduled_changes` and `scans`, and the function `count`. Everything else is denied (an
+   error, never a silent null): other columns, other functions, `sqlite_master`, `PRAGMA`, `ATTACH`, writes and
+   schema changes. ECP's own answers read `scans` only when `colors.scans_vote` is on, and never answer with
+   `qr_codes.payload_hash`, the keyed hash of a code whose text is masked: `payload_url` then holds the masked text.
 9. A progress handler that stops the visit once 2 s have passed (`queries.statement_seconds`): `db_timeout`.
 
 The registry keeps SQLite's rollback journal, not WAL, so a read-only reader never needs to create files beside
@@ -646,7 +648,7 @@ program, so some parts are different, and some are absent:
 | The inference address is a compile-time constant, 127.0.0.1:11434 | Any loopback IP literal or `localhost`, from `settings.json` or `--inference` | Every setting is meant to be editable JSON; names are still never resolved |
 | `ECPQueryPlan` (`target_family`, `hex_code`, `link_search`, `min_votes`, `sort_by`, `limit`) compiled into three fixed SQL templates | QR Palette's QueryPlan (§7.4), applied in Python to rows read with fixed statements | The registry's questions are by link, color, path, section of short links and recommendation; in both, no SQL comes from the model |
 | Seven color families | Thirteen | The palette's own names, shared with Color Voats |
-| Tables `colors`, `links`, `qr_codes`, `voats`, `STRICT` | `colors`, `links`, `qr_codes`, `short_links`, `votes`, not `STRICT` | The registry's own schema (`user_version` 2, which added `short_links`) |
+| Tables `colors`, `links`, `qr_codes`, `voats`, `STRICT` | `colors`, `links`, `qr_codes`, `short_links`, `votes`, `short_link_changes`, `scheduled_changes`, `scans`, not `STRICT` | The registry's own schema (`user_version` 3; 2 added `short_links`, 3 the other three and `qr_codes.payload_hash`) |
 | The DDL sets only `user_version` | The registry also sets `application_id` 0x51525041 ("QRPA"), checked on every open | It tells a QR Palette registry apart from any other SQLite file, and other programs find the registry by it. It stays in any future schema. |
 | Open with read-only flags and `NOFOLLOW`, no URI | A `file:` URI with `mode=ro` | The only read-only open in Python's `sqlite3`, which has no `NOFOLLOW` |
 | Also `ENABLE_ATTACH_CREATE`, `ENABLE_ATTACH_WRITE`, `ENABLE_COMMENTS`; limits `PARSER_DEPTH`, `SCHEMA`, `LIKE_PATTERN_LENGTH` 80 | Not set; `LIKE_PATTERN_LENGTH` 50 | Python's `sqlite3` does not expose them; `ATTACHED` 0 and the authorizer cover attaching, and `LIKE` is never used |
@@ -679,7 +681,7 @@ prefix `ecp_` so the two are not confused in logs.
 
 ## 19. Future work
 
-- A `STRICT` registry schema (`user_version` 3), as the spec's DDL has it, keeping the `application_id` marker.
+- A `STRICT` registry schema (a later `user_version`), as the spec's DDL has it, keeping the `application_id` marker.
   Programs that read the registry check `user_version` too, so they have to accept the new version at the same
   time.
 - Writes (making and registering codes) stay out of ECP; if they come, they come behind the window's own

@@ -122,7 +122,8 @@ class OpeningTests(RegistryCase):
         tables = []
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall():
             tables.append(row[0])
-        self.assertEqual(tables, ["colors", "links", "qr_codes", "short_links", "votes"])
+        self.assertEqual(tables, ["colors", "links", "qr_codes", "scans", "scheduled_changes", "short_link_changes",
+                                  "short_links", "votes"])
 
 
 class ReadRailTests(RegistryCase):
@@ -251,32 +252,253 @@ class ShortLinkTests(RegistryCase):
         self.assertEqual(registry.short_links(reader)[0]["target"], TARGET)
         self.assertEqual(registry.all_rows(reader)[0]["target"], TARGET)
 
-    def test_a_version_1_registry_is_read_as_it_is_and_moved_to_2_when_written(self):
-        writer = self.open(False)
-        registry.save_qr(writer, entry(self.folder, "a.png", "https://example.com/a", "#3366cc"))
-        writer.execute("DROP VIEW qr_lookup")
-        writer.execute("DROP TABLE short_links")
-        writer.execute("PRAGMA user_version=1")
-        registry.close(writer)
+    def older_registry(self, version):
+        """A registry as an older program left it, built from that version's own statements."""
+        plain = sqlite3.connect(self.path)
+        for statement in registry.SCHEMA:
+            plain.execute(statement)
+        plain.execute("INSERT INTO colors (id, hex, r, g, b, name, family) VALUES (1, '#3366cc', 51, 102, 204, 'Blue', 'blue')")
+        plain.execute("INSERT INTO links (id, url) VALUES (1, 'https://example.com/a')")
+        plain.execute("INSERT INTO qr_codes (link_id, color_id, path, path_key, format, ec_level, version, origin, created) "
+                      "VALUES (1, 1, 'C:\\a.png', 'c:\\a.png', 'png', 'M', 3, 'made', '2026-10-29T10:00:00Z')")
+        if version >= 2:
+            for statement in registry.TO_VERSION_2:
+                plain.execute(statement)
+            plain.execute("INSERT INTO links (id, url) VALUES (2, 'HTTPS://GO.EXAMPLE.COM/" + self.code + "')")
+            plain.execute("INSERT INTO qr_codes (link_id, color_id, path, path_key, format, ec_level, version, origin, "
+                          "created) VALUES (2, 1, 'C:\\b.png', 'c:\\b.png', 'png', 'M', 2, 'made', '2026-10-29T10:00:00Z')")
+            plain.execute("INSERT INTO short_links (code, link_id, color_id, target, created, updated) "
+                          "VALUES (?, 2, 1, ?, '2026-10-29T10:00:00Z', '2026-10-29T10:00:00Z')", (self.code, TARGET))
+        plain.execute("PRAGMA application_id=" + str(registry.APPLICATION_ID))
+        plain.execute("PRAGMA user_version=" + str(version))
+        plain.commit()
+        plain.close()
+
+    def header_version(self):
+        plain = sqlite3.connect(self.path)
+        version = plain.execute("PRAGMA user_version").fetchone()[0]
+        plain.close()
+        return version
+
+    def test_a_version_1_registry_is_read_as_it_is_and_moved_up_when_written(self):
+        self.older_registry(1)
         reader = self.open(True)
         self.assertEqual(registry.all_rows(reader)[0]["short_code"], "")
+        self.assertIsNone(registry.all_rows(reader)[0]["payload_hash"])
         self.assertEqual(registry.short_links(reader), [])
+        self.assertEqual(registry.short_links_on(reader, "2026-10-29"), [])
+        self.assertEqual(registry.scan_totals(reader, "2026-10-29"), {})
         registry.close(reader)
-        plain = sqlite3.connect(self.path)
-        self.assertEqual(plain.execute("PRAGMA user_version").fetchone()[0], 1)  # reading changed nothing
-        plain.close()
+        self.assertEqual(self.header_version(), 1)  # reading changed nothing
         writer = self.open(False)
-        self.assertEqual(writer.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(writer.execute("PRAGMA user_version").fetchone()[0], registry.SCHEMA_VERSION)
         self.assertEqual(writer.execute("PRAGMA application_id").fetchone()[0], registry.APPLICATION_ID)
         self.assertEqual(registry.short_links(writer), [])
         self.assertEqual(len(registry.all_rows(writer)), 1)
         self.assertEqual(writer.execute("SELECT count(*) FROM qr_lookup").fetchone()[0], 1)
 
+    def test_a_version_2_registry_keeps_a_copy_and_everything_it_held(self):
+        self.older_registry(2)
+        reader = self.open(True)
+        rows = registry.all_rows(reader)
+        self.assertEqual(rows[0]["target"], TARGET)
+        self.assertIsNone(rows[0]["payload_hash"])
+        self.assertEqual(registry.link_changes(reader, self.code), [])
+        self.assertEqual(registry.scheduled(reader, ""), [])
+        self.assertEqual(registry.color_scans(reader), {})
+        registry.close(reader)
+        self.assertFalse(os.path.exists(self.older_copy(2)))  # reading keeps no copy
+        writer = self.open(False)
+        self.assertEqual(writer.execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(registry.short_links(writer)[0]["target"], TARGET)
+        self.assertEqual(len(registry.all_rows(writer)), 2)
+        registry.close(writer)
+        copy = sqlite3.connect(self.older_copy(2))
+        self.assertEqual(copy.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(copy.execute("SELECT count(*) FROM qr_codes").fetchone()[0], 2)
+        self.assertEqual(copy.execute("SELECT count(*) FROM sqlite_master WHERE name = 'scans'").fetchone()[0], 0)
+        copy.close()
+
+    def older_copy(self, version):
+        stem, extension = os.path.splitext(self.path)
+        return stem + "-v" + str(version) + extension
+
+    def test_a_registry_is_not_moved_up_without_its_copy(self):
+        self.older_registry(2)
+        before = shutil.copyfile(self.path, self.path + ".before")
+        saved = registry.backup
+        registry.backup = lambda path, target: registry.fail("the disk is full")
+        try:
+            refused = registry.connect(self.path, False)
+        finally:
+            registry.backup = saved
+        self.assertFalse(refused["ok"])
+        self.assertIn("could not be kept", refused["error"])
+        self.assertEqual(self.header_version(), 2)
+        self.assertTrue(os.path.isfile(before))
+
+    def test_what_other_programs_read_is_unchanged(self):
+        """Data Bridge reads these from version 2 on, with its own allow-list: they stay."""
+        writer = self.open(False)
+        registry.save_qr(writer, short_entry(self.folder, "a.png", self.code, "#3366cc", TARGET))
+        row = writer.execute("SELECT q.id, l.url, c.hex, q.path, q.format, q.ec_level, q.version, q.origin, q.created, "
+                             "s.target FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id "
+                             "LEFT JOIN short_links s ON s.link_id = l.id ORDER BY q.id").fetchone()
+        self.assertEqual((row[2], row[9]), ("#3366cc", TARGET))
+        self.assertEqual(writer.execute("PRAGMA application_id").fetchone()[0], 0x51525041)
+        for version in registry.READABLE_VERSIONS:
+            self.assertIn(version, (1, 2, 3))
+
     def test_other_versions_are_refused(self):
         writer = self.open(False)
-        writer.execute("PRAGMA user_version=3")
+        writer.execute("PRAGMA user_version=4")
         registry.close(writer)
         self.assertIn("another version", registry.connect(self.path, True)["error"])
+        self.assertIn("another version", registry.connect(self.path, False)["error"])
+
+
+class HistoryTests(RegistryCase):
+    def setUp(self):
+        RegistryCase.setUp(self)
+        self.code = code_of("1234567")
+        self.connection = self.open(False)
+        registry.save_qr(self.connection, short_entry(self.folder, "a.png", self.code, "#3366cc", TARGET))
+
+    def target(self):
+        return registry.short_links(self.connection)[0]["target"]
+
+    def test_a_change_keeps_where_it_used_to_go(self):
+        self.assertEqual(registry.link_changes(self.connection, self.code), [])
+        self.assertTrue(registry.retarget(self.connection, self.code, "https://example.com/b")["value"])
+        self.assertTrue(registry.retarget(self.connection, self.code, "https://example.com/c")["value"])
+        changes = registry.link_changes(self.connection, self.code)
+        self.assertEqual([(change["old_target"], change["new_target"]) for change in changes],
+                         [("https://example.com/b", "https://example.com/c"), (TARGET, "https://example.com/b")])
+        self.assertTrue(changes[0]["changed"].endswith("Z"))
+
+    def test_going_where_it_already_goes_is_no_change(self):
+        self.assertTrue(registry.retarget(self.connection, self.code, TARGET)["value"])
+        self.assertEqual(registry.link_changes(self.connection, self.code), [])
+
+    def test_undo_goes_back_and_is_written_too(self):
+        self.assertIn("not been changed", registry.undo_last_change(self.connection, self.code)["error"])
+        registry.retarget(self.connection, self.code, "https://example.com/b")
+        undone = registry.undo_last_change(self.connection, self.code)
+        self.assertEqual(undone["value"], TARGET)
+        self.assertEqual(self.target(), TARGET)
+        changes = registry.link_changes(self.connection, self.code)
+        self.assertEqual(len(changes), 2)
+        self.assertEqual((changes[0]["old_target"], changes[0]["new_target"]), ("https://example.com/b", TARGET))
+
+    def test_a_schedule_is_applied_by_its_day(self):
+        self.assertFalse(registry.schedule_change(self.connection, self.code, "https://example.com/b", "2026-13-01")["ok"])
+        self.assertFalse(registry.schedule_change(self.connection, self.code, "https://example.com/b", "soon")["ok"])
+        self.assertIn("no short link", registry.schedule_change(self.connection, code_of("7654321"),
+                                                                "https://example.com/b", "2026-12-01")["error"])
+        registry.schedule_change(self.connection, self.code, "https://example.com/winter", "2026-12-01")
+        registry.schedule_change(self.connection, self.code, "https://example.com/spring", "2027-03-01")
+        self.assertEqual(len(registry.scheduled(self.connection, self.code)), 2)
+        self.assertEqual(registry.due_changes(self.connection, "2026-11-30"), [])
+        self.assertEqual(registry.apply_due(self.connection, "2026-11-30")["value"], 0)
+        self.assertEqual(self.target(), TARGET)
+        self.assertEqual(len(registry.due_changes(self.connection, "2026-12-01")), 1)
+        self.assertEqual(registry.apply_due(self.connection, "2026-12-01")["value"], 1)
+        self.assertEqual(self.target(), "https://example.com/winter")
+        self.assertEqual(registry.link_changes(self.connection, self.code)[0]["new_target"], "https://example.com/winter")
+        self.assertEqual(registry.apply_due(self.connection, "2026-12-02")["value"], 0)  # never twice
+        self.assertEqual([change["target"] for change in registry.scheduled(self.connection, self.code)],
+                         ["https://example.com/spring"])
+
+    def test_due_changes_are_applied_in_order(self):
+        registry.schedule_change(self.connection, self.code, "https://example.com/later", "2026-12-05")
+        registry.schedule_change(self.connection, self.code, "https://example.com/sooner", "2026-12-01")
+        self.assertEqual(registry.apply_due(self.connection, "2026-12-31")["value"], 2)
+        self.assertEqual(self.target(), "https://example.com/later")
+
+    def test_a_schedule_can_be_taken_back(self):
+        number = registry.schedule_change(self.connection, self.code, "https://example.com/b", "2026-12-01")["value"]
+        self.assertTrue(registry.cancel_scheduled(self.connection, number)["value"])
+        self.assertFalse(registry.cancel_scheduled(self.connection, number)["value"])
+        self.assertEqual(registry.scheduled(self.connection, ""), [])
+
+    def test_the_destination_in_force_on_a_day(self):
+        registry.schedule_change(self.connection, self.code, "https://example.com/winter", "2026-12-01")
+        registry.schedule_change(self.connection, self.code, "https://example.com/spring", "2027-03-01")
+        registry.close(self.connection)
+        reader = self.open(True)  # the read rail may read them
+        self.assertEqual(registry.short_links_on(reader, "2026-11-30")[0]["target"], TARGET)
+        self.assertEqual(registry.short_links_on(reader, "2026-12-01")[0]["target"], "https://example.com/winter")
+        self.assertEqual(registry.short_links_on(reader, "2027-06-01")[0]["target"], "https://example.com/spring")
+        self.assertEqual(registry.short_links(reader)[0]["target"], TARGET)  # only an applied change is in the registry
+        registry.close(reader)
+        self.connection = self.open(False)
+
+
+class ScanTests(RegistryCase):
+    def setUp(self):
+        RegistryCase.setUp(self)
+        self.code = code_of("1234567")
+        self.other = code_of("7654321")
+        self.connection = self.open(False)
+        registry.save_qr(self.connection, short_entry(self.folder, "a.png", self.code, "#3366cc", TARGET))
+        registry.save_qr(self.connection, short_entry(self.folder, "b.png", self.other, "#3366cc", "https://example.com/b"))
+
+    def test_importing_twice_changes_nothing(self):
+        counts = {(self.code, "2026-10-01"): 5, (self.code, "2026-10-02"): 7, (self.other, "2026-10-02"): 1}
+        first = registry.import_scans(self.connection, counts, "analytics")
+        self.assertEqual(first["value"], {"days": 3, "unknown": []})
+        registry.import_scans(self.connection, counts, "analytics")
+        totals = registry.scan_totals(self.connection, "2026-10-03")
+        self.assertEqual(totals[self.code], {"total": 12, "recent": 12})
+        self.assertEqual(totals[self.other], {"total": 1, "recent": 1})
+
+    def test_a_newer_report_corrects_its_days_and_sources_add_up(self):
+        registry.import_scans(self.connection, {(self.code, "2026-10-01"): 5}, "analytics")
+        registry.import_scans(self.connection, {(self.code, "2026-10-01"): 8}, "analytics")
+        self.assertEqual(registry.scan_totals(self.connection, "2026-10-01")[self.code]["total"], 8)
+        registry.import_scans(self.connection, {(self.code, "2026-10-01"): 2}, "server log from 2026-10-01T06:25:03")
+        self.assertEqual(registry.scan_totals(self.connection, "2026-10-01")[self.code]["total"], 10)
+
+    def test_unknown_ids_are_named_and_left_out(self):
+        unknown = code_of("1111111")
+        saved = registry.import_scans(self.connection, {(unknown, "2026-10-01"): 5, (self.code, "2026-10-01"): 1}, "x")
+        self.assertEqual(saved["value"], {"days": 1, "unknown": [unknown]})
+        self.assertNotIn(unknown, registry.scan_totals(self.connection, "2026-10-01"))
+
+    def test_recent_means_the_last_thirty_days(self):
+        registry.import_scans(self.connection, {(self.code, "2026-10-31"): 1, (self.code, "2026-10-02"): 2,
+                                                (self.code, "2026-10-01"): 4, (self.code, "2026-11-01"): 8}, "x")
+        totals = registry.scan_totals(self.connection, "2026-10-31")[self.code]
+        self.assertEqual(totals, {"total": 15, "recent": 3})  # 1 and 2: not 30 days back, not tomorrow
+
+    def test_scans_per_color_on_the_read_rail(self):
+        registry.import_scans(self.connection, {(self.code, "2026-10-01"): 5, (self.other, "2026-10-01"): 2}, "x")
+        registry.close(self.connection)
+        reader = self.open(True)
+        self.assertEqual(registry.color_scans(reader), {"#3366cc": {"scans": 7, "links": 2}})
+        self.assertEqual(registry.scan_totals(reader, "2026-10-01")[self.other]["total"], 2)
+        registry.close(reader)
+        self.connection = self.open(False)
+
+    def test_a_count_cannot_be_negative(self):
+        saved = registry.import_scans(self.connection, {(self.code, "2026-10-01"): -1}, "x")
+        self.assertFalse(saved["ok"])
+
+
+class MaskedTests(RegistryCase):
+    def test_a_masked_code_keeps_its_hash(self):
+        connection = self.open(False)
+        saved = entry(self.folder, "a.png", "WIFI:T:WPA;S:Cafe;P:********;;", "#3366cc")
+        saved["payload_hash"] = "ab" * 32
+        registry.save_qr(connection, saved)
+        registry.save_qr(connection, entry(self.folder, "b.png", "https://example.com/b", "#3366cc"))
+        rows = registry.all_rows(connection)
+        self.assertEqual(rows[1]["payload_hash"], "ab" * 32)
+        self.assertIsNone(rows[0]["payload_hash"])
+        registry.close(connection)
+        reader = self.open(True)
+        self.assertEqual(registry.all_rows(reader)[1]["payload_hash"], "ab" * 32)
+        registry.close(reader)
 
 
 class BackupTests(RegistryCase):
@@ -467,4 +689,4 @@ class FindTests(RegistryCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=d4860fd45743dddcc3d0141c5b10dfa86cd68f2c9a17793dff807505685507e9 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1f292f5b17655a2feae71e7857b56ddb90a6470bec7c2cce9f6fd0524017a483 ====

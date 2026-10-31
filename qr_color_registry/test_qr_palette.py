@@ -281,6 +281,42 @@ class BatchTests(CoreCase):
         self.assertTrue(os.path.isfile(made["report"]))
 
 
+class ScheduleTests(CoreCase):
+    def page_target(self, folder, code):
+        handle = open(os.path.join(folder, code, "index.html"), encoding="utf-8")
+        page = handle.read()
+        handle.close()
+        return page
+
+    def test_exports_use_the_destination_in_force_on_their_day(self):
+        made = qr_palette.make_qr(self.db, "https://example.com/menu", "#3366cc", "M", self.path("a.png"), 4,
+                                  qr_palette.short_request(shortlinks.new_code(7), "local"))
+        self.assertTrue(made["ok"], made["error"])
+        code = made["value"]["short_code"]
+        self.assertTrue(qr_palette.schedule_link_change(self.db, code, "https://example.com/winter", "2026-12-01")["ok"])
+        before = self.path("before")
+        after = self.path("after")
+        self.assertTrue(qr_palette.export_redirects(self.db, before, "local", "2026-11-30")["ok"])
+        self.assertTrue(qr_palette.export_redirects(self.db, after, "local", "2026-12-01")["ok"])
+        self.assertIn("https://example.com/menu", self.page_target(before, code))
+        self.assertIn("https://example.com/winter", self.page_target(after, code))
+        self.assertEqual(qr_palette.due_link_changes(self.db, "2026-11-30")["value"], [])
+        self.assertEqual(len(qr_palette.due_link_changes(self.db, "2026-12-01")["value"]), 1)
+        self.assertEqual(qr_palette.apply_due_changes(self.db, "2026-12-01")["value"], 1)
+        known = qr_palette.link_history(self.db, code)["value"]
+        self.assertEqual((known["changes"][0]["new_target"], known["coming"]), ("https://example.com/winter", []))
+
+    def test_a_change_must_be_a_web_link_on_a_real_day(self):
+        made = qr_palette.make_qr(self.db, "https://example.com/menu", "#3366cc", "M", self.path("a.png"), 4,
+                                  qr_palette.short_request(shortlinks.new_code(7), "local"))
+        code = made["value"]["short_code"]
+        self.assertFalse(qr_palette.schedule_link_change(self.db, code, "not a link", "2026-12-01")["ok"])
+        self.assertFalse(qr_palette.schedule_link_change(self.db, code, "https://example.com/a", "tomorrow")["ok"])
+        number = qr_palette.schedule_link_change(self.db, code, "https://example.com/a", "2026-12-01")["value"]
+        self.assertTrue(qr_palette.cancel_link_change(self.db, number)["value"])
+        self.assertFalse(qr_palette.undo_link_change(self.db, code)["ok"])
+
+
 class RegisterTests(CoreCase):
     def test_pictures_made_elsewhere_are_registered_in_the_color_given(self):
         matrix = qr_codec.encode_text("https://example.com/elsewhere", "Q", 1, -1)["value"]
@@ -538,7 +574,7 @@ class ApplySettingsTests(unittest.TestCase):
         self.assertEqual(qr_palette.shown_from_record(record),
                          {"id": 3, "link": "https://example.com/a", "hex": "#3366cc", "name": "Blue", "family": "blue",
                           "path": "C:\\Codes\\a.png", "exists": None, "ec_level": "M", "version": 1,
-                          "short_code": "", "target": ""})
+                          "short_code": "", "target": "", "scans": None})
         record["payload_url"] = "HTTPS://GO.EXAMPLE.COM/12345674"
         record["target_url"] = "https://example.com/a"
         shown = qr_palette.shown_from_record(record)
@@ -682,4 +718,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=1edad7de5b6b4a780ab0bde7caf21ad1c0a3bcb8245d0f0fefb3668d59d203da ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=3bb550bc85e59d8a4e3fc75af1d1c25efbddad85f629fcf2007e9baa23d385ca ====

@@ -40,11 +40,13 @@ DEFAULTS = {
         "about": "preset: the ranking in presets/ (mixer, balanced, popular, discover, or your own). "
                  "minimum_contrast: the WCAG contrast against white a color needs to be offered (3.0 keeps 118 "
                  "of the 216). near_distance: how close in OKLab counts as near. rankings_folder: the folder that "
-                 "holds presets/ and weights/; empty means beside the program.",
+                 "holds presets/ and weights/; empty means beside the program. scans_vote: let imported scans "
+                 "count in rankings that use the scans algo (the scans preset, or your own).",
         "preset": "mixer",
         "minimum_contrast": 3.0,
         "near_distance": 0.08,
         "rankings_folder": "",
+        "scans_vote": False,
     },
     "inference": {
         "about": "The local model server: http on 127.0.0.1, ::1 or localhost only. model: the default model for "
@@ -113,6 +115,7 @@ SPEC = (
     ("colors", "minimum_contrast", "number", 1.0, 21.0),
     ("colors", "near_distance", "number", 0.0, 1.0),
     ("colors", "rankings_folder", "path", None, None),
+    ("colors", "scans_vote", "bool", None, None),
     ("inference", "url", "text", None, None),
     ("inference", "model", "text", None, None),
     ("inference", "require_cloud_disabled", "bool", None, None),
@@ -317,4 +320,4 @@ def write_defaults(state):
         return ok_result(state["path"])
     return save(state, [])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=fff82d82f8778f8d0bb165802a57ee483a615b42e1508a415208b7e35941052f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=71be6a25170d1a15487f570797043f795f7633fe8ae3d68a87a7c522a8acf13b ====

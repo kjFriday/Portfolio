@@ -305,6 +305,21 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
   - Short links are reused as usual. The handoff's `bridge.db` source waits until Data Bridge is merged.
 - Checked: tests pass on Python 3.14 (twice) and 3.11; `--selftest` and `--smoke` pass. The dialog was driven on a scratch registry with a list holding a duplicate, an empty link and a too-light color, with screenshots. `stamp.py --check` is clean.
 
+**qr_color_registry** (schema version 3: more kinds of code, scans, destination history and scheduling)
+- Registry schema version 3 only adds to version 2: `short_link_changes`, `scheduled_changes`, `scans` and `qr_codes.payload_hash`. The window moves an older registry up the first time it opens it, in one transaction, after keeping a checked copy beside it (`palette-v2.db`). Data Bridge's session has made Data Bridge accept version 3.
+- More kinds of code, from a *Kind* box and a small form in Make: Wi-Fi join, contact card (vCard 3.0), calendar event (iCalendar `VEVENT`), map location, email, phone call and text message (`payloads.py`).
+  - A Wi-Fi password is never stored, however the code arrives (the form, the Link box, a list, a registered picture). The registry keeps it masked, plus a keyed hash so scanning still finds the record. The hash is an HMAC under a local key (`localkey.py`, `qr_palette.key` beside the registry), not the bare SHA-256 the handoff named: Wi-Fi passwords are often weak, and a bare hash in a backup could be guessed offline.
+  - File names, reports, exports and ECP see only the masked text. *Redraw…* refuses such a code; *Print sheet…* reads it from its picture.
+- Scans: *File → Import scans…* reads an analytics CSV (the `utm_content` tag `ID-color`) or a server access log, plain or gzipped (`scans.py`). Only an ID, a day and a count are kept. Find shows the total and the last 30 days.
+  - The primary key is (code, day, source), not the handoff's first three columns (code, day, count): a re-import then replaces a day's count instead of adding a row. A log's source is the time of its first request, so a grown or rotated log imports over itself.
+  - `colors.scans_vote` (off by default) feeds a new `scans` algo in `ranking.py` (`algos.py` stays Color Voats' unchanged copy), with `weights/scans.json` and `presets/scans.json`. Other presets do not change.
+- Destination history and scheduling: every change of a short link's destination is kept, including *Change destination…* on several at once. *History…* in Find lists them, with *Undo last change* (itself a change: nothing is taken out of the history), *Schedule a change…* and cancelling one. Exports use the destination in force on the day they run. When the window starts it offers to apply changes that are due.
+- Checked:
+  - Tests pass on Python 3.14 (twice) and 3.11, including registries built from the real version 1 and 2 statements. `--selftest` (new checks for all three) and `--smoke` pass.
+  - The window was driven on a scratch registry through the due-changes prompt, the Wi-Fi, contact and event forms, saving, importing scans, the Scans column and the History dialog, with screenshots. That led to a taller window, three fields per row, and shorter labels. The registry file was searched for the test password: not there.
+  - No code of these kinds has been scanned with a phone yet: reading them back is the decoder's word, not a phone's.
+  - `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

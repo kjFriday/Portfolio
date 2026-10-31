@@ -144,7 +144,7 @@ class NameTests(unittest.TestCase):
 
 class RankingTests(unittest.TestCase):
     def test_the_shipped_presets(self):
-        self.assertEqual(swatch.presets(), ["balanced", "discover", "mixer", "popular"])
+        self.assertEqual(swatch.presets(), ["balanced", "discover", "mixer", "popular", "scans"])
         for name in swatch.presets():
             preset = ranking.read_preset(swatch.RANKING_ROOT, name)
             self.assertTrue(preset["ok"], preset["error"])
@@ -163,6 +163,35 @@ class RankingTests(unittest.TestCase):
     def test_the_sample_matches_color_voats(self):
         for name in SAMPLE_TOP:
             self.assertEqual(" ".join(swatch.rank_colors(name, SAMPLE)["value"][:10]), SAMPLE_TOP[name], name)
+
+    def test_scans_lift_a_color_only_when_they_are_given(self):
+        scans = {"#3366cc": {"scans": 400, "links": 2}, "#006633": {"scans": 10, "links": 1}}
+        without = swatch.rank_colors("scans", [])["value"]
+        self.assertEqual(" ".join(without[:10]), NO_VOTES_TOP)
+        self.assertEqual(swatch.rank_colors("scans", [], {})["value"], without)
+        ranked = swatch.rank_colors("scans", [], scans)["value"]
+        self.assertEqual(ranked[:2], ["#3366cc", "#006633"])
+        self.assertEqual(sorted(ranked), sorted(swatch.palette()))
+        for name in ("mixer", "balanced"):  # presets without the scans algo do not change
+            self.assertEqual(swatch.rank_colors(name, SAMPLE, scans)["value"], swatch.rank_colors(name, SAMPLE)["value"])
+
+    def test_one_lucky_code_does_not_outrank_a_proven_color(self):
+        colors = ["#111111", "#222222", "#333333"]
+        scores = ranking.scans_scores(colors, {"#111111": {"scans": 30, "links": 1},
+                                               "#222222": {"scans": 80, "links": 4}}, 2, 0)
+        self.assertEqual(scores, [10.0, 80 / 6.0, 0.0])
+
+    def test_the_mixer_keeps_its_own_chain(self):
+        root = tempfile.mkdtemp(prefix="qr_palette_mixer_")
+        try:
+            shutil.copytree(os.path.join(HERE, "weights"), os.path.join(root, "weights"))
+            os.makedirs(os.path.join(root, "presets"))
+            handle = open(os.path.join(root, "presets", "mine.json"), "w", encoding="utf-8")
+            handle.write(json.dumps({"algo": "mixer", "uses": ["wilson", "scans"]}))
+            handle.close()
+            self.assertIn("put scans in a blend", ranking.read_preset(root, "mine")["error"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_unknown_presets(self):
         self.assertIn("missing presets/loudest.json", swatch.rank_colors("loudest", [])["error"])
@@ -186,6 +215,8 @@ class RankingTests(unittest.TestCase):
             self.skipTest("Color Voats is not next to this project")
         for folder in ("presets", "weights"):
             for name in sorted(os.listdir(os.path.join(HERE, folder))):
+                if name == "scans.json":
+                    continue  # QR Palette's own: Color Voats has no scans
                 mine = read_json(os.path.join(HERE, folder, name))
                 del mine["about"]
                 handle = open(os.path.join(COLOR_VOATS, folder, name[:-5] + ".toml"), "rb")
@@ -261,4 +292,4 @@ class RankingFileTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=9ebbfa76f10d75fe204a182ae2180c3fc9cdd9e31fef93edb6be6ac5a12cfe26 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1e047e6c7348772c44e53ff8b2bbe44c63cf79b6ca4318e03cb091e3cde71841 ====

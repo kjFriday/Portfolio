@@ -72,9 +72,12 @@ import time
 import audit
 import ecp
 import local_inference
+import localkey
 import mcp_server
+import payloads
 import qr_codec
 import registry
+import scans
 import settings
 import sheets
 import shortlinks
@@ -112,6 +115,7 @@ CSV_COLUMNS = ("id", "color", "color_name", "family", "link", "destination", "sh
                "ec_level", "version", "origin", "created")
 LINKS = shortlinks.copy_links(shortlinks.DEFAULT_LINKS)  # links.json, put in place by apply_settings()
 LINK_SECTION = "local"  # the section new short links use: settings.json's links.use
+SCANS_VOTE = False  # settings.json's colors.scans_vote: scans feed the ranking's scans algo
 
 
 # =================================================================================================
@@ -146,9 +150,10 @@ def default_audit_path():
 def apply_settings(values):
     """Put settings.json's values in place across the modules, and load planner.json and links.json
     -> [warnings]."""
-    global DEFAULT_SCALE, PROTOCOL_TIMEOUT, WINDOW_TIMEOUT, LINKS, LINK_SECTION
+    global DEFAULT_SCALE, PROTOCOL_TIMEOUT, WINDOW_TIMEOUT, LINKS, LINK_SECTION, SCANS_VOTE
     warnings = []
     colors = values["colors"]
+    SCANS_VOTE = colors["scans_vote"]
     swatch.MIN_CONTRAST = colors["minimum_contrast"]
     swatch.NEAR = colors["near_distance"]
     swatch.RANKING_ROOT = colors["rankings_folder"] or HERE
@@ -193,6 +198,7 @@ def make_engine(db_path, inference_url, timeout, values, model):
     engine["preset"] = values["colors"]["preset"]
     engine["audit_file"] = values["audit"]["file"] or default_audit_path()
     engine["links"] = LINKS
+    engine["scans_vote"] = values["colors"]["scans_vote"]
     return engine
 
 
@@ -253,7 +259,8 @@ def slug(text):
 
 
 def suggested_name(link, color, kind):
-    return slug(link) + "-" + color[1:] + "." + kind
+    """A file name for a code. A secret in the text (a Wi-Fi password) never reaches it."""
+    return slug(payloads.stored_form(link)[0]) + "-" + color[1:] + "." + kind
 
 
 def with_registry(db_path, work):
@@ -295,12 +302,30 @@ def plan_short_link(db_path, target, color, short):
     return with_registry(db_path, plan)
 
 
-def make_qr(db_path, link, color, level, path, scale, short=None, logo=None):
+def masked_entry(db_path, text, entry):
+    """Fill in a code's Entry from the text it holds -> Result Entry. A secret (a Wi-Fi password) is
+    never stored: the Entry gets the text with it masked, and a hash of the real text under the
+    registry's local key, which finds the record again when the code is scanned."""
+    stored, masked = payloads.stored_form(text)
+    entry["link"] = stored
+    if masked:
+        key = localkey.key_for(db_path)
+        if not key["ok"]:
+            return key
+        entry["payload_hash"] = localkey.tag(key["value"], "payload", text)
+    return ok_result(entry)
+
+
+def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, built=False):
     """Draw `link` as a QR code in `color`, save it to `path` (.png or .svg), read the file back to
     prove it scans, and register it -> Result Made. With `short` (see short_request), `link` is the
     destination: the code holds a short link to it instead, with that address printed under it.
-    With `logo` (an Image), the code is level H with the logo in its middle (qr_codec.place_logo)."""
-    text = textsafe.clean(link, None).strip()
+    With `logo` (an Image), the code is level H with the logo in its middle (qr_codec.place_logo).
+    With `built`, `link` is a payloads.build text, used exactly as it is: its line ends are part of
+    it. Made's link is what the registry keeps, so a Wi-Fi password is masked there too."""
+    text = link
+    if not built:
+        text = textsafe.clean(link, None).strip()
     if text == "":
         return fail("type a link or some text first")
     color = swatch.normalize_hex(color)
@@ -351,10 +376,13 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None):
             return fail("with this logo the saved picture did not read back the same, so it was removed; try a "
                         "smaller or lighter logo")
         return fail("the saved picture did not read back the same, so it was removed")
-    entry = {"link": text, "color": color, "path": path, "format": qr_codec.file_kind(path), "ec_level": level,
+    entry = {"color": color, "path": path, "format": qr_codec.file_kind(path), "ec_level": level,
              "version": matrix["version"], "origin": "made"}
     if code != "":
         entry["short"] = {"code": code, "target": target}
+    filled = masked_entry(db_path, text, entry)
+    if not filled["ok"]:
+        return filled
 
     def register(connection):
         return registry.save_qr(connection, entry)
@@ -362,7 +390,7 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None):
     saved_record = with_registry(db_path, register)
     if not saved_record["ok"]:
         return saved_record
-    return ok_result({"id": saved_record["value"], "path": path, "link": text, "color": color,
+    return ok_result({"id": saved_record["value"], "path": path, "link": entry["link"], "color": color,
                       "version": matrix["version"], "level": level, "short_code": code, "target": target})
 
 
@@ -381,14 +409,93 @@ def retarget_link(db_path, code, link):
     return changed
 
 
-def export_redirects(db_path, folder, section):
+def undo_link_change(db_path, code):
+    """Send short link `code` back where it went before its latest change -> Result its target now."""
+    def undo(connection):
+        return registry.undo_last_change(connection, code)
+
+    return with_registry(db_path, undo)
+
+
+def schedule_link_change(db_path, code, link, from_day):
+    """Send short link `code` to `link` from `from_day` on -> Result the schedule's id."""
+    checked = shortlinks.check_target(link)
+    if not checked["ok"]:
+        return checked
+
+    def schedule(connection):
+        return registry.schedule_change(connection, code, checked["value"], from_day)
+
+    return with_registry(db_path, schedule)
+
+
+def cancel_link_change(db_path, number):
+    def cancel(connection):
+        return registry.cancel_scheduled(connection, number)
+
+    return with_registry(db_path, cancel)
+
+
+def link_history(db_path, code):
+    """A short link's past and future -> Result {"changes": [Change], "coming": [Scheduled]}."""
+    def read(connection):
+        return ok_result({"changes": registry.link_changes(connection, code),
+                          "coming": registry.scheduled(connection, code)})
+
+    return with_registry(db_path, read)
+
+
+def due_link_changes(db_path, today):
+    """The scheduled changes whose day has come -> Result [Scheduled]."""
+    def read(connection):
+        return ok_result(registry.due_changes(connection, today))
+
+    return with_registry(db_path, read)
+
+
+def apply_due_changes(db_path, today):
+    """Make the scheduled changes whose day has come -> Result how many."""
+    def apply(connection):
+        return registry.apply_due(connection, today)
+
+    return with_registry(db_path, apply)
+
+
+def import_scan_file(db_path, path):
+    """Scan counts from an analytics CSV or a server log into the registry -> Result {"kind", "source",
+    "read", "ignored", "days", "scans": how many counted, "unknown": [IDs that are not short links here]}.
+    Importing the same file again changes nothing."""
+    read = scans.read_file(path)
+    if not read["ok"]:
+        return read
+    value = read["value"]
+
+    def bring(connection):
+        return registry.import_scans(connection, value["counts"], value["source"])
+
+    saved = with_registry(db_path, bring)
+    if not saved["ok"]:
+        return saved
+    counted = 0
+    for key in value["counts"]:
+        if key[0] not in saved["value"]["unknown"]:
+            counted = counted + value["counts"][key]
+    return ok_result({"kind": value["kind"], "source": value["source"], "read": value["read"],
+                      "ignored": value["ignored"], "days": saved["value"]["days"], "scans": counted,
+                      "unknown": saved["value"]["unknown"]})
+
+
+def export_redirects(db_path, folder, section, day=""):
     """Write a redirect page for every short link of `section` ("local" or "nonlocal") into `folder`
-    (shortlinks.export_pages) -> Result. The registry is only read, on the read-only rail."""
+    (shortlinks.export_pages), with the destination in force on `day` ("" for today) -> Result. The
+    registry is only read, on the read-only rail."""
+    if day == "":
+        day = registry.today_text()
     opened = registry.connect(db_path, True)
     if not opened["ok"]:
         return opened
     try:
-        rows = registry.short_links(opened["value"])
+        rows = registry.short_links_on(opened["value"], day)
     except Exception as error:
         return fail("cannot read the short links: " + str(error))
     finally:
@@ -539,6 +646,9 @@ def redraw_record(db_path, number, color, scale):
     if not found["ok"]:
         return found
     row = found["value"]
+    if row["payload_hash"] is not None:
+        return fail(os.path.basename(row["path"]) + " holds a Wi-Fi password the registry does not keep, so it "
+                    "cannot be drawn again here; make it again in the Make tab")
     made = qr_codec.encode_text(row["link"], row["ec_level"], 1, -1)
     if not made["ok"]:
         return made
@@ -705,6 +815,7 @@ def make_batch(db_path, rows, folder, kind, level, scale, section, snap=False, w
         row = rows[index]
         line = {"row": row["row"], "status": "skipped", "reason": row["problem"], "link": row["link"],
                 "color": row["color"], "label": row["label"], "path": "", "short_id": "", "note": ""}
+        line["link"] = payloads.stored_form(row["link"])[0]  # a report never holds a Wi-Fi password
         report.append(line)
         if not stopped and watch is not None and watch(index, len(rows)):
             stopped = True
@@ -799,11 +910,14 @@ def register_picture(db_path, path, color):
     if picture["value"]["format"] not in registry.FORMATS:
         return fail("only PNG and SVG pictures can be registered; save it as PNG first")
     reading = picture["value"]["reading"]
+    entry = {"color": color, "path": registry.display_path(path), "format": picture["value"]["format"],
+             "ec_level": reading["level"], "version": reading["version"], "origin": "registered"}
+    filled = masked_entry(db_path, reading["text"], entry)
+    if not filled["ok"]:
+        return filled
 
     def register(connection):
-        return registry.save_qr(connection, {"link": reading["text"], "color": color, "path": registry.display_path(path),
-                                             "format": picture["value"]["format"], "ec_level": reading["level"],
-                                             "version": reading["version"], "origin": "registered"})
+        return registry.save_qr(connection, entry)
 
     return with_registry(db_path, register)
 
@@ -852,22 +966,29 @@ def import_color_voats(db_path, social_path):
 def board(db_path, preset):
     """The usable colors best first for a preset, and the votes -> Result {"order", "votes", "places"}."""
     def read(connection):
-        return ok_result({"log": registry.vote_log(connection), "votes": registry.vote_map(connection)})
+        counts = None
+        if SCANS_VOTE:
+            counts = registry.color_scans(connection)
+        return ok_result({"log": registry.vote_log(connection), "votes": registry.vote_map(connection), "scans": counts})
 
     read_votes = with_registry(db_path, read)
     if not read_votes["ok"]:
         return read_votes
-    ranked = swatch.rank_colors(preset, read_votes["value"]["log"])
+    ranked = swatch.rank_colors(preset, read_votes["value"]["log"], read_votes["value"]["scans"])
     if not ranked["ok"]:
         return ranked
     return ok_result({"order": swatch.usable_board(ranked["value"]), "votes": read_votes["value"]["votes"],
                       "places": swatch.rank_places(ranked["value"])})
 
 
-def shown_from_row(row, exists):
+def shown_from_row(row, exists, totals=None):
+    """A registry Row as a result row. `totals` is registry.scan_totals's answer, when it was read."""
+    count = None
+    if totals is not None and row["short_code"] != "":
+        count = totals.get(row["short_code"], {"total": 0, "recent": 0})
     return {"id": row["id"], "link": row["link"], "hex": row["hex"], "name": row["name"], "family": row["family"],
             "path": row["path"], "exists": exists, "ec_level": row["ec_level"], "version": row["version"],
-            "short_code": row["short_code"], "target": row["target"]}
+            "short_code": row["short_code"], "target": row["target"], "scans": count}
 
 
 def shown_from_record(record):
@@ -878,7 +999,7 @@ def shown_from_record(record):
         code = record["payload_url"].rstrip("/").split("/")[-1]
     return {"id": record["id"], "link": record["payload_url"], "hex": record["hex"], "name": record["color_name"],
             "family": record["color_family"], "path": record["file_path"], "exists": record["exists"],
-            "ec_level": "M", "version": 1, "short_code": code, "target": record["target_url"]}
+            "ec_level": "M", "version": 1, "short_code": code, "target": record["target_url"], "scans": None}
 
 
 def destination(shown):
@@ -886,8 +1007,9 @@ def destination(shown):
     return shown["target"] or shown["link"]
 
 
-def search(db_path, by, value, near, limit):
-    """The window's own lookup by QR code or by color (no model needed) -> Result [Shown]."""
+def search(db_path, by, value, near, limit, today=""):
+    """The window's own lookup by QR code or by color (no model needed) -> Result [Shown], with each
+    short link's scans up to `today` ("" for today)."""
     text = textsafe.clean(value, None).strip()
     if text == "":
         return fail("type what to look for")
@@ -896,19 +1018,22 @@ def search(db_path, by, value, near, limit):
         return found_plan
 
     def read(connection):
-        return ok_result(registry.all_rows(connection))
+        return ok_result({"rows": registry.all_rows(connection),
+                          "totals": registry.scan_totals(connection, today or registry.today_text())})
 
-    rows = with_registry(db_path, read)
-    if not rows["ok"]:
-        return rows
+    found = with_registry(db_path, read)
+    if not found["ok"]:
+        return found
     shown = []
-    for row in registry.find_rows(rows["value"], ecp.plan_filters(found_plan["value"]), found_plan["value"]["limit"]):
-        shown.append(shown_from_row(row, registry.file_state(row["path"], False)))
+    for row in registry.find_rows(found["value"]["rows"], ecp.plan_filters(found_plan["value"]),
+                                  found_plan["value"]["limit"]):
+        shown.append(shown_from_row(row, registry.file_state(row["path"], False), found["value"]["totals"]))
     return ok_result(shown)
 
 
 def matches_for_text(db_path, text, path):
-    """Records holding exactly this text, or registered at this file -> Result [Shown]."""
+    """Records holding exactly this text, or registered at this file -> Result [Shown]. A masked record
+    is found by the keyed hash of the real text, when this registry's key is here."""
     def read(connection):
         return ok_result(registry.all_rows(connection))
 
@@ -918,9 +1043,15 @@ def matches_for_text(db_path, text, path):
     key = ""
     if path != "":
         key = registry.path_key(path)
+    tag = ""
+    if payloads.stored_form(text)[1]:
+        secret = localkey.read_key(localkey.key_path(db_path))
+        if secret is not None:
+            tag = localkey.tag(secret, "payload", text)
     shown = []
     for row in rows["value"]:
-        if row["link"] == text or (key != "" and row["path_key"] == key):
+        same = row["link"] == text or (tag != "" and row["payload_hash"] == tag)
+        if same or (key != "" and row["path_key"] == key):
             shown.append(shown_from_row(row, registry.file_state(row["path"], False)))
     return ok_result(shown)
 
@@ -1005,6 +1136,11 @@ def selftest():
                          None, "selftest")
         check(run["ok"] and run["value"]["made"] == 1 and run["value"]["skipped"] == 1 and
               os.path.isfile(run["value"]["report"]), "a list makes its codes and reports the row it skipped", failures)
+        wifi = payloads.build("wifi", {"ssid": "Cafe", "password": "selftest-secret"})["value"]
+        joined = make_qr(db_path, wifi["text"], "#663399", "M", os.path.join(folder, "wifi.png"), 4, None, None, True)
+        found = matches_for_text(db_path, wifi["text"], "")
+        check(joined["ok"] and joined["value"]["link"] == wifi["stored"] and found["ok"] and len(found["value"]) == 1,
+              "a Wi-Fi code keeps its password out of the registry, and is still found by scanning it", failures)
         found = search(db_path, "color", "blue", False, 20)
         check(found["ok"] and len(found["value"]) == 1 and found["value"][0]["path"] == made["value"]["path"],
               "found again by color, with its path", failures)
@@ -1023,6 +1159,23 @@ def selftest():
         exported = export_redirects(db_path, os.path.join(folder, "site"), "local")
         check(exported["ok"] and exported["value"]["written"] == 1 and len(exported["value"]["skipped"]) == 1,
               "the local section's redirect page is exported, and only that one", failures)
+        code = local["value"]["short_code"]
+        retarget_link(db_path, code, "https://example.com/later-still")
+        schedule_link_change(db_path, code, "https://example.com/next-year", "2099-01-01")
+        undone = undo_link_change(db_path, code)
+        known = link_history(db_path, code)
+        check(undone["ok"] and undone["value"] == "https://example.com/later" and known["ok"] and
+              len(known["value"]["changes"]) == 2 and len(known["value"]["coming"]) == 1,
+              "a short link keeps its history, undoes a change and schedules another", failures)
+        report = os.path.join(folder, "report.csv")
+        handle = open(report, "w", encoding="utf-8")
+        handle.write("date,utm_content,count\n2026-10-28," + code + "-006633,5\n")
+        handle.close()
+        import_scan_file(db_path, report)
+        imported = import_scan_file(db_path, report)
+        shown = search(db_path, "qr_code", code, False, 20, "2026-10-29")
+        check(imported["ok"] and shown["ok"] and shown["value"][0]["scans"] == {"total": 5, "recent": 5},
+              "scans are imported per short link, and importing again changes nothing", failures)
 
         print("ecp and mcp")
         engine = ecp.new_engine(db_path, "http://127.0.0.1:1", 1.0, __version__)
@@ -1161,7 +1314,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
 
     window = tk.Tk()
     window.title("Generic Company Inc. — QR Palette " + __version__)
-    window.geometry("1100x740")
+    window.geometry("1100x" + str(min(800, window.winfo_screenheight() - 80)))
     window.minsize(940, 640)
     icon_set = set_icon(window)
     status = tk.StringVar(value="Ready")
@@ -1517,8 +1670,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         dialog.resizable(False, False)
         body = ttk.Frame(dialog, padding=12)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="For the code holding " + textsafe.clean(text, 80)).grid(row=0, column=0, columnspan=2,
-                                                                                     sticky="w")
+        ttk.Label(body, text="For the code holding " + textsafe.clean(payloads.one_line(payloads.stored_form(text)[0]),
+                                                                      80)).grid(row=0, column=0, columnspan=2, sticky="w")
         width_text = tk.StringVar(value="3")
         distance_text = tk.StringVar(value="0.3")
         ttk.Label(body, text="Printed width of the picture (cm)").grid(row=1, column=0, sticky="w", pady=(8, 2))
@@ -1718,7 +1871,35 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         stop_button.pack(side="left", padx=6)
         ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left")
 
+    def import_scans_file():
+        """Scan counts from an analytics report or a server log. Only counts are kept."""
+        path = filedialog.askopenfilename(title="An analytics report or a server log",
+                                          filetypes=[("Reports and logs", "*.csv *.log *.txt *.gz"), ("All files", "*.*")])
+        if not path:
+            return
+        path = registry.display_path(path)
+
+        def done(outcome):
+            if not outcome["ok"]:
+                status.set("No scans imported")
+                messagebox.showerror("Import scans", outcome["error"])
+                return
+            value = outcome["value"]
+            message = ("Imported " + str(value["scans"]) + " scan(s) on " + str(value["days"]) + " code-day(s) from " +
+                       os.path.basename(path) + " (" + value["source"] + ")")
+            if value["ignored"] > 0:
+                message = message + "; " + str(value["ignored"]) + " other line(s) ignored"
+            if len(value["unknown"]) > 0:
+                message = message + "; " + str(len(value["unknown"])) + " ID(s) are not short links here"
+            if len(state["results"]) > 0:
+                run_search(message)
+            else:
+                status.set(message)
+
+        start_job("Importing scans", lambda: import_scan_file(db_path, path), done)
+
     file_menu.add_command(label="Make from a list…", command=make_from_list)
+    file_menu.add_command(label="Import scans…", command=import_scans_file)
     file_menu.add_command(label="Import votes from Color Voats…", command=import_votes)
     file_menu.add_command(label="Export local redirect pages…", command=lambda: export_pages("local"))
     file_menu.add_command(label="Export nonlocal redirect pages…", command=lambda: export_pages("nonlocal"))
@@ -1748,10 +1929,19 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     tabs.add(make_tab, text="Make")
     make_bar = ttk.Frame(make_tab)
     make_bar.pack(fill="x")
+    ttk.Label(make_bar, text="Kind").pack(side="left")
+    kind_names = {}
+    for name in payloads.KINDS:
+        kind_names[payloads.TITLES[name]] = name
+    kind_box = ttk.Combobox(make_bar, values=list(kind_names), width=14, state="readonly")
+    kind_box.set(payloads.TITLES["link"])
+    kind_box.pack(side="left", padx=(6, 12))
     ttk.Label(make_bar, text="Link").pack(side="left")
     link_text = tk.StringVar(value="")
-    link_entry = ttk.Entry(make_bar, textvariable=link_text, width=56)
+    link_entry = ttk.Entry(make_bar, textvariable=link_text, width=40)
     link_entry.pack(side="left", padx=6)
+    kind_form = ttk.Frame(make_tab)
+    kind_fields = {}
     ttk.Label(make_bar, text="Preset").pack(side="left", padx=(12, 0))
     preset_box = ttk.Combobox(make_bar, values=swatch.presets(), width=10, state="readonly")
     preset_box.set(preset)
@@ -1765,13 +1955,17 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     short_bar.pack(fill="x", pady=(6, 0))
     short_choice = tk.BooleanVar(value=LINKS["short_by_default"])
     section_choice = tk.StringVar(value=LINK_SECTION)
-    ttk.Checkbutton(short_bar, text="Short link, printed as", variable=short_choice,
-                    command=lambda: schedule_preview()).pack(side="left")
+    link_only = []  # what applies only to web links: a Kind other than Web link turns these off
+    link_only.append(ttk.Checkbutton(short_bar, text="Short link, printed as", variable=short_choice,
+                                     command=lambda: schedule_preview()))
+    link_only[0].pack(side="left")
     for section in shortlinks.SECTIONS:
-        ttk.Radiobutton(short_bar, text=section + "  " + LINKS[section]["base"] + "…", value=section,
-                        variable=section_choice, command=lambda: change_section()).pack(side="left", padx=(10, 0))
+        link_only.append(ttk.Radiobutton(short_bar, text=section + "  " + LINKS[section]["base"] + "…", value=section,
+                                         variable=section_choice, command=lambda: change_section()))
+        link_only[len(link_only) - 1].pack(side="left", padx=(10, 0))
     if len(LINKS["templates"]) > 0:
-        ttk.Button(short_bar, text="From template…", command=lambda: from_template()).pack(side="left", padx=16)
+        link_only.append(ttk.Button(short_bar, text="From template…", command=lambda: from_template()))
+        link_only[len(link_only) - 1].pack(side="left", padx=16)
     make_body = ttk.Frame(make_tab)
     make_body.pack(fill="both", expand=True, pady=(8, 0))
     tile_side = ttk.Frame(make_body)
@@ -1805,6 +1999,50 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
 
     def chosen_level():
         return level_box.get()[:1] or "M"
+
+    def chosen_kind():
+        return kind_names[kind_box.get()]
+
+    def form_values():
+        values_now = {}
+        for key in kind_fields:
+            values_now[key] = kind_fields[key].get()
+        return values_now
+
+    def change_kind(event=None):
+        """A small form for the kind of code chosen, in place of the Link box; a web link has none."""
+        kind = chosen_kind()
+        for child in kind_form.winfo_children():
+            child.destroy()
+        kind_fields.clear()
+        fields = payloads.FIELDS[kind]
+        for index in range(len(fields)):
+            key, label, hidden, choices = fields[index]
+            row = index // 3
+            column = 2 * (index % 3)
+            ttk.Label(kind_form, text=label).grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else 16, 6),
+                                                  pady=2)
+            if choices is not None:
+                field = ttk.Combobox(kind_form, values=list(choices), state="readonly", width=12)
+                field.set(choices[0])
+                field.bind("<<ComboboxSelected>>", schedule_preview)
+                field.grid(row=row, column=column + 1, sticky="w", pady=2)
+            else:
+                field = ttk.Entry(kind_form, width=26, show="*" if hidden else "")
+                field.bind("<KeyRelease>", schedule_preview)
+                field.grid(row=row, column=column + 1, sticky="w", pady=2)
+            kind_fields[key] = field
+        if kind == "link":
+            kind_form.pack_forget()
+            link_entry.config(state="normal")
+            for widget in link_only:
+                widget.config(state="normal")
+        else:
+            kind_form.pack(fill="x", pady=(6, 0), after=make_bar)
+            link_entry.config(state="disabled")
+            for widget in link_only:
+                widget.config(state="disabled")
+        refresh_preview()
 
     def tile_box(index):
         column = index % COLUMNS
@@ -1883,14 +2121,25 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         state["matrix"] = None
         state["preview_text"] = ""
         state["preview_logo"] = None
-        text = textsafe.clean(link_text.get(), None).strip()
-        if text == "":
-            make_info.set("Type a link and pick a color.")
-            return
+        kind = chosen_kind()
+        lead = ""
+        if kind == "link":
+            text = textsafe.clean(link_text.get(), None).strip()
+            if text == "":
+                make_info.set("Type a link and pick a color.")
+                return
+        else:
+            built = payloads.build(kind, form_values())
+            if not built["ok"]:
+                make_info.set(built["error"].capitalize() + ".")
+                return
+            text = built["value"]["text"]
+            lead = "Holds: " + textsafe.clean(payloads.one_line(built["value"]["stored"]), 240) + "\n"
+            if built["value"]["masked"]:
+                lead = lead + "The password goes in the code and its picture; the registry keeps it masked.\n"
         color = state["picked"] or qr_codec.INK
         caption = ""
-        lead = ""
-        if short_choice.get():
+        if kind == "link" and short_choice.get():
             checked = shortlinks.check_target(text)
             if not checked["ok"]:
                 make_info.set(checked["error"] + ".")
@@ -2015,7 +2264,17 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         schedule_preview()
 
     def save_as(kind):
-        text = textsafe.clean(link_text.get(), None).strip()
+        code_kind = chosen_kind()
+        name = ""
+        if code_kind == "link":
+            text = textsafe.clean(link_text.get(), None).strip()
+        else:
+            built = payloads.build(code_kind, form_values())
+            if not built["ok"]:
+                make_info.set(built["error"].capitalize() + ".")
+                return
+            text = built["value"]["text"]
+            name = built["value"]["name"]
         if text == "" or state["picked"] == "":
             make_info.set("Type a link and pick a color first.")
             return
@@ -2024,15 +2283,17 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         except OSError:
             state["folder"] = os.path.expanduser("~")
         label = {"png": "PNG picture", "svg": "SVG drawing"}[kind]
-        path = filedialog.asksaveasfilename(title="Save QR code", initialdir=state["folder"],
-                                            initialfile=suggested_name(text, state["picked"], kind),
+        initial = suggested_name(text, state["picked"], kind)
+        if name != "":
+            initial = slug(name) + "-" + state["picked"][1:] + "." + kind
+        path = filedialog.asksaveasfilename(title="Save QR code", initialdir=state["folder"], initialfile=initial,
                                             defaultextension="." + kind, filetypes=[(label, "*." + kind)])
         if not path:
             return
         color = state["picked"]
         level = chosen_level()
         short = None
-        if short_choice.get():
+        if code_kind == "link" and short_choice.get():
             if state["short_candidate"] == "":
                 state["short_candidate"] = shortlinks.new_code(LINKS["id_digits"])
             short = short_request(state["short_candidate"], section_choice.get())
@@ -2054,11 +2315,14 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                            " sends people to " + outcome["value"]["target"] + " (File → Export " + short["section"] +
                            " redirect pages… publishes it)")
                 refresh_served()
+            if payloads.is_masked(outcome["value"]["link"]):
+                message = message + "  ·  the password is in the picture only, not in the registry"
             status.set(message)
             refresh_footer()
             refresh_used()
 
-        start_job("Saving", lambda: make_qr(db_path, text, color, level, path, DEFAULT_SCALE, short, logo), done)
+        start_job("Saving", lambda: make_qr(db_path, text, color, level, path, DEFAULT_SCALE, short, logo,
+                                            code_kind != "link"), done)
 
     def from_template():
         """A small dialog that builds the link from one of links.json's templates."""
@@ -2130,6 +2394,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         redraw_board()
 
     tiles.bind("<Button-1>", pick_tile)
+    kind_box.bind("<<ComboboxSelected>>", change_kind)
     link_entry.bind("<KeyRelease>", schedule_preview)
     level_box.bind("<<ComboboxSelected>>", schedule_preview)
     preset_box.bind("<<ComboboxSelected>>", change_preset)
@@ -2194,7 +2459,9 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         state["picture"] = picture
         reading = picture["reading"]
         read_text.insert("1.0", reading["text"])
-        read_details.set("Read: " + qr_codec.describe(reading) + ".")
+        kind = payloads.kind_of(reading["text"])
+        read_details.set("Read: " + qr_codec.describe(reading) + "." +
+                         (" Kind: " + payloads.TITLES[kind] + "." if kind not in ("", "link") else ""))
         detected_swatch.create_rectangle(0, 0, 24, 24, fill=picture["color"], outline="")
         detected_text.set("detected ≈ " + picture["color"] + " (" + swatch.color_name(picture["color"]) + ")")
         png = preview_png(reading["text"], picture["color"], reading["level"], reading["version"])
@@ -2357,16 +2624,18 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     question_entry = ttk.Entry(ask_row, textvariable=question, width=26)
     question_entry.pack(side="left", padx=6, fill="x", expand=True)  # narrow windows keep the buttons whole
     plan_text = tk.StringVar(value="Pick a local model to ask in plain English, e.g. \"blue codes that link to the shop\".")
-    results = ttk.Treeview(find_tab, columns=("hex", "link", "path", "exists"), show="tree headings", height=8)
+    results = ttk.Treeview(find_tab, columns=("hex", "link", "scans", "path", "exists"), show="tree headings", height=8)
     results.heading("#0", text="Color")
     results.heading("hex", text="Hex")
     results.heading("link", text="Link")
+    results.heading("scans", text="Scans (30 d)")
     results.heading("path", text="Path")
     results.heading("exists", text="File")
     results.column("#0", width=140, stretch=False)
     results.column("hex", width=74, stretch=False)
-    results.column("link", width=300)
-    results.column("path", width=380)
+    results.column("link", width=290)
+    results.column("scans", width=104, stretch=False)
+    results.column("path", width=300)
     results.column("exists", width=60, stretch=False)
     detail = ttk.Frame(find_tab)
     detail_preview = tk.Canvas(detail, width=170, height=170, background="#ffffff", highlightthickness=1,
@@ -2394,12 +2663,15 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         for index in range(len(shown_list)):
             shown = shown_list[index]
             exists = {True: "yes", False: "missing", None: "?"}[shown["exists"]]
-            link = destination(shown).replace("\n", " ")
+            link = payloads.one_line(destination(shown))
             if shown["short_code"] != "":
                 section = shortlinks.section_of(LINKS, shown["link"])
                 link = link + "   (" + (section + " " if section != "" else "") + "short " + shown["short_code"] + ")"
+            scanned = ""
+            if shown["scans"] is not None:
+                scanned = str(shown["scans"]["total"]) + " (" + str(shown["scans"]["recent"]) + ")"
             results.insert("", "end", iid=str(index), text=" " + shown["name"], image=swatch_image(shown["hex"]),
-                           values=(shown["hex"], link, shown["path"], exists))
+                           values=(shown["hex"], link, scanned, shown["path"], exists))
         detail_preview.delete("all")
         detail_text.set("Select a result to see it here.")
         status.set(note)
@@ -2464,7 +2736,10 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         caption = ""
         if shown["short_code"] != "":
             caption = shortlinks.caption(shown["link"])
-        photo = photo_from_png(preview_png(shown["link"], shown["hex"], shown["ec_level"], shown["version"], caption))
+        photo = None
+        masked = payloads.is_masked(shown["link"])
+        if not masked:  # a masked code cannot be drawn from what the registry keeps
+            photo = photo_from_png(preview_png(shown["link"], shown["hex"], shown["ec_level"], shown["version"], caption))
         state["photos"]["detail"] = photo
         if photo is not None:
             factor = 1
@@ -2481,10 +2756,30 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         if shown["short_code"] != "":
             detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["target"], 300) +
                             "\nPrinted as: " + shown["link"] + short_note(shown) +
-                            "\nPath: " + shown["path"] + more)
+                            "\nPath: " + shown["path"] + history_note(shown) + more)
         else:
-            detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["link"], 300) +
-                            "\nPath: " + shown["path"] + more)
+            note = ""
+            if masked:
+                note = "\nThe registry keeps this code without its password: open the picture to see it."
+            detail_text.set(shown["name"] + "  " + shown["hex"] + "\nHolds: " +
+                            textsafe.clean(payloads.one_line(shown["link"]), 300) + "\nPath: " + shown["path"] + note + more)
+
+    def history_note(shown):
+        """A short link's scans, last change and next scheduled change, as lines for the detail."""
+        lines = ""
+        if shown["scans"] is not None:
+            lines = ("\nScans: " + str(shown["scans"]["total"]) + " in all, " + str(shown["scans"]["recent"]) +
+                     " in the last " + str(registry.RECENT_DAYS) + " days")
+        known = link_history(db_path, shown["short_code"])
+        if known["ok"]:
+            if len(known["value"]["changes"]) > 0:
+                last = known["value"]["changes"][0]
+                lines = (lines + "\nChanged " + last["changed"][:10] + ", from " + textsafe.clean(last["old_target"], 120) +
+                         " (History… has them all)")
+            if len(known["value"]["coming"]) > 0:
+                next_one = known["value"]["coming"][0]
+                lines = lines + "\nGoes to " + textsafe.clean(next_one["target"], 120) + " from " + next_one["from_day"]
+        return lines
 
     def open_shown_picture():
         shown = selected_shown()
@@ -2652,6 +2947,146 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             refresh_used()
 
         start_job("Forgetting", work, done)
+
+    def show_history():
+        """A short link's history, with Undo last change, and its changes to come, with Schedule a change."""
+        shown = selected_shown()
+        if shown is None or shown["short_code"] == "":
+            status.set("Pick a code with a short link: a code that holds its link itself has no history")
+            return
+        code = shown["short_code"]
+        dialog = tk.Toplevel(window)
+        dialog.title("Short link history")
+        dialog.geometry("760x470")
+        dialog.transient(window)
+        body = ttk.Frame(dialog, padding=10)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Printed as " + shown["link"] + short_note(shown)).pack(anchor="w")
+        now_text = tk.StringVar(value="")
+        ttk.Label(body, textvariable=now_text, wraplength=730, justify="left").pack(anchor="w", pady=(2, 8))
+        ttk.Label(body, text="Changes to come").pack(anchor="w")
+        coming = ttk.Treeview(body, columns=("day", "target"), show="headings", height=3, selectmode="browse")
+        coming.heading("day", text="From")
+        coming.heading("target", text="Goes to")
+        coming.column("day", width=100, stretch=False)
+        coming.column("target", width=620)
+        coming.pack(fill="x")
+        ttk.Label(body, text="Where it has gone, newest first").pack(anchor="w", pady=(8, 0))
+        past = ttk.Treeview(body, columns=("when", "old", "new"), show="headings", height=7)
+        past.heading("when", text="Changed (UTC)")
+        past.heading("old", text="From")
+        past.heading("new", text="To")
+        past.column("when", width=170, stretch=False)
+        past.column("old", width=275)
+        past.column("new", width=275)
+        past.pack(fill="both", expand=True)
+        buttons = ttk.Frame(body)
+        buttons.pack(anchor="e", pady=(8, 0))
+        record = {"target": shown["target"], "changes": []}
+
+        def alive():
+            return dialog.winfo_exists()
+
+        def fill(outcome):
+            status.set("Ready")
+            if not alive():
+                return
+            if not outcome["ok"]:
+                now_text.set(outcome["error"])
+                return
+            record["changes"] = outcome["value"]["changes"]
+            for table in (coming, past):
+                for item in table.get_children():
+                    table.delete(item)
+            for change in outcome["value"]["coming"]:
+                coming.insert("", "end", iid=str(change["id"]), values=(change["from_day"], change["target"]))
+            for change in record["changes"]:
+                past.insert("", "end", values=(change["changed"], change["old_target"], change["new_target"]))
+            if len(record["changes"]) > 0:
+                record["target"] = record["changes"][0]["new_target"]
+            now_text.set("Sends people to " + record["target"])
+
+        def load():
+            start_job("Reading the history", lambda: link_history(db_path, code), fill)
+
+        def changed(outcome, message):
+            if not outcome["ok"]:
+                messagebox.showerror("Short link history", outcome["error"], parent=dialog if alive() else window)
+                status.set("Nothing changed")
+                return
+            status.set(message)
+            refresh_served()
+            if len(state["results"]) > 0:
+                run_search(message)
+            if alive():
+                load()
+
+        def undo():
+            if len(record["changes"]) == 0:
+                status.set("This short link has not been changed yet")
+                return
+            back = record["changes"][0]["old_target"]
+            if not messagebox.askyesno("Undo last change", "Send " + shown["link"] + " back to\n\n" + back + " ?",
+                                       parent=dialog):
+                return
+            start_job("Undoing the change", lambda: undo_link_change(db_path, code),
+                      lambda outcome: changed(outcome, "Sent back to " + back +
+                                              "  ·  export the redirect pages again to publish it"))
+
+        def schedule():
+            day = simpledialog.askstring("Schedule a change", "From which day? (YYYY-MM-DD)", parent=dialog)
+            if day is None:
+                return
+            day = day.strip()
+            if not registry.is_day(day):
+                messagebox.showerror("Schedule a change", "A day is written YYYY-MM-DD, such as 2026-12-01.", parent=dialog)
+                return
+            link = simpledialog.askstring("Schedule a change", "Where should it send people from " + day + "?",
+                                          initialvalue=record["target"], parent=dialog)
+            if link is None:
+                return
+            start_job("Scheduling the change", lambda: schedule_link_change(db_path, code, link, day),
+                      lambda outcome: changed(outcome, "From " + day + " it sends people to " + link.strip() +
+                                              "  ·  exports from that day on use it"))
+
+        def cancel():
+            chosen = coming.selection()
+            if len(chosen) == 0:
+                status.set("Pick the change to cancel first")
+                return
+            number = int(chosen[0])
+            start_job("Cancelling the change", lambda: cancel_link_change(db_path, number),
+                      lambda outcome: changed(outcome, "The scheduled change was cancelled"))
+
+        ttk.Button(buttons, text="Undo last change", command=undo).pack(side="left")
+        ttk.Button(buttons, text="Schedule a change…", command=schedule).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Cancel the scheduled change", command=cancel).pack(side="left")
+        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left", padx=6)
+        load()
+
+    def offer_due_changes():
+        """On start: changes scheduled for a day that has come are offered, never made unasked."""
+        today = registry.today_text()
+        due = due_link_changes(db_path, today)
+        if not due["ok"] or len(due["value"]) == 0:
+            return
+        lines = []
+        for change in due["value"][:8]:
+            lines.append(change["from_day"] + "  " + change["code"] + " goes to " + textsafe.clean(change["target"], 80))
+        if not messagebox.askyesno("Scheduled changes", str(len(due["value"])) + " scheduled change(s) of destination are "
+                                   "due:\n\n" + "\n".join(lines) + "\n\nApply them now? Exports already use them; "
+                                   "applying writes them into the registry and each link's history."):
+            return
+
+        def done(outcome):
+            if not outcome["ok"]:
+                messagebox.showerror("Scheduled changes", outcome["error"])
+                return
+            status.set("Applied " + str(outcome["value"]) + " scheduled change(s)  ·  export the redirect pages again to "
+                       "publish them")
+            refresh_served()
+
+        start_job("Applying the scheduled changes", lambda: apply_due_changes(db_path, today), done)
 
     def print_shown():
         """The selected codes on a sheet of labels or as posters (sheets.json), as a PDF or SVG."""
@@ -2871,8 +3306,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     ttk.Button(detail_changes, text="Redraw…", command=redraw_shown).pack(side="left", padx=6)
     ttk.Button(detail_changes, text="Forget record", command=forget_shown).pack(side="left")
     ttk.Button(detail_changes, text="Print sheet…", command=print_shown).pack(side="left", padx=6)
-    ttk.Label(detail_changes, text="Ctrl+click or Shift+click to pick several.", foreground="#555555").pack(
-        side="left", padx=6)
+    ttk.Button(detail_changes, text="History…", command=show_history).pack(side="left")
+    ttk.Label(detail_changes, text="Ctrl+click picks several.", foreground="#555555").pack(side="left", padx=6)
     results.bind("<<TreeviewSelect>>", show_detail)
     find_entry.bind("<Return>", lambda event: run_search())
     color_entry.bind("<Return>", lambda event: run_search())
@@ -2891,6 +3326,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     refresh_footer()
     if smoke_path == "":
         refresh_models()
+        window.after(600, offer_due_changes)
         if len(warnings) > 0:
             messagebox.showwarning("Settings", "Some settings could not be used, so their defaults are in place:\n\n" +
                                    "\n".join(warnings[:12]) + "\n\nSettings file: " + config["path"])
@@ -3040,4 +3476,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e12ca519241928f61a8f1496a05285b5c0fc3eeea8bc747ce428b6c0fb058cf7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=3c208430c113c3d2fd2a556ae4255493cef77228ad7ceee3be8f7d59d1662ef9 ====

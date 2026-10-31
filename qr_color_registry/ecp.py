@@ -23,7 +23,8 @@ hash-chained audit log. ECP.md is the paper.
 
 Records
   Engine     {"db", "endpoint", "endpoint_error", "timeout", "app_version", "default_model", "preset",
-              "audit_file", "ollama_version", "links": links.json as shortlinks.load_links gives it}
+              "audit_file", "ollama_version", "links": links.json as shortlinks.load_links gives it,
+              "scans_vote": whether scans feed the ranking (settings.json: colors.scans_vote)}
   Call       {"tool": str, "client_info": {} as the client says, "request_id": the JSON-RPC id or None}
   Outcome    {"ok": bool, "kind": "ok" | one of KINDS, "detail": str, "value": any}
   QueryPlan  {"intent": "find" | "recommend", "color", "near", "family", "link", "link_exact", "path",
@@ -217,7 +218,7 @@ def new_engine(db_path, inference_url, timeout, app_version):
         endpoint = parsed["value"]
     return {"db": db_path, "endpoint": endpoint, "endpoint_error": parsed["error"], "timeout": timeout,
             "app_version": app_version, "default_model": "", "preset": swatch.DEFAULT_PRESET, "audit_file": "",
-            "ollama_version": "", "links": shortlinks.copy_links(shortlinks.DEFAULT_LINKS)}
+            "ollama_version": "", "links": shortlinks.copy_links(shortlinks.DEFAULT_LINKS), "scans_vote": False}
 
 
 # --- The planner's configuration (planner.json) ----------------------------------------------------
@@ -570,7 +571,7 @@ def model_plan(engine, model, question):
 
 def read_environment(engine):
     """Everything an answer needs, read in one short visit on the read-only rail -> Outcome
-    {"rows", "counts", "votes", "vote_map", "used"}. The connection is closed before returning."""
+    {"rows", "counts", "votes", "vote_map", "used", "scans"}. The connection is closed before returning."""
     opened = registry.connect(engine["db"], True)
     if not opened["ok"]:
         return outcome("db_unavailable", opened["error"], None)
@@ -578,7 +579,9 @@ def read_environment(engine):
     try:
         snapshot = {"rows": registry.all_rows(connection), "counts": registry.counts(connection),
                     "votes": registry.vote_log(connection), "vote_map": registry.vote_map(connection),
-                    "used": registry.colors_in_use(connection)}
+                    "used": registry.colors_in_use(connection), "scans": None}
+        if engine["scans_vote"]:
+            snapshot["scans"] = registry.color_scans(connection)
     except Exception as error:
         text = str(error)
         kind = "db_unavailable"
@@ -649,7 +652,7 @@ def run_plan(snapshot, plan, preset, links):
     """A checked plan against a snapshot -> {"records", "colors", "summary", "truncated"}. `links`
     (links.json) gives the sections' bases."""
     flags = {"truncated": False}
-    ranked = swatch.rank_colors(preset, snapshot["votes"])
+    ranked = swatch.rank_colors(preset, snapshot["votes"], snapshot["scans"])
     order = []
     places = {}
     if ranked["ok"]:
@@ -967,4 +970,4 @@ def serve(handler, state, reader, writer):
 
 configure_planner(DEFAULT_PLANNER)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=1f4a90d163c6500f7e8ec7f902760cb871893eb19dbc4928c83893be7d75f624 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c535abe2e26754fefcd86cb7cdbb8db7efe05b3a1766c7bcf1546cd57c0b1605 ====

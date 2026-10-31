@@ -235,13 +235,14 @@ def presets():
     return ranking.preset_names(RANKING_ROOT)
 
 
-def rank_colors(name, voats):
-    """All 216 colors, best first, for a preset and a vote log -> Result [hex]."""
+def rank_colors(name, voats, scans=None):
+    """All 216 colors, best first, for a preset, a vote log and scans (None: they do not count)
+    -> Result [hex]."""
     preset = ranking.read_preset(RANKING_ROOT, name)
     if not preset["ok"]:
         return preset
     try:
-        return ok_result(ranking.rank(preset["value"], voats, palette()))
+        return ok_result(ranking.rank(preset["value"], voats, palette(), scans))
     except (ArithmeticError, ValueError, TypeError) as error:
         return fail("cannot rank with preset " + name + ": " + str(error))
 
@@ -262,4 +263,4 @@ def usable_board(order):
             board.append(color)
     return board
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4a29e06b5f5d19c73492e8c1c6c9be7fc67662fc7c3f1f8f7184cf6ad588f3a2 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=53af422bea1aa9430fbd1dfb90f7896783db0b3133162d71fdb302f599c4ed22 ====

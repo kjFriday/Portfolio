@@ -8,11 +8,12 @@
     "error_correction": "M"
   },
   "colors": {
-    "about": "preset: the ranking in presets/ (mixer, balanced, popular, discover, or your own). minimum_contrast: the WCAG contrast against white a color needs to be offered (3.0 keeps 118 of the 216). near_distance: how close in OKLab counts as near. rankings_folder: the folder that holds presets/ and weights/; empty means beside the program.",
+    "about": "preset: the ranking in presets/ (mixer, balanced, popular, discover, or your own). minimum_contrast: the WCAG contrast against white a color needs to be offered (3.0 keeps 118 of the 216). near_distance: how close in OKLab counts as near. rankings_folder: the folder that holds presets/ and weights/; empty means beside the program. scans_vote: let imported scans count in rankings that use the scans algo (the scans preset, or your own).",
     "preset": "mixer",
     "minimum_contrast": 3.0,
     "near_distance": 0.08,
-    "rankings_folder": ""
+    "rankings_folder": "",
+    "scans_vote": false
   },
   "inference": {
     "about": "The local model server: http on 127.0.0.1, ::1 or localhost only. model: the default model for ecp_query when a client passes no model_id, and the one the window selects at start; empty means a client must choose. require_cloud_disabled: refuse to plan unless the server reports its cloud features off (set OLLAMA_NO_CLOUD=1 for Ollama); turning it off lets a signed-in server reach the internet. Times are in seconds: timeout_seconds for --ecp and --mcp, window_timeout_seconds for the window's Ask. max_answer_tokens and retry_answer_tokens: room for a plan, and for one retry when it is cut off.",

@@ -33,9 +33,9 @@ committed files named here; the SHA-256 is of each source file at that commit.
 |---|---|---|---|
 | `qr_palette.py` (`reveal_command_line`) | `storage_manager.py` (`reveal_command`, `command_line`) | `59B7E4E4044C638728F81BD0F6B0725140F8BE108A752E6A0753269D2FCE9FC1` | Reduced to the one Explorer case used here: the path is quoted, because Explorer splits its own arguments at "," and "=". |
 
-`registry.py`, `local_inference.py`, `ecp.py`, `mcp_server.py`, `audit.py`, `shortlinks.py`, `sheets.py`, `settings.py`,
-the GUI and the other tests are new, and so are `ECP.md`, `planner.json`, `links.json`, `sheets.json` and
-`settings.example.json`. So are the logo and robustness parts of `qr_codec.py`. The 5 × 7 caption font in `qr_codec.py`
+`registry.py`, `local_inference.py`, `ecp.py`, `mcp_server.py`, `audit.py`, `shortlinks.py`, `sheets.py`, `payloads.py`,
+`scans.py`, `localkey.py`, `settings.py`, the GUI and the other tests are new, and so are `ECP.md`, `planner.json`, `links.json`, `sheets.json` and
+`settings.example.json`. So are the logo and robustness parts of `qr_codec.py`, and the `scans` algo in `ranking.py`. The 5 × 7 caption font in `qr_codec.py`
 (`GLYPHS`) was drawn for this project.
 
 ## Designs followed (no code copied)
@@ -46,4 +46,6 @@ the GUI and the other tests are new, and so are `ECP.md`, `planner.json`, `links
 | The short-link ID's check digit: the Damm algorithm and its published 10 × 10 quasigroup table | H. M. Damm, *Total anti-symmetrische Quasigruppen*, dissertation, Philipps-Universität Marburg, 2004 | `shortlinks.py` (`DAMM`, `check_digit`, `is_valid_code`) |
 | The file structure of a PDF (objects, cross-reference table, trailer) and the `rg`, `re` and `f` operators | ISO 32000 / Adobe *PDF Reference*, version 1.4 | `sheets.py` (`sheet_pdf`, `page_content`) |
 | The US Letter label layout: 30 labels of 2 5/8 × 1 inch | The common 5160 address-label sheet, its published measurements | `sheets.json` |
+| Code kinds: the `WIFI:` format and its escapes (ZXing's barcode contents), `SMSTO:`, vCard 3.0 (RFC 2426), iCalendar `VEVENT` and line folding (RFC 5545), `geo:` (RFC 5870), `mailto:` (RFC 6068), `tel:` (RFC 3966) | The formats, as published | `payloads.py` |
+| The access-log line: Common and Combined Log Format | NCSA HTTPd and Apache HTTP Server documentation | `scans.py` (`LOG_LINE`) |
 | The Box-Muller transform for the robustness score's grain | G. E. P. Box and M. E. Muller, *A Note on the Generation of Random Normal Deviates*, 1958 | `qr_codec.py` (`add_grain`) |

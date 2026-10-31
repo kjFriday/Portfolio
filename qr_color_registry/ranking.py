@@ -11,13 +11,16 @@
 A preset (presets/NAME.json) names the algo that ranks the colors and what it uses; each algo it feeds
 has a weights file (weights/ALGO.json). Both are plain, human-readable JSON, and every file may carry
 an "about" text that explains it. Change a number, save, and the next ranking uses it. The rules are
-Color Voats' (factory.py); the algos are its algos.py, copied unchanged (see PROVENANCE.md).
+Color Voats' (factory.py); the algos are its algos.py, copied unchanged (see PROVENANCE.md). One algo is
+QR Palette's own, here rather than in algos.py: scans, which scores a color by how often its short links
+are opened. It takes counts rather than votes, and can stand alone or be one part of a blend.
 
 Records
   Result  {"ok": bool, "error": str, "value": any}
   Preset  {"name", "file", "about", "algo", "uses" (a table for blend, a list for mixer, [] for one
            scorer), "scorers": [names in use], "weights": {algo: {"file", "data"}}}
   Voat    {"color": "#rrggbb", "voat": 1 | -1}      a vote, oldest first
+  Scans   {"#rrggbb": {"scans": int, "links": int}}  a color's scans, and how many short links it has
 """
 
 import json
@@ -29,8 +32,9 @@ import algos
 
 # the weights each algo's file must hold; blend takes its weights from the preset's uses instead
 WEIGHT_KEYS = {"net": ("up", "down"), "wilson": ("z",), "similar": ("reach", "up", "down"),
-               "explore": ("far",), "mixer": ("tie", "streak", "budget")}
-POSITIVE = ("reach", "far", "tie", "streak", "budget")
+               "explore": ("far",), "mixer": ("tie", "streak", "budget"), "scans": ("prior_links", "prior_rate")}
+POSITIVE = ("reach", "far", "tie", "streak", "budget", "prior_links")
+SCORERS = algos.SCORERS + ("scans",)
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -109,17 +113,17 @@ def read_preset(root, name):
         if key not in ("algo", "uses"):
             return fail(file + ": unknown key '" + key + "' (a preset has about, algo and uses)")
     algo = data.get("algo")
-    if algo not in algos.SCORERS and algo not in algos.AGGREGATORS:
+    if algo not in SCORERS and algo not in algos.AGGREGATORS:
         return fail(file + ": algo: unknown algo " + repr(algo) + " (one of " +
-                    ", ".join(algos.SCORERS + algos.AGGREGATORS) + ")")
+                    ", ".join(SCORERS + algos.AGGREGATORS) + ")")
     uses = data.get("uses")
     scorers = []
     if algo == "blend":
         if not isinstance(uses, dict) or len(uses) == 0:
             return fail(file + ": uses: blend needs an object of algos and their weights")
         for scorer in uses:
-            if scorer not in algos.SCORERS:
-                return fail(file + ": uses: unknown algo " + repr(scorer) + " (one of " + ", ".join(algos.SCORERS) + ")")
+            if scorer not in SCORERS:
+                return fail(file + ": uses: unknown algo " + repr(scorer) + " (one of " + ", ".join(SCORERS) + ")")
             if not is_number(uses[scorer]):
                 return fail(file + ": uses: the weight of " + scorer + " must be a number")
             scorers.append(scorer)
@@ -127,6 +131,8 @@ def read_preset(root, name):
         if not isinstance(uses, list) or len(uses) == 0:
             return fail(file + ": uses: the mixer needs a list of algos")
         for scorer in uses:
+            if scorer == "scans":
+                return fail(file + ": uses: the mixer's chain is Color Voats' own; put scans in a blend instead")
             if scorer not in algos.SCORERS:
                 return fail(file + ": uses: unknown algo " + repr(scorer) + " (one of " + ", ".join(algos.SCORERS) + ")")
             if scorer in scorers:
@@ -162,13 +168,27 @@ def preset_names(root):
     return names
 
 
-def rank(preset, voats, colors):
-    """Every color, best first, for a preset and a vote log (Color Voats' algos, unchanged)."""
+def scans_scores(colors, scans, prior_links, prior_rate):
+    """One score per color: its scans per short link, pulled towards `prior_rate` as if it had
+    `prior_links` more links, so one lucky code does not outrank a color that has proved itself. With no
+    scans at all every color ties: a blend then ignores this list."""
+    scores = []
+    for color in colors:
+        counted = scans.get(color, {"scans": 0, "links": 0})
+        scores.append((counted["scans"] + prior_links * prior_rate) / (counted["links"] + prior_links))
+    return scores
+
+
+def rank(preset, voats, colors, scans=None):
+    """Every color, best first, for a preset, a vote log and scans (None or {} when they are not to
+    count). The algos are Color Voats', unchanged, apart from scans."""
     weights = {}
     for name in preset["weights"]:
         weights[name] = preset["weights"][name]["data"]
 
     def score(name, colors, voats):
+        if name == "scans":
+            return scans_scores(colors, scans or {}, weights[name]["prior_links"], weights[name]["prior_rate"])
         return algos.run_scorer(name, colors, voats, weights[name])
 
     if preset["algo"] == "blend":
@@ -183,4 +203,4 @@ def rank(preset, voats, colors):
         return algos.mixer(colors, voats, preset["uses"], mixer["tie"], mixer["streak"], mixer["budget"], score)
     return algos.order_by(colors, [score(preset["algo"], colors, voats)])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ec8219ab53099f29b63d1518218edc838c82f90fb90b5bd0399ff46dbcc1d1b3 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c55db4ee9bc7e31f1493ef43d7f261b2dbd47b64e590680ae275e22ab0764597 ====

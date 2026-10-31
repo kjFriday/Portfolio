@@ -341,8 +341,9 @@ def sheet_pdf(layout, codes):
 def codes_from_registry(db_path, numbers):
     """The codes registered under `numbers` (record ids), in that order, ready to place -> Result
     {"codes": [Code], "skipped": [str]}. Each is drawn again from the text it holds, at its own level
-    and at least its own version, with its short address as its label. The registry is only read, on
-    the read-only rail, and closed before any code is drawn."""
+    and at least its own version, with its short address as its label. A code whose text is masked (a
+    Wi-Fi password the registry does not keep) is read from its picture instead, or left out. The
+    registry is only read, on the read-only rail, and closed before any code is drawn."""
     opened = registry.connect(db_path, True)
     if not opened["ok"]:
         return opened
@@ -360,7 +361,15 @@ def codes_from_registry(db_path, numbers):
         if row is None:
             skipped.append("record " + str(number) + " is no longer in the registry")
             continue
-        made = qr_codec.encode_text(row["link"], row["ec_level"], row["version"], -1)
+        text = row["link"]
+        if row["payload_hash"] is not None:
+            picture = qr_codec.read_qr_file(row["path"])
+            if not picture["ok"]:
+                skipped.append(os.path.basename(row["path"]) + ": the registry does not keep its Wi-Fi password, and "
+                               "its picture cannot be read")
+                continue
+            text = picture["value"]["reading"]["text"]
+        made = qr_codec.encode_text(text, row["ec_level"], row["version"], -1)
         if not made["ok"]:
             skipped.append(os.path.basename(row["path"]) + ": " + made["error"])
             continue
@@ -435,4 +444,4 @@ def write_sheet(path, layout, codes):
             return written
     return ok_result({"files": paths, "pages": len(drawings), "codes": len(codes)})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a9ae6433451cea449f291d1de2f04b226103a8a761d9fc3ce530f82b88faa25b ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=4349c881b13762e0b6ed4fe71695bc9241b2a85cc2f4bca0af045a619a041032 ====

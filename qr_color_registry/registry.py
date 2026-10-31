@@ -18,22 +18,31 @@ schema version, so any other SQLite file is refused. A connection is opened for 
 in the thread doing it, and closed again. ECP and MCP open it read-only. It holds data only: every
 setting is in settings.json.
 
-Schema versions: 2 added short_links. A writable open moves a version 1 registry to 2 in one
-transaction; a read-only open reads version 1 as it is (with no short links), since it may not write.
+Schema versions: 2 added short_links; 3 added short_link_changes (where a short link used to go),
+scheduled_changes (where it will go, from a day), scans (counts per short link and day, never who
+scanned) and qr_codes.payload_hash (for a code whose stored text is masked). A writable open keeps a
+copy of an older registry beside it (NAME-vN.db) and moves it to the current version in one
+transaction; a read-only open reads older versions as they are, since it may not write. Version 3
+only adds to version 2: other programs that read the older tables and columns read them the same.
 
 Records
   Result     {"ok": bool, "error": str, "value": any}
   Row        {"id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format",
-              "ec_level", "version", "origin", "created", "short_code", "target"}   one QR code;
-              short_code and target are "" unless its link is a short link
+              "ec_level", "version", "origin", "created", "short_code", "target", "payload_hash"} one QR
+              code; short_code and target are "" unless its link is a short link; payload_hash is None
+              unless link is masked (the code holds a secret the registry must not keep)
   Entry      {"link", "color", "path", "format", "ec_level", "version", "origin",
-              "short": {"code", "target"} or absent}                                 a code to save
+              "short": {"code", "target"} or absent, "payload_hash": str or absent}  a code to save
   ShortLink  {"code", "url", "target", "hex", "created", "updated", "pictures"}
+  Change     {"id", "old_target", "new_target", "changed"}                  a short link's history
+  Scheduled  {"id", "code", "target", "from_day": "YYYY-MM-DD", "created"}  a change still to come
+  ScanCount  {"total": int, "recent": int}                   a short link's scans, recent = last 30 days
   Filters    {"color": "#rrggbb", "near": bool, "family": str, "link": str, "link_exact": str,
-              "path": str}                   "" means "any"; every filter given must match (AND)
+              "path": str, "section": str, "short": bool}  "" means "any"; every filter given must match
   Voat       {"color": "#rrggbb", "voat": 1 | -1}                 what a ranker reads, oldest first
 """
 
+import datetime
 import os
 import pathlib
 import re
@@ -47,12 +56,14 @@ import swatch
 # ECP spec's DDL (which sets only user_version): other programs, such as Data Bridge, find the registry by it
 # and by SCHEMA_VERSION, and refuse a file without it.
 APPLICATION_ID = 0x51525041
-SCHEMA_VERSION = 2  # those programs check it too: raise it only together with them
-READABLE_VERSIONS = (1, 2)  # what a read-only connection accepts (it cannot move a registry to SCHEMA_VERSION)
+SCHEMA_VERSION = 3  # those programs check it too: raise it only together with them
+READABLE_VERSIONS = (1, 2, 3)  # what a read-only connection accepts (it cannot move a registry to SCHEMA_VERSION)
 OPEN_VERSIONS = {}  # id(connection) -> the schema version that connection opened, until close()
 BUSY_SECONDS = 5.0
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+RECENT_DAYS = 30  # "recent" scans: this many days, today included
+DAY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 FORMATS = ("png", "svg")
 ORIGINS = ("made", "registered")
 EC_LEVELS = ("L", "M", "Q", "H")
@@ -64,9 +75,11 @@ READ_COLUMNS = {
     "colors": ("id", "hex", "name", "family", "cube_index"),
     "links": ("id", "url"),
     "qr_codes": ("id", "link_id", "color_id", "path", "path_key", "format", "ec_level", "version", "origin",
-                 "created"),
+                 "created", "payload_hash"),
     "votes": ("color_id", "voat", "voted"),
     "short_links": ("id", "code", "link_id", "color_id", "target", "created", "updated"),
+    "scheduled_changes": ("id", "code", "target", "from_day", "created", "applied"),
+    "scans": ("code", "day", "source", "count"),
 }
 READ_FUNCTIONS = ("count",)
 # sqlite3_limit values for the read rail (the sqlite.org high-security column, ECP spec 7.4)
@@ -78,10 +91,13 @@ READ_LIMITS = (("SQLITE_LIMIT_LENGTH", 1000000), ("SQLITE_LIMIT_SQL_LENGTH", 100
 LOOKUP_COLUMNS = ("SELECT q.id AS id, l.url AS link, c.hex AS hex, c.name AS name, c.family AS family, "
                   "c.cube_index AS cube_index, q.path AS path, q.path_key AS path_key, q.format AS format, "
                   "q.ec_level AS ec_level, q.version AS version, q.origin AS origin, q.created AS created")
-LOOKUP = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target "
+LOOKUP = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target, q.payload_hash AS payload_hash "
           "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id "
           "LEFT JOIN short_links s ON s.link_id = l.id")
-LOOKUP_V1 = (LOOKUP_COLUMNS + ", NULL AS short_code, NULL AS target "
+LOOKUP_V2 = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target, NULL AS payload_hash "
+             "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id "
+             "LEFT JOIN short_links s ON s.link_id = l.id")
+LOOKUP_V1 = (LOOKUP_COLUMNS + ", NULL AS short_code, NULL AS target, NULL AS payload_hash "
              "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id")
 SHORT_LINKS = ("SELECT s.code, l.url, s.target, c.hex, s.created, s.updated, "
                "(SELECT count(*) FROM qr_codes q WHERE q.link_id = s.link_id) "
@@ -136,8 +152,33 @@ TO_VERSION_2 = (
         FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id
         LEFT JOIN short_links s ON s.link_id = l.id""",
 )
+# Version 3: history, schedules, scans and masked payloads. Nothing older is renamed or dropped.
+TO_VERSION_3 = (
+    "ALTER TABLE qr_codes ADD COLUMN payload_hash TEXT",
+    """CREATE TABLE short_link_changes (
+        id INTEGER PRIMARY KEY,
+        code TEXT NOT NULL REFERENCES short_links(code),
+        old_target TEXT NOT NULL,
+        new_target TEXT NOT NULL,
+        changed TEXT NOT NULL)""",
+    "CREATE INDEX short_link_changes_by_code ON short_link_changes(code)",
+    """CREATE TABLE scheduled_changes (
+        id INTEGER PRIMARY KEY,
+        code TEXT NOT NULL REFERENCES short_links(code),
+        target TEXT NOT NULL,
+        from_day TEXT NOT NULL,
+        created TEXT NOT NULL,
+        applied TEXT)""",
+    "CREATE INDEX scheduled_changes_by_day ON scheduled_changes(from_day)",
+    """CREATE TABLE scans (
+        code TEXT NOT NULL REFERENCES short_links(code),
+        day TEXT NOT NULL,
+        source TEXT NOT NULL,
+        count INTEGER NOT NULL CHECK (count >= 0),
+        PRIMARY KEY (code, day, source))""",
+)
 ROW_KEYS = ("id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format", "ec_level",
-            "version", "origin", "created", "short_code", "target")
+            "version", "origin", "created", "short_code", "target", "payload_hash")
 
 
 def ok_result(value):
@@ -155,6 +196,27 @@ def utc_text(seconds):
 
 def now_text():
     return utc_text(time.time())
+
+
+def today_text():
+    """Today on this computer's calendar, "YYYY-MM-DD" (for the window; tests pass their own day)."""
+    return time.strftime("%Y-%m-%d")
+
+
+def is_day(text):
+    """True for a real calendar day written YYYY-MM-DD."""
+    if not isinstance(text, str) or DAY_RE.match(text) is None:
+        return False
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def days_before(day, count):
+    """The day `count` days before a "YYYY-MM-DD" day."""
+    return (datetime.date.fromisoformat(day) - datetime.timedelta(days=count)).isoformat()
 
 
 # --- Paths -----------------------------------------------------------------------------------------
@@ -265,6 +327,10 @@ def connect(path, read_only):
             if connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
                 connection.execute("PRAGMA journal_mode=DELETE")  # registries made before 0.1.0 used WAL
             if version < SCHEMA_VERSION:
+                kept = keep_older_copy(path, version)
+                if not kept["ok"]:
+                    close(connection)
+                    return kept
                 upgraded = upgrade_schema(connection)
                 if not upgraded["ok"]:
                     close(connection)
@@ -334,7 +400,7 @@ def create_schema(connection):
     SQLite's default rollback journal: a read-only connection can then always read the file."""
     try:
         connection.execute("BEGIN IMMEDIATE")
-        for statement in SCHEMA + TO_VERSION_2:
+        for statement in SCHEMA + TO_VERSION_2 + TO_VERSION_3:
             connection.execute(statement)
         colors = swatch.palette()
         for index in range(len(colors)):
@@ -348,18 +414,35 @@ def create_schema(connection):
     return ok_result(True)
 
 
+def keep_older_copy(path, version):
+    """Before a registry moves up: a checked copy of it beside it, NAME-vN.db, since this version's
+    programs are the last that can open it as it was. One copy per version; it is never replaced."""
+    stem, extension = os.path.splitext(path)
+    target = stem + "-v" + str(version) + extension
+    if os.path.exists(target):
+        return ok_result(target)
+    kept = backup(path, target)
+    if not kept["ok"]:
+        return fail("the registry was not updated, because a copy of it could not be kept first: " + kept["error"])
+    return kept
+
+
 def upgrade_schema(connection):
-    """Move a version 1 registry to version 2 (the short_links table), all in one transaction."""
+    """Move an older registry to SCHEMA_VERSION, step by step, all in one transaction."""
     try:
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
             for statement in TO_VERSION_2:
                 connection.execute(statement)
             connection.execute("PRAGMA user_version=2")
+        if connection.execute("PRAGMA user_version").fetchone()[0] == 2:
+            for statement in TO_VERSION_3:
+                connection.execute(statement)
+            connection.execute("PRAGMA user_version=3")
         connection.execute("COMMIT")
     except sqlite3.Error as error:
         rollback(connection)
-        return fail("cannot update the registry to version 2: " + str(error))
+        return fail("cannot update the registry to version " + str(SCHEMA_VERSION) + ": " + str(error))
     return ok_result(True)
 
 
@@ -435,13 +518,14 @@ def save_qr(connection, entry):
                 rollback(connection)
                 return fail("the short link ID " + short["code"] + " is already used for another address")
         connection.execute(
-            "INSERT INTO qr_codes (link_id, color_id, path, path_key, format, ec_level, version, origin, created) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "INSERT INTO qr_codes (link_id, color_id, path, path_key, format, ec_level, version, origin, created, "
+            "payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(path_key) DO UPDATE SET link_id = excluded.link_id, color_id = excluded.color_id, "
             "path = excluded.path, format = excluded.format, ec_level = excluded.ec_level, "
-            "version = excluded.version, origin = excluded.origin, created = excluded.created",
+            "version = excluded.version, origin = excluded.origin, created = excluded.created, "
+            "payload_hash = excluded.payload_hash",
             (link, color, display_path(entry["path"]), key, entry["format"], entry["ec_level"], entry["version"],
-             entry["origin"], now_text()))
+             entry["origin"], now_text(), entry.get("payload_hash")))
         number = connection.execute("SELECT id FROM qr_codes WHERE path_key = ?", (key,)).fetchone()[0]
         drop_unused_links(connection)
         connection.execute("COMMIT")
@@ -469,19 +553,186 @@ def code_taken(connection, code):
     return connection.execute("SELECT count(*) FROM short_links WHERE code = ?", (code,)).fetchone()[0] > 0
 
 
+def change_target(connection, code, target):
+    """Inside a transaction: send a short link to `target` and write it in its history -> True when
+    there is such a short link. Going where it already goes changes nothing."""
+    row = connection.execute("SELECT target FROM short_links WHERE code = ?", (code,)).fetchone()
+    if row is None:
+        return False
+    if row[0] != target:
+        now = now_text()
+        connection.execute("UPDATE short_links SET target = ?, updated = ? WHERE code = ?", (target, now, code))
+        connection.execute("INSERT INTO short_link_changes (code, old_target, new_target, changed) VALUES (?, ?, ?, ?)",
+                           (code, row[0], target, now))
+    return True
+
+
 def retarget(connection, code, target):
     """Send a short link somewhere else -> Result True when there was one. Printed codes keep working:
-    export the redirect pages again to publish the change."""
+    export the redirect pages again to publish the change. Where it used to go stays in its history."""
     try:
         connection.execute("BEGIN IMMEDIATE")
-        cursor = connection.execute("UPDATE short_links SET target = ?, updated = ? WHERE code = ?",
-                                    (target, now_text(), code))
-        changed = cursor.rowcount > 0
+        changed = change_target(connection, code, target)
         connection.execute("COMMIT")
     except sqlite3.Error as error:
         rollback(connection)
         return fail("cannot change the destination: " + str(error))
     return ok_result(changed)
+
+
+def link_changes(connection, code):
+    """Where a short link has gone, newest first -> [Change]. A version 2 registry kept no history."""
+    found = []
+    if schema_of(connection) < 3:
+        return found
+    for row in connection.execute("SELECT id, old_target, new_target, changed FROM short_link_changes "
+                                  "WHERE code = ? ORDER BY id DESC", (code,)).fetchall():
+        found.append({"id": row[0], "old_target": row[1], "new_target": row[2], "changed": row[3]})
+    return found
+
+
+def undo_last_change(connection, code):
+    """Send a short link back where it went before its latest change -> Result the target it goes to
+    now. The undoing is a change too: nothing is ever taken out of the history."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT old_target FROM short_link_changes WHERE code = ? ORDER BY id DESC LIMIT 1",
+                                 (code,)).fetchone()
+        if row is None:
+            rollback(connection)
+            return fail("this short link has not been changed yet")
+        change_target(connection, code, row[0])
+        connection.execute("COMMIT")
+    except sqlite3.Error as error:
+        rollback(connection)
+        return fail("cannot undo the change: " + str(error))
+    return ok_result(row[0])
+
+
+def schedule_change(connection, code, target, from_day):
+    """Send a short link to `target` from `from_day` on -> Result the schedule's id. It takes effect in
+    exports from that day, and in the registry when due changes are applied."""
+    if not is_day(from_day):
+        return fail("a day is written YYYY-MM-DD, such as 2026-12-01")
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        if not code_taken(connection, code):
+            rollback(connection)
+            return fail("there is no short link " + code)
+        cursor = connection.execute("INSERT INTO scheduled_changes (code, target, from_day, created) VALUES (?, ?, ?, ?)",
+                                    (code, target, from_day, now_text()))
+        number = cursor.lastrowid
+        connection.execute("COMMIT")
+    except sqlite3.Error as error:
+        rollback(connection)
+        return fail("cannot schedule the change: " + str(error))
+    return ok_result(number)
+
+
+def cancel_scheduled(connection, number):
+    """Take back a change that has not happened yet -> Result True when there was one."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute("DELETE FROM scheduled_changes WHERE id = ? AND applied IS NULL", (number,))
+        removed = cursor.rowcount > 0
+        connection.execute("COMMIT")
+    except sqlite3.Error as error:
+        rollback(connection)
+        return fail("cannot cancel the change: " + str(error))
+    return ok_result(removed)
+
+
+def scheduled(connection, code):
+    """The changes still to come: of one short link, or of all ("") -> [Scheduled], soonest first."""
+    found = []
+    if schema_of(connection) < 3:
+        return found
+    for row in connection.execute("SELECT id, code, target, from_day, created FROM scheduled_changes "
+                                  "WHERE applied IS NULL AND (? = '' OR code = ?) ORDER BY from_day, id",
+                                  (code, code)).fetchall():
+        found.append({"id": row[0], "code": row[1], "target": row[2], "from_day": row[3], "created": row[4]})
+    return found
+
+
+def due_changes(connection, today):
+    """The scheduled changes whose day has come -> [Scheduled], soonest first."""
+    found = []
+    for change in scheduled(connection, ""):
+        if change["from_day"] <= today:
+            found.append(change)
+    return found
+
+
+def apply_due(connection, today):
+    """Make every scheduled change whose day has come, in order, each written in the history -> Result
+    how many were applied."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        due = due_changes(connection, today)
+        for change in due:
+            change_target(connection, change["code"], change["target"])
+            connection.execute("UPDATE scheduled_changes SET applied = ? WHERE id = ?", (now_text(), change["id"]))
+        connection.execute("COMMIT")
+    except sqlite3.Error as error:
+        rollback(connection)
+        return fail("cannot apply the scheduled changes: " + str(error))
+    return ok_result(len(due))
+
+
+def import_scans(connection, counts, source):
+    """Scan counts {(code, day): count} from one source -> Result {"days": rows written, "unknown":
+    [codes that are not short links here]}. A day's count from a source is replaced by a new one, so
+    importing the same file again changes nothing, and a report that grew simply corrects its days."""
+    written = 0
+    unknown = []
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        for key in sorted(counts):
+            if not code_taken(connection, key[0]):
+                if key[0] not in unknown:
+                    unknown.append(key[0])
+                continue
+            connection.execute("INSERT INTO scans (code, day, source, count) VALUES (?, ?, ?, ?) "
+                               "ON CONFLICT(code, day, source) DO UPDATE SET count = excluded.count",
+                               (key[0], key[1], source, counts[key]))
+            written = written + 1
+        connection.execute("COMMIT")
+    except sqlite3.Error as error:
+        rollback(connection)
+        return fail("cannot save the scans: " + str(error))
+    return ok_result({"days": written, "unknown": unknown})
+
+
+def scan_totals(connection, today):
+    """Scans per short link -> {code: ScanCount}. Added up here: the read rail allows no sum()."""
+    totals = {}
+    if schema_of(connection) < 3:
+        return totals
+    recent_from = days_before(today, RECENT_DAYS - 1)
+    for row in connection.execute("SELECT code, day, count FROM scans").fetchall():
+        if row[0] not in totals:
+            totals[row[0]] = {"total": 0, "recent": 0}
+        totals[row[0]]["total"] = totals[row[0]]["total"] + row[2]
+        if recent_from <= row[1] <= today:
+            totals[row[0]]["recent"] = totals[row[0]]["recent"] + row[2]
+    return totals
+
+
+def color_scans(connection):
+    """Scans per color, for ranking -> {"#rrggbb": {"scans": int, "links": short links in this color}}."""
+    found = {}
+    if schema_of(connection) < 3:
+        return found
+    colors = {}
+    for row in connection.execute("SELECT s.code, c.hex FROM short_links s JOIN colors c ON c.id = s.color_id").fetchall():
+        colors[row[0]] = row[1]
+        if row[1] not in found:
+            found[row[1]] = {"scans": 0, "links": 0}
+        found[row[1]]["links"] = found[row[1]]["links"] + 1
+    for row in connection.execute("SELECT code, count FROM scans").fetchall():
+        if row[0] in colors:
+            found[colors[row[0]]]["scans"] = found[colors[row[0]]]["scans"] + row[1]
+    return found
 
 
 def forget_qr(connection, number):
@@ -568,6 +819,8 @@ def lookup(connection):
     """The SELECT that reads Rows, for the schema version this connection opened."""
     if schema_of(connection) < 2:
         return LOOKUP_V1
+    if schema_of(connection) < 3:
+        return LOOKUP_V2
     return LOOKUP
 
 
@@ -643,6 +896,19 @@ def short_links(connection):
     for row in connection.execute(SHORT_LINKS + " ORDER BY s.id").fetchall():
         found.append({"code": row[0], "url": row[1], "target": row[2], "hex": row[3], "created": row[4],
                       "updated": row[5], "pictures": row[6]})
+    return found
+
+
+def short_links_on(connection, day):
+    """Every short link as ShortLink, with the destination in force on `day`: the latest scheduled
+    change whose day has come, even if it has not been applied yet."""
+    found = short_links(connection)
+    coming = {}
+    for change in due_changes(connection, day):
+        coming[change["code"]] = change["target"]
+    for link in found:
+        if link["code"] in coming:
+            link["target"] = coming[link["code"]]
     return found
 
 
@@ -769,4 +1035,4 @@ def find_rows(rows, filters, limit):
             found.append(row)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=7a1b9ebcbb32d0cd41a934b7b22da6d2aeee88a45b52e3e77609b3fe877bd095 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=39616dda14678a8432e3f8e892d28141875f39d5111bfd625aa359a51bb359ad ====

@@ -1,0 +1,5 @@
+{
+  "about": "Scans: a color's score is its scans per short link, counted only when colors.scans_vote is on in settings.json. prior_links pretends each color has this many more short links, so one lucky code does not outrank a color that has proved itself. prior_rate is the scans per link those pretend links got.",
+  "prior_links": 2,
+  "prior_rate": 0
+}

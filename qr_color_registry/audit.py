@@ -14,8 +14,14 @@ schema; the model and its digest; the plan as run; counts and timings), never th
 never stored data. Nothing in it is sent back to a client except its audit_id. Writers take a lock
 file for the moment of appending, so the window and an MCP server can share one log.
 
+A chain alone cannot show lines cut off its end. So every append also writes an anchor beside the log
+(LOG.anchor: the last line's audit_id and SHA-256), and verify() checks the log still reaches it. For
+more assurance, keep the fingerprint somewhere else as well (the window copies it) and check it with
+check_fingerprint(): whoever can rewrite the folder can rewrite the anchor too.
+
 Records
-  Result  {"ok": bool, "error": str, "value": any}
+  Result       {"ok": bool, "error": str, "value": any}
+  Fingerprint  {"audit_id": int, "line_sha256": str}         the last line of a log, or a kept copy
 """
 
 import hashlib
@@ -120,6 +126,7 @@ def append(path, fields):
             os.fsync(handle.fileno())
         finally:
             handle.close()
+        write_anchor(path, number, line)
     except OSError as error:
         return fail("cannot write the audit log: " + str(error))
     finally:
@@ -130,12 +137,50 @@ def append(path, fields):
     return ok_result(number)
 
 
-def verify(path):
-    """Check the whole chain -> Result number of records, or a failure naming the first bad line."""
+def anchor_path(path):
+    return path + ".anchor"
+
+
+def write_anchor(path, number, line):
+    """The anchor beside the log: the last line's audit_id and SHA-256 (written into place, so it is
+    never half written). It may fall behind if writing it fails; that only weakens the check."""
+    try:
+        temporary = anchor_path(path) + ".part"
+        handle = open(temporary, "w", encoding="ascii", newline="\n")
+        try:
+            handle.write(json.dumps({"audit_id": number, "line_sha256": sha256_text(line)}) + "\n")
+        finally:
+            handle.close()
+        os.replace(temporary, anchor_path(path))
+    except OSError:
+        pass
+
+
+def read_anchor(path):
+    """The anchor's Fingerprint, or None when there is none (or it cannot be read)."""
+    try:
+        handle = open(anchor_path(path), "r", encoding="ascii")
+        try:
+            found = json.loads(handle.read())
+        finally:
+            handle.close()
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(found, dict) or isinstance(found.get("audit_id"), bool) or
+            not isinstance(found.get("audit_id"), int) or not isinstance(found.get("line_sha256"), str)):
+        return None
+    return {"audit_id": found["audit_id"], "line_sha256": found["line_sha256"]}
+
+
+def chain(path, kept):
+    """Walk the chain, checking it and, when given, a kept Fingerprint -> Result number of records."""
     if not os.path.isfile(path):
+        if kept is not None:
+            return fail("there is no log, but a fingerprint says " + str(kept["audit_id"]) + " lines were written")
         return ok_result(0)
     previous = ""
     count = 0
+    seen = None
     handle = open(path, "r", encoding="ascii", errors="replace")
     try:
         for line in handle:
@@ -154,9 +199,73 @@ def verify(path):
                 return fail("line " + str(count) + " does not follow the line before it")
             if record.get("audit_id") != count:
                 return fail("line " + str(count) + " has audit_id " + str(record.get("audit_id")))
+            if kept is not None and count == kept["audit_id"]:
+                seen = sha256_text(line)
             previous = line
     finally:
         handle.close()
+    if kept is not None:
+        if count < kept["audit_id"]:
+            return fail("the log ends at line " + str(count) + ", but " + str(kept["audit_id"]) + " lines were "
+                        "written: lines were cut off the end")
+        if seen != kept["line_sha256"]:
+            return fail("line " + str(kept["audit_id"]) + " is not the line that was written")
     return ok_result(count)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=c0c8f5f02ec08bad3be05dbfc92da761c684e95396c65b32af6a16770a8e1981 ====
+
+def verify(path):
+    """Check the whole chain, and that it still reaches its anchor -> Result number of records, or a
+    failure naming the first bad line (or the cut-off end)."""
+    return chain(path, read_anchor(path))
+
+
+def fingerprint(path):
+    """The log's last line as a Fingerprint, to keep somewhere else -> Result."""
+    line = last_line(path)
+    if line == "":
+        return fail("the audit log is empty")
+    try:
+        number = json.loads(line)["audit_id"]
+    except (ValueError, KeyError, TypeError):
+        return fail("the audit log's last line is damaged")
+    return ok_result({"audit_id": number, "line_sha256": sha256_text(line)})
+
+
+def fingerprint_text(found):
+    """A Fingerprint as one short line to copy: "45:3f2a…" (audit_id, then the SHA-256)."""
+    return str(found["audit_id"]) + ":" + found["line_sha256"]
+
+
+def check_fingerprint(path, text):
+    """Check the log against a fingerprint kept elsewhere ("45:3f2a…", as fingerprint_text writes it)
+    -> Result number of records."""
+    parts = text.strip().split(":")
+    if len(parts) != 2 or not parts[0].isdigit() or len(parts[1]) != 64:
+        return fail("a fingerprint is the line number, a colon and 64 hex digits")
+    return chain(path, {"audit_id": int(parts[0]), "line_sha256": parts[1].lower()})
+
+
+def read_records(path, limit):
+    """The last `limit` records of the log, oldest first, for reading (a damaged line becomes
+    {"audit_id": "?", "damaged": its text})."""
+    found = []
+    if not os.path.isfile(path):
+        return found
+    handle = open(path, "r", encoding="ascii", errors="replace")
+    try:
+        lines = handle.read().splitlines()
+    finally:
+        handle.close()
+    for line in lines[max(0, len(lines) - limit):]:
+        if line == "":
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            record = None
+        if not isinstance(record, dict):
+            record = {"audit_id": "?", "damaged": line[:200]}
+        found.append(record)
+    return found
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=076bb5822a2b2ec383e8aa6ab9fe3bace0168ad4cee2c3c8158695bb14fcc34e ====

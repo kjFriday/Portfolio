@@ -36,6 +36,9 @@ Records
   Picture  {"reading": Reading, "format": "png" | "svg" | "other", "color": "#rrggbb", "image": Image or None}
   Shown    {"id", "link", "hex", "name", "family", "path", "exists", "ec_level", "version",
             "short_code", "target"}                                                   a result row
+  BatchRow {"row": its row in the file, "link", "color", "label", "file", "problem": "" when it can be made}
+  BatchReport {"made": int, "skipped": int, "report": path of its CSV, "stopped": bool, "rows": one dict per
+            row, the columns of BATCH_COLUMNS}
 
 Usage
   python qr_palette.py                       open the window
@@ -56,6 +59,7 @@ Usage
 """
 
 import csv
+import io
 import json
 import os
 import shutil
@@ -99,7 +103,12 @@ MIN_MODULE_MM = 0.4  # the smallest module most printers and phone cameras handl
 DISTANCE_PER_MODULE = 250  # the 10:1 rule (scan from at most ten times a code's width) for a 25-module code
 MIN_CAPTION_MM = 1.5  # the smallest letters of a printed address most people can read
 ROBUSTNESS_SCALE = 4  # pixels per module for the robustness score: decoding is pure Python
-CSV_COLUMNS =("id", "color", "color_name", "family", "link", "destination", "short_id", "section", "path", "format",
+MAX_BATCH_BYTES = 20 * 1024 * 1024  # a list of codes bigger than this is refused
+MAX_BATCH_ROWS = 10000
+BATCH_COLUMNS = ("row", "status", "reason", "link", "color", "label", "path", "short_id", "note")
+WINDOWS_DEVICES = ("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                   "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
+CSV_COLUMNS = ("id", "color", "color_name", "family", "link", "destination", "short_id", "section", "path", "format",
                "ec_level", "version", "origin", "created")
 LINKS = shortlinks.copy_links(shortlinks.DEFAULT_LINKS)  # links.json, put in place by apply_settings()
 LINK_SECTION = "local"  # the section new short links use: settings.json's links.use
@@ -570,6 +579,205 @@ def redraw_record(db_path, number, color, scale):
                       "target": row["target"]})
 
 
+def read_batch_csv(path):
+    """A print run from a CSV file with a header row -> Result [BatchRow]. The headers link and color
+    are needed, label and file are optional, in any order and either case. The file may be UTF-8 (with
+    or without a byte-order mark) or a spreadsheet's Windows-1252, separated by commas, semicolons or
+    tabs. Every row comes back in order, those that cannot be made with their "problem" filled in."""
+    try:
+        if os.path.getsize(path) > MAX_BATCH_BYTES:
+            return fail(os.path.basename(path) + " is too big for a list of codes")
+        handle = open(path, "rb")
+        try:
+            data = handle.read()
+        finally:
+            handle.close()
+    except OSError as error:
+        return fail("cannot read " + path + ": " + str(error))
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = data.decode("cp1252")
+        except UnicodeDecodeError:
+            return fail(os.path.basename(path) + " is not UTF-8 or Windows-1252 text")
+    first = text.split("\n", 1)[0]
+    separator = ","
+    for candidate in (";", "\t"):
+        if candidate in first and "," not in first:
+            separator = candidate
+    rows = []
+    try:
+        lines = csv.reader(io.StringIO(text, newline=""), delimiter=separator)
+        headers = None
+        for cells in lines:
+            if headers is None:
+                if len(cells) == 0 or "".join(cells).strip() == "":
+                    continue
+                headers = []
+                for cell in cells:
+                    headers.append(cell.strip().lower())
+                if "link" not in headers or "color" not in headers:
+                    return fail("the first row must name the columns: link, color, and optionally label and file")
+                continue
+            if "".join(cells).strip() == "":
+                continue
+            if len(rows) >= MAX_BATCH_ROWS:
+                return fail("a list may hold at most " + str(MAX_BATCH_ROWS) + " codes")
+            found = {"link": "", "color": "", "label": "", "file": ""}
+            for index in range(min(len(headers), len(cells))):
+                if headers[index] in found:
+                    found[headers[index]] = textsafe.clean(cells[index], None).strip()
+            found["row"] = lines.line_num
+            found["problem"] = ""
+            given = found["color"]
+            found["color"] = swatch.normalize_hex(given)
+            if found["link"] == "":
+                found["problem"] = "no link"
+            elif given == "":
+                found["problem"] = "no color"
+            elif found["color"] == "":
+                found["problem"] = textsafe.clean(given, 40) + " is not a #rrggbb color"
+            rows.append(found)
+    except csv.Error as error:
+        return fail("cannot read " + os.path.basename(path) + " as CSV: " + str(error))
+    if len(rows) == 0:
+        return fail(os.path.basename(path) + " holds no rows of codes")
+    return ok_result(rows)
+
+
+def batch_file_problem(name):
+    """"" when a list's file column is a plain file name for this computer, else what is wrong: it
+    may not lead outside the chosen folder or be a name Windows keeps for itself."""
+    if name in (".", "..") or name != os.path.basename(name) or "/" in name or "\\" in name:
+        return "the file column must be a file name, not a path"
+    stem = name.split(".", 1)[0].strip().upper()
+    if stem == "" or stem in WINDOWS_DEVICES or name.endswith((".", " ")):
+        return "the file column's name cannot be used on Windows"
+    for character in name:
+        if character in '<>:"|?*':
+            return "the file column's name cannot be used on Windows"
+    return ""
+
+
+def batch_path(row, color, kind, folder, taken):
+    """Where a row's picture goes -> (path, problem). From its file column, else its label (if any)
+    and suggested_name; a name that is in the folder or already used by this run gets -2, -3, ...,
+    because make_qr replaces a file that is already there."""
+    name = row["file"]
+    if name != "":
+        problem = batch_file_problem(name)
+        if problem != "":
+            return "", problem
+        if not name.lower().endswith((".png", ".svg")):
+            name = name + "." + kind
+    else:
+        name = suggested_name(row["link"], color, kind)
+        if row["label"] != "":
+            name = slug(row["label"]) + "-" + name
+    stem, extension = os.path.splitext(name)
+    candidate = name
+    number = 1
+    while os.path.exists(os.path.join(folder, candidate)) or candidate.casefold() in taken:
+        number = number + 1
+        candidate = stem + "-" + str(number) + extension
+    taken.add(candidate.casefold())
+    return os.path.join(folder, candidate), ""
+
+
+def make_batch(db_path, rows, folder, kind, level, scale, section, snap=False, watch=None, when=""):
+    """Make a code for every BatchRow, with a report beside the pictures -> Result BatchReport. `kind`
+    is "png" or "svg" (a row's file column may say otherwise). `section` is the short-link section
+    to print ("" for none); the same destination in the same color shares its short link, as ever. A
+    color too light to scan is skipped with the reason, or with `snap` replaced by the nearest that
+    scans. A row the same as an earlier one is skipped. `watch(done, total)`, called before each row,
+    may return True to stop: the rest are reported as not made. `when` names the report (the time)."""
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as error:
+        return fail("cannot use the folder " + folder + ": " + str(error))
+    report = []
+    seen = {}
+    taken = set()
+    made_count = 0
+    stopped = False
+    for index in range(len(rows)):
+        row = rows[index]
+        line = {"row": row["row"], "status": "skipped", "reason": row["problem"], "link": row["link"],
+                "color": row["color"], "label": row["label"], "path": "", "short_id": "", "note": ""}
+        report.append(line)
+        if not stopped and watch is not None and watch(index, len(rows)):
+            stopped = True
+        if stopped:
+            line["reason"] = "stopped before this row"
+            continue
+        if line["reason"] != "":
+            continue
+        same = (row["link"], row["color"], row["label"], row["file"])
+        if same in seen:
+            line["reason"] = "the same as row " + str(seen[same])
+            continue
+        seen[same] = row["row"]
+        color = row["color"]
+        if not swatch.usable(color):
+            if not snap:
+                line["reason"] = color + " is too light to scan on white"
+                continue
+            color = swatch.nearest_usable(color)
+            line["note"] = "color " + row["color"] + " was too light to scan: used " + color
+            line["color"] = color
+        path, problem = batch_path(row, color, kind, folder, taken)
+        if problem != "":
+            line["reason"] = problem
+            continue
+        short = None
+        if section != "":
+            short = short_request("", section)
+        made = make_qr(db_path, row["link"], color, level, path, scale, short)
+        if not made["ok"]:
+            line["reason"] = made["error"]
+            continue
+        line["status"] = "made"
+        line["path"] = made["value"]["path"]
+        line["short_id"] = made["value"]["short_code"]
+        made_count = made_count + 1
+    written = write_batch_report(folder, report, when or time.strftime("%Y%m%d-%H%M%S"))
+    if not written["ok"]:
+        return written
+    return ok_result({"made": made_count, "skipped": len(report) - made_count, "report": written["value"],
+                      "rows": report, "stopped": stopped})
+
+
+def write_batch_report(folder, report, when):
+    """The batch's report as a CSV beside its pictures, never over an earlier one -> Result path."""
+    path = os.path.join(folder, "made-" + when + ".csv")
+    number = 1
+    while os.path.exists(path):
+        number = number + 1
+        path = os.path.join(folder, "made-" + when + "-" + str(number) + ".csv")
+    temporary = path + ".part"
+    try:
+        handle = open(temporary, "w", encoding="utf-8-sig", newline="")
+        try:
+            writer = csv.writer(handle)
+            writer.writerow(BATCH_COLUMNS)
+            for line in report:
+                cells = []
+                for key in BATCH_COLUMNS:
+                    cells.append(safe_cell(line[key]))
+                writer.writerow(cells)
+        finally:
+            handle.close()
+        os.replace(temporary, path)
+    except OSError as error:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        return fail("cannot write the report " + path + ": " + str(error))
+    return ok_result(path)
+
+
 def picture_from_image(image):
     """An Image (from the window's own picture reader) -> Result Picture."""
     reading = qr_codec.decode_image(image)
@@ -790,6 +998,13 @@ def selftest():
         printed = sheets.print_sheet(db_path, [made["value"]["id"], made_svg["value"]["id"]],
                                      sheets.DEFAULT_SHEETS["layouts"]["A4 poster"], os.path.join(folder, "sheet.pdf"))
         check(printed["ok"] and printed["value"]["pages"] == 2, "codes are printed on a sheet as a PDF", failures)
+        run = make_batch(db_path, [{"row": 2, "link": "https://example.com/list", "color": "#660099", "label": "x",
+                                    "file": "", "problem": ""},
+                                   {"row": 3, "link": "https://example.com/list", "color": "#ffff00", "label": "y",
+                                    "file": "", "problem": ""}], os.path.join(folder, "run"), "png", "M", 4, "", False,
+                         None, "selftest")
+        check(run["ok"] and run["value"]["made"] == 1 and run["value"]["skipped"] == 1 and
+              os.path.isfile(run["value"]["report"]), "a list makes its codes and reports the row it skipped", failures)
         found = search(db_path, "color", "blue", False, 20)
         check(found["ok"] and len(found["value"]) == 1 and found["value"][0]["path"] == made["value"]["path"],
               "found again by color, with its path", failures)
@@ -1350,6 +1565,160 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         ttk.Button(body, text="Close", command=dialog.destroy).grid(row=4, column=1, sticky="e")
         update()
 
+    def make_from_list():
+        """A whole print run from a CSV: the rows are counted first, then made as one job, with a report."""
+        dialog = tk.Toplevel(window)
+        dialog.title("Make from a list")
+        dialog.transient(window)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        source_text = tk.StringVar(value="")
+        folder_text = tk.StringVar(value=state["folder"])
+        kind_choice = tk.StringVar(value="png")
+        short_on = tk.BooleanVar(value=False)
+        section_on = tk.StringVar(value=section_choice.get())
+        snap_on = tk.BooleanVar(value=False)
+        summary = tk.StringVar(value="Choose a CSV whose first row names its columns: link and color, and optionally "
+                                     "label and file.")
+        rows = []
+        progress = {"done": 0, "total": 0, "stop": False, "running": False}
+
+        def alive():
+            return dialog.winfo_exists()
+
+        def choose_source():
+            path = filedialog.askopenfilename(title="A list of codes", parent=dialog,
+                                              filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
+            if not path:
+                return
+            path = registry.display_path(path)
+
+            def done(outcome):
+                status.set("Ready")
+                if not alive():
+                    return
+                del rows[:]
+                make_button.config(state="disabled")
+                if not outcome["ok"]:
+                    summary.set(outcome["error"] + ".")
+                    return
+                source_text.set(path)
+                rows.extend(outcome["value"])
+                problems = []
+                for row in rows:
+                    if row["problem"] != "":
+                        problems.append(row)
+                said = str(len(rows)) + " row(s): " + str(len(rows) - len(problems)) + " ready"
+                if len(problems) > 0:
+                    said = (said + ", " + str(len(problems)) + " with a problem (the first, row " +
+                            str(problems[0]["row"]) + ": " + problems[0]["problem"] + ")")
+                summary.set(said + ".")
+                if len(problems) < len(rows):
+                    make_button.config(state="normal")
+
+            start_job("Reading the list", lambda: read_batch_csv(path), done)
+
+        def choose_folder():
+            chosen = filedialog.askdirectory(title="Save the pictures in", parent=dialog, mustexist=False,
+                                             initialdir=folder_text.get())
+            if chosen:
+                folder_text.set(registry.display_path(chosen))
+
+        def watch(done_rows, total):
+            progress["done"] = done_rows
+            progress["total"] = total
+            return progress["stop"]
+
+        def tick():
+            if progress["running"] and alive():
+                summary.set("Making code " + str(progress["done"] + 1) + " of " + str(progress["total"]) + "…")
+                dialog.after(200, tick)
+
+        def make():
+            target = folder_text.get().strip()
+            if target == "":
+                summary.set("Choose a folder for the pictures.")
+                return
+            section = ""
+            if short_on.get():
+                section = section_on.get()
+            chosen_rows = list(rows)
+            kind = kind_choice.get()
+            level = chosen_level()
+            snap = snap_on.get()
+            progress["stop"] = False
+            progress["running"] = True
+            make_button.config(state="disabled")
+            stop_button.config(state="normal")
+
+            def done(outcome):
+                progress["running"] = False
+                if alive():
+                    stop_button.config(state="disabled")
+                    make_button.config(state="normal")
+                if not outcome["ok"]:
+                    status.set("Nothing made")
+                    messagebox.showerror("Make from a list", outcome["error"])
+                    return
+                value = outcome["value"]
+                state["folder"] = target
+                said = "Made " + str(value["made"]) + " code(s), skipped " + str(value["skipped"])
+                if value["stopped"]:
+                    said = said + " (stopped)"
+                said = said + ". Report: " + value["report"]
+                status.set(said)
+                if alive():
+                    summary.set(said)
+                refresh_footer()
+                refresh_used()
+                if section == "local":
+                    refresh_served()
+                if messagebox.askyesno("Make from a list", said + "\n\nOpen the folder?"):
+                    try:
+                        os.startfile(target)
+                    except (AttributeError, OSError) as error:
+                        status.set(str(error))
+
+            start_job("Making codes", lambda: make_batch(db_path, chosen_rows, target, kind, level, DEFAULT_SCALE, section,
+                                                         snap, watch), done)
+            tick()
+
+        def stop():
+            progress["stop"] = True
+            summary.set("Stopping after this code…")
+
+        ttk.Label(body, text="List").grid(row=0, column=0, sticky="w")
+        ttk.Entry(body, textvariable=source_text, width=56, state="readonly").grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Button(body, text="Choose…", command=choose_source).grid(row=0, column=2)
+        ttk.Label(body, textvariable=summary, wraplength=560, justify="left").grid(row=1, column=0, columnspan=3,
+                                                                                   sticky="w", pady=6)
+        ttk.Label(body, text="Folder").grid(row=2, column=0, sticky="w")
+        ttk.Entry(body, textvariable=folder_text, width=56).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Button(body, text="Choose…", command=choose_folder).grid(row=2, column=2)
+        kinds = ttk.Frame(body)
+        kinds.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(kinds, text="Pictures").pack(side="left")
+        ttk.Radiobutton(kinds, text="PNG", variable=kind_choice, value="png").pack(side="left", padx=6)
+        ttk.Radiobutton(kinds, text="SVG", variable=kind_choice, value="svg").pack(side="left")
+        ttk.Label(kinds, text="Error correction " + chosen_level() + ", as in the Make tab.",
+                  foreground="#555555").pack(side="left", padx=12)
+        shorts = ttk.Frame(body)
+        shorts.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(shorts, text="Short links, printed as", variable=short_on).pack(side="left")
+        for name in shortlinks.SECTIONS:
+            ttk.Radiobutton(shorts, text=name, value=name, variable=section_on).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(body, text="A color too light to scan: use the nearest that scans (otherwise the row is skipped)",
+                        variable=snap_on).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        buttons = ttk.Frame(body)
+        buttons.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        make_button = ttk.Button(buttons, text="Make the codes", command=make, state="disabled")
+        make_button.pack(side="left")
+        stop_button = ttk.Button(buttons, text="Stop", command=stop, state="disabled")
+        stop_button.pack(side="left", padx=6)
+        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left")
+
+    file_menu.add_command(label="Make from a list…", command=make_from_list)
     file_menu.add_command(label="Import votes from Color Voats…", command=import_votes)
     file_menu.add_command(label="Export local redirect pages…", command=lambda: export_pages("local"))
     file_menu.add_command(label="Export nonlocal redirect pages…", command=lambda: export_pages("nonlocal"))
@@ -2671,4 +3040,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=df128f449b12b2228878d4f759323a57bd8c386bce75c93dc814a661a747d3df ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=e12ca519241928f61a8f1496a05285b5c0fc3eeea8bc747ce428b6c0fb058cf7 ====

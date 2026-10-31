@@ -85,6 +85,16 @@ class CubeTests(unittest.TestCase):
         self.assertTrue(swatch.is_near("#3366cc", "#3467cb"))
         self.assertFalse(swatch.is_near("#3366cc", "#cc6633"))
 
+    def test_nearest_usable_color(self):
+        for color in ("#ffff00", "#ffffff", "#99ccff", "#ffeecc"):
+            self.assertFalse(swatch.usable(color))
+            near = swatch.nearest_usable(color)
+            self.assertTrue(swatch.usable(near), color)
+            for other in swatch.usable_colors():
+                self.assertLessEqual(swatch.color_distance(swatch.oklab(color), swatch.oklab(near)),
+                                     swatch.color_distance(swatch.oklab(color), swatch.oklab(other)))
+        self.assertEqual(swatch.nearest_usable("#3366cc"), "#3366cc")
+
 
 class ContrastTests(unittest.TestCase):
     def test_black_on_white_is_21_and_symmetric(self):
@@ -251,4 +261,4 @@ class RankingFileTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a37b3cf0a01a71d4652cfe596895b9e194ef89ff0ca1490d8ab608da06db96f7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=9ebbfa76f10d75fe204a182ae2180c3fc9cdd9e31fef93edb6be6ac5a12cfe26 ====

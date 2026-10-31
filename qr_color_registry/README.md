@@ -36,8 +36,9 @@ redirect pages of the short-link section in use (or `--section local|nonlocal`) 
 | Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), *Forget record* removes them from the registry (the files stay), and *Print sheet…* lays them out on labels or posters (see below). The **Ask** row asks in plain English through a local model you pick. |
 
 *File → Import votes from Color Voats…* brings in Color Voats' votes, with the newer vote winning for each color, so
-importing again changes nothing. The rest of the File menu: exporting and serving the redirect pages (below),
-*Back up the registry…*, *Export the registry (CSV or JSON)…*, *Audit log…* and *Open settings.json*.
+importing again changes nothing. The rest of the File menu: *Make from a list…* (below), exporting and serving the
+redirect pages (below), *Back up the registry…*, *Export the registry (CSV or JSON)…*, *Audit log…* and *Open
+settings.json*.
 
 The window runs one slow task at a time and queues the rest, so Save or Find asked for while a model loads simply
 waits its turn.
@@ -84,6 +85,28 @@ Select codes in Find, then *Print sheet…*: choose a layout and a file, and it 
   with its short address under it when it has one.
 - **Files:** a PDF (PDF 1.4 written by this program: only filled rectangles, so no fonts or images, and the same
   codes always give the same bytes) or SVG drawings sized in millimetres, one per page (`name.svg`, `name-2.svg`, …).
+
+### A whole print run from a list
+
+*File → Make from a list…* makes one code for every row of a CSV whose first row names its columns: `link` and
+`color`, and optionally `label` and `file`, in any order. Spreadsheets' own CSVs work: UTF-8 with or without a
+byte-order mark, or Windows-1252, separated by commas, semicolons or tabs.
+
+```text
+link,color,label,file
+https://shop.example.com/p/blue-mug,#3366cc,Blue mug,
+https://shop.example.com/p/green-mug,#006633,Green mug,green.svg
+```
+
+- **First the count:** choosing the file says how many rows are ready and which have a problem. Then pick a folder,
+  PNG or SVG, and whether to print short links (and which section). The error-correction level is the Make tab's.
+- **Names:** a row's `file` column (a plain file name; a path is refused, so a list can never write outside the
+  folder), else its label and the suggested name. **Nothing is overwritten:** a name already there gets `-2`, `-3`.
+- **Skipped, with the reason:** a row with no link or no color, a row the same as an earlier one, and a color too light
+  to scan. Tick the box to use the nearest color that scans instead (by OKLab distance), which the report notes.
+- **Short links** follow the usual rule: the same destination in the same color shares its ID.
+- **Report:** `made-DATE-TIME.csv` beside the pictures says what happened to every row. *Stop* in the dialog stops after
+  the current code, and the report says which rows were not made.
 
 ### Keeping your data
 

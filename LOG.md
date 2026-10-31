@@ -298,6 +298,13 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
   - pypdf reads the PDFs in strict mode with no warnings, and the poster's code reads back from a drawing of its page. No PDF viewer was run, and nothing has been printed on paper or scanned with a phone yet.
   - `stamp.py --check` is clean.
 
+**qr_color_registry** (batch make)
+- *File → Make from a list…*: a whole print run from a CSV (`link`, `color`, optional `label` and `file`; UTF-8 or Windows-1252; commas, semicolons or tabs). It counts the rows first, then makes them as one job that *Stop* ends after the current code, and writes `made-DATE-TIME.csv` beside the pictures.
+  - A `file` column is a plain name only: a path can never write outside the chosen folder, and names Windows keeps for itself are refused. Nothing is overwritten (`-2`, `-3`).
+  - Rows with no link or color, duplicates and colors too light to scan are skipped with the reason; a tick uses the nearest color that scans instead (`swatch.nearest_usable`, by OKLab distance).
+  - Short links are reused as usual. The handoff's `bridge.db` source waits until Data Bridge is merged.
+- Checked: tests pass on Python 3.14 (twice) and 3.11; `--selftest` and `--smoke` pass. The dialog was driven on a scratch registry with a list holding a duplicate, an empty link and a too-light color, with screenshots. `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

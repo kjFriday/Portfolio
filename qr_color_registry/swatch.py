@@ -211,6 +211,19 @@ def nearest_cube(color):
     return best
 
 
+def nearest_usable(color):
+    """The usable cube color that looks closest (OKLab distance), for a color too light to scan."""
+    target = oklab(color)
+    best = "#000000"
+    best_distance = -1.0
+    for candidate in usable_colors():
+        gap = color_distance(target, oklab(candidate))
+        if best_distance < 0 or gap < best_distance:
+            best = candidate
+            best_distance = gap
+    return best
+
+
 def is_near(first, second):
     return color_distance(oklab(first), oklab(second)) <= NEAR
 
@@ -249,4 +262,4 @@ def usable_board(order):
             board.append(color)
     return board
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=47879cdfe801133b08361398756439059cb4d65e813c3c44082de2cb07ae8195 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=4a29e06b5f5d19c73492e8c1c6c9be7fc67662fc7c3f1f8f7184cf6ad588f3a2 ====

@@ -10,6 +10,7 @@
 the MCP server (--mcp, --ecp) run as a real process."""
 
 import csv
+import csv
 import hashlib
 import json
 import os
@@ -124,6 +125,160 @@ class MakeTests(CoreCase):
         self.assertEqual(qr_palette.slug("https://www.Shop.example.com/sale?id=4"), "shop-example-com-sale-id-4")
         self.assertEqual(qr_palette.slug("::"), "qr-code")
         self.assertEqual(qr_palette.suggested_name("https://example.com/a", "#3366cc", "svg"), "example-com-a-3366cc.svg")
+
+
+class BatchTests(CoreCase):
+    def write(self, text, name="list.csv", encoding="utf-8"):
+        handle = open(self.path(name), "w", encoding=encoding, newline="")
+        handle.write(text)
+        handle.close()
+        return self.path(name)
+
+    def rows(self, text):
+        read = qr_palette.read_batch_csv(self.write(text))
+        self.assertTrue(read["ok"], read["error"])
+        return read["value"]
+
+    def batch(self, rows, section="", snap=False, watch=None, kind="png"):
+        made = qr_palette.make_batch(self.db, rows, self.path("run"), kind, "M", 4, section, snap, watch, "T")
+        self.assertTrue(made["ok"], made["error"])
+        return made["value"]
+
+    def test_a_list_with_a_byte_order_mark_quotes_and_bad_rows(self):
+        path = self.write('Color,LINK,label,file,extra\r\n'
+                          '#3366CC,"https://shop.example.com/a,b",Blue mug,,x\r\n'
+                          '006633,https://example.com/menu,"Lunch, ""new""",menu.svg,\r\n'
+                          ',https://example.com/no-color,,,\r\n'
+                          'blue,https://example.com/bad-color,,,\r\n'
+                          '#cc0000,,no link,,\r\n'
+                          ',,,,\r\n', encoding="utf-8-sig")
+        read = qr_palette.read_batch_csv(path)
+        self.assertTrue(read["ok"], read["error"])
+        rows = read["value"]
+        self.assertEqual(len(rows), 5)  # the empty row is not a row
+        self.assertEqual((rows[0]["link"], rows[0]["color"], rows[0]["label"], rows[0]["problem"], rows[0]["row"]),
+                         ("https://shop.example.com/a,b", "#3366cc", "Blue mug", "", 2))
+        self.assertEqual((rows[1]["color"], rows[1]["label"], rows[1]["file"]), ("#006633", 'Lunch, "new"', "menu.svg"))
+        self.assertEqual(rows[2]["problem"], "no color")
+        self.assertIn("not a #rrggbb color", rows[3]["problem"])
+        self.assertEqual(rows[4]["problem"], "no link")
+
+    def test_lists_from_spreadsheets(self):
+        rows = self.rows("link;color;label\nhttps://example.com/a;#3366cc;Caf\u00e9\n")
+        self.assertEqual((rows[0]["link"], rows[0]["label"]), ("https://example.com/a", "Caf\u00e9"))
+        path = self.write("link\tcolor\tlabel\r\nhttps://example.com/b\t#3366cc\tCaf\u00e9\r\n", encoding="cp1252")
+        self.assertEqual(qr_palette.read_batch_csv(path)["value"][0]["label"], "Caf\u00e9")
+        for text, problem in (("url,colour\nhttps://example.com,#000000\n", "first row"), ("link,color\n", "no rows"),
+                              ("", "no rows")):
+            refused = qr_palette.read_batch_csv(self.write(text))
+            self.assertFalse(refused["ok"], text)
+            self.assertIn(problem, refused["error"])
+        self.assertFalse(qr_palette.read_batch_csv(self.path("missing.csv"))["ok"])
+
+    def test_a_run_makes_pictures_and_a_report(self):
+        rows = self.rows("link,color,label,file\n"
+                         "https://example.com/a,#3366cc,Blue mug,\n"
+                         "https://example.com/b,#006633,,own-name\n"
+                         "https://example.com/c,#663399,,c.svg\n"
+                         ",#663399,,\n")
+        made = self.batch(rows)
+        self.assertEqual((made["made"], made["skipped"], made["stopped"]), (3, 1, False))
+        names = sorted(os.listdir(self.path("run")))
+        self.assertEqual(names, ["blue-mug-example-com-a-3366cc.png", "c.svg", "made-T.csv", "own-name.png"])
+        for line in made["rows"][:3]:
+            self.assertEqual(line["status"], "made")
+            picture = qr_codec.read_qr_file(line["path"])
+            self.assertEqual((picture["value"]["reading"]["text"], picture["value"]["color"]),
+                             (line["link"], line["color"]))
+        self.assertEqual(len(qr_palette.search(self.db, "qr_code", "example.com", False, 20)["value"]), 3)
+        handle = open(made["report"], encoding="utf-8-sig", newline="")
+        report = list(csv.DictReader(handle))
+        handle.close()
+        self.assertEqual(report[3]["status"], "skipped")
+        self.assertEqual(report[3]["reason"], "no link")
+        self.assertEqual(report[0]["path"], made["rows"][0]["path"])
+
+    def test_a_run_never_overwrites(self):
+        rows = self.rows("link,color,file\nhttps://example.com/a,#3366cc,same\nhttps://example.com/b,#3366cc,same\n"
+                         "https://example.com/c,#3366cc,SAME.png\n")
+        os.makedirs(self.path("run"))
+        keep = os.path.join(self.path("run"), "same.png")
+        handle = open(keep, "wb")
+        handle.write(b"keep me")
+        handle.close()
+        made = self.batch(rows)
+        self.assertEqual(made["made"], 3)
+        self.assertEqual(sorted(os.path.basename(line["path"]).lower() for line in made["rows"]),
+                         ["same-2.png", "same-3.png", "same-4.png"])
+        handle = open(keep, "rb")
+        self.assertEqual(handle.read(), b"keep me")
+        handle.close()
+        second = self.batch(rows)
+        self.assertEqual(second["made"], 3)
+        self.assertNotEqual(second["report"], made["report"])  # the earlier report stays too
+
+    def test_duplicates_and_paths_are_skipped(self):
+        rows = self.rows("link,color,label,file\n"
+                         "https://example.com/a,#3366cc,x,\n"
+                         "https://example.com/a,#3366CC,x,\n"
+                         "https://example.com/a,#3366cc,y,\n"
+                         "https://example.com/b,#3366cc,,../outside.png\n"
+                         "https://example.com/c,#3366cc,,C:\\Temp\\outside.png\n"
+                         "https://example.com/d,#3366cc,,sub\\inside.png\n"
+                         "https://example.com/e,#3366cc,,CON\n"
+                         "https://example.com/f,#3366cc,,bad:name.png\n")
+        made = self.batch(rows)
+        self.assertEqual(made["made"], 2)
+        self.assertEqual(made["rows"][1]["reason"], "the same as row 2")
+        self.assertEqual(made["rows"][2]["status"], "made")  # the same code under another label is another picture
+        for line in made["rows"][3:6]:
+            self.assertIn("not a path", line["reason"])
+        for line in made["rows"][6:]:
+            self.assertIn("cannot be used on Windows", line["reason"])
+        self.assertFalse(os.path.exists(self.path("outside.png")))
+
+    def test_colors_too_light_are_skipped_or_snapped(self):
+        rows = self.rows("link,color\nhttps://example.com/a,#ffff00\nhttps://example.com/b,#3366cc\n")
+        made = self.batch(rows)
+        self.assertEqual((made["made"], made["rows"][0]["status"]), (1, "skipped"))
+        self.assertIn("too light", made["rows"][0]["reason"])
+        made = self.batch(rows, snap=True)
+        self.assertEqual(made["made"], 2)
+        near = swatch.nearest_usable("#ffff00")
+        self.assertEqual(made["rows"][0]["color"], near)
+        self.assertIn("#ffff00", made["rows"][0]["note"])
+        self.assertEqual(qr_codec.read_qr_file(made["rows"][0]["path"])["value"]["color"], near)
+
+    def test_short_links_are_reused_by_destination_and_color(self):
+        rows = self.rows("link,color,label\n"
+                         "https://example.com/menu,#3366cc,first\n"
+                         "https://example.com/menu,#3366cc,second\n"
+                         "https://example.com/menu,#006633,green\n"
+                         "not a web link,#006633,odd\n")
+        made = self.batch(rows, section="nonlocal")
+        self.assertEqual(made["made"], 3)
+        ids = [line["short_id"] for line in made["rows"]]
+        self.assertEqual(ids[0], ids[1])
+        self.assertNotEqual(ids[0], ids[2])
+        self.assertTrue(shortlinks.is_valid_code(ids[0]))
+        self.assertIn("http", made["rows"][3]["reason"])
+        picture = qr_codec.read_qr_file(made["rows"][0]["path"])
+        self.assertEqual(picture["value"]["reading"]["text"], qr_palette.LINKS["nonlocal"]["base"] + ids[0])
+
+    def test_a_run_can_be_stopped(self):
+        rows = self.rows("link,color\nhttps://example.com/a,#3366cc\nhttps://example.com/b,#3366cc\n"
+                         "https://example.com/c,#3366cc\n")
+        seen = []
+
+        def watch(done, total):
+            seen.append((done, total))
+            return done == 1
+
+        made = self.batch(rows, watch=watch)
+        self.assertEqual((made["made"], made["stopped"]), (1, True))
+        self.assertEqual(seen, [(0, 3), (1, 3)])
+        self.assertEqual(made["rows"][2]["reason"], "stopped before this row")
+        self.assertTrue(os.path.isfile(made["report"]))
 
 
 class RegisterTests(CoreCase):
@@ -527,4 +682,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=d0dd58c572f6362308e2d54ae563d93b840570d58ad227d68f13dc886a80459f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1edad7de5b6b4a780ab0bde7caf21ad1c0a3bcb8245d0f0fefb3668d59d203da ====

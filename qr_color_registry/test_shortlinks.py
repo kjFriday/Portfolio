@@ -9,9 +9,11 @@
 """Tests for short links: the IDs and their check digit, the base address, destinations, templates,
 tags, links.json and the exported redirect pages."""
 
+import http.client
 import json
 import os
 import shutil
+import socket
 import tempfile
 import unittest
 
@@ -235,7 +237,75 @@ class ExportTests(unittest.TestCase):
         self.assertIn("url=https://example.com/try\"", read(os.path.join(self.folder, local, "index.html")))
 
 
+class ServerTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="qr_palette_serve_")
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        self.port = probe.getsockname()[1]
+        probe.close()
+        self.base = "HTTP://LOCALHOST:" + str(self.port) + "/"
+        self.code = valid_code("1234567")
+        shortlinks.export_pages(self.folder, [{"code": self.code, "url": self.base + self.code,
+                                               "target": "https://example.com/try", "hex": "#000000"}], self.base, {})
+        self.running = []
+
+    def tearDown(self):
+        for running in self.running:
+            shortlinks.stop_server(running)
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+    def start(self):
+        started = shortlinks.start_server(self.folder, self.base, False)
+        self.assertTrue(started["ok"], started["error"])
+        self.running.append(started["value"])
+        return started["value"]
+
+    def get(self, path, method="GET"):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            connection.request(method, path)
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def test_the_pages_are_served_on_this_computer_only(self):
+        self.assertEqual(self.start()["address"], "127.0.0.1")
+        status, body = self.get("/" + self.code + "/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"url=https://example.com/try", body)
+        self.assertEqual(self.get("/" + self.code)[0], 301)  # on to the folder, as static hosts do
+        status, body = self.get("/0000000000/")
+        self.assertEqual(status, 404)
+        self.assertIn(b"This code is not known", body)
+        self.assertEqual(self.get("/../../../windows/win.ini")[0], 404)
+        self.assertEqual(self.get("/" + self.code + "/", "HEAD"), (200, b""))
+        self.assertEqual(self.get("/" + self.code + "/", "POST")[0], 501)
+
+    def test_where_the_pages_are_served(self):
+        self.assertEqual(shortlinks.serve_address("HTTP://LOCALHOST:8000/", False)["value"], ("127.0.0.1", 8000))
+        self.assertEqual(shortlinks.serve_address("HTTP://127.0.0.1/", False)["value"], ("127.0.0.1", 80))
+        self.assertIn("network", shortlinks.serve_address("HTTP://192.168.1.20:8000/", False)["error"])
+        self.assertEqual(shortlinks.serve_address("HTTP://192.168.1.20:8000/", True)["value"], ("192.168.1.20", 8000))
+        self.assertEqual(shortlinks.serve_address("HTTP://MY-PC.LOCAL:8000/", True)["value"], ("0.0.0.0", 8000))
+        self.assertIn("http://", shortlinks.serve_address("HTTPS://LOCALHOST:8443/", False)["error"])
+
+    def test_nothing_to_serve_and_a_port_in_use(self):
+        empty = tempfile.mkdtemp(prefix="qr_palette_serve_empty_")
+        try:
+            self.assertIn("export", shortlinks.start_server(empty, self.base, False)["error"])
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+        self.start()
+        again = shortlinks.start_server(self.folder, self.base, False)
+        if again["ok"]:
+            self.running.append(again["value"])
+        self.assertFalse(again["ok"])
+        self.assertIn("cannot serve", again["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=380a485fd3ad82472bba63a18d69f10b71bb289fa3c059720b2e48a0c1e0c47f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=77a219dd37117453feaa7c8b8500a033a01bd3d756d675283847a3ae72bd8343 ====

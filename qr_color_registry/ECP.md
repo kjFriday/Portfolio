@@ -481,8 +481,12 @@ program's data folder (`audit.file` in `settings.json` moves it).
   left behind for more than 30 s is cleared.
 - **Only the id leaves:** nothing in the log is sent to a client except `audit_id`. A log that cannot be written
   is reported on standard error, and the answer is not held back.
-- **Limits:** cutting lines off the end leaves a valid chain, and anyone who can write the file can rewrite the
-  whole chain. The log shows how questions were read and answered; it is evidence, not proof.
+- **The anchor:** every append also writes `audit.jsonl.anchor`, the last line's `audit_id` and SHA-256, and
+  `verify()` checks that the log still reaches it, so lines cut off the end show too. The window's *Audit log…*
+  checks the chain and copies that fingerprint (`45:3f2a…`) for keeping elsewhere; `check_fingerprint()` compares
+  the log with a kept one later.
+- **Limits:** anyone who can write the folder can rewrite the whole chain and its anchor; only a fingerprint kept
+  somewhere else catches that. The log shows how questions were read and answered; it is evidence, not proof.
 
 ## 13. Security and privacy
 
@@ -663,7 +667,6 @@ prefix `ecp_` so the two are not confused in logs.
 - A `STRICT` registry schema (`user_version` 3), as the spec's DDL has it, keeping the `application_id` marker.
   Programs that read the registry check `user_version` too, so they have to accept the new version at the same
   time.
-- Anchoring the audit chain outside the file, so that cutting off the end shows.
 - Writes (making and registering codes) stay out of ECP; if they come, they come behind the window's own
   confirmation, never through MCP.
 - More environments behind the same rules.

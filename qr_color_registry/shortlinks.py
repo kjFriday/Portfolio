@@ -31,14 +31,21 @@ Records
               "tags": {name: value}, "templates": {name: pattern}}           links.json, checked
   Section    {"about", "base", "export_folder"}
   ShortLink  {"code", "url", "target", "hex", ...}               one short link from the registry
+  Server     {"server", "thread", "address", "port", "folder", "base"}    the local pages, served
+
+start_server() serves exported local pages from this computer, so local short links can be tried at
+once; it binds to this computer alone unless the local base is a network address and the person allows
+that.
 """
 
 import html
+import http.server
 import ipaddress
 import json
 import os
 import re
 import secrets
+import threading
 import urllib.parse
 
 import textsafe
@@ -471,4 +478,97 @@ def export_pages(folder, rows, base, tags):
         return fail("cannot write the redirect pages: " + str(error))
     return ok_result({"folder": folder, "written": len(pages) - 3, "skipped": skipped})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=c95f98d4ed15aa90e8857e951fdf76e713a7650c2848a60ed2105be525d4947f ====
+
+# --- Serving the local pages from this computer -------------------------------------------------------
+
+def serve_address(base, network):
+    """Where the local pages are served -> Result (address, port), from the local section's base. Only
+    http (there is no certificate here). LOCALHOST and loopback addresses bind to this computer alone;
+    any other address reaches your network, so it needs `network` (the person said yes to that)."""
+    try:
+        parts = urllib.parse.urlsplit(base)
+        port = parts.port or 80
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return fail("the local base is not a valid address")
+    if parts.scheme.lower() != "http":
+        return fail("only an http:// local base can be served from this computer")
+    if host == "localhost":
+        return ok_result(("127.0.0.1", port))
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and address.is_loopback:
+        return ok_result((str(address), port))
+    if not network:
+        return fail("the local base " + base + " is on your network: allow phones on your network first")
+    if address is not None:
+        return ok_result((str(address), port))
+    return ok_result(("0.0.0.0", port))
+
+
+def page_handler(folder):
+    """A request handler for the exported pages: GET and HEAD of files in `folder` only, never a list
+    of files, the folder's own 404.html for anything missing, and nothing logged."""
+    missing = os.path.join(folder, "404.html")
+
+    class PageHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *arguments, **options):
+            super().__init__(*arguments, directory=folder, **options)
+
+        def log_message(self, *arguments):
+            pass
+
+        def list_directory(self, path):
+            self.send_error(404)
+            return None
+
+        def send_error(self, code, message=None, explain=None):
+            if code != 404 or not os.path.isfile(missing):
+                super().send_error(code, message, explain)
+                return
+            handle = open(missing, "rb")
+            try:
+                body = handle.read()
+            finally:
+                handle.close()
+            self.send_response(404)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+    return PageHandler
+
+
+class PageServer(http.server.ThreadingHTTPServer):
+    # On Windows, SO_REUSEADDR lets a second server take a port that is already in use; never ask for it there.
+    allow_reuse_address = os.name != "nt"
+
+
+def start_server(folder, base, network):
+    """Serve the exported local pages in `folder` at the local base -> Result Server {"server",
+    "thread", "address", "port", "folder", "base"}. Stop it with stop_server()."""
+    where = serve_address(base, network)
+    if not where["ok"]:
+        return where
+    if not os.path.isfile(os.path.join(folder, "index.html")):
+        return fail("export the local pages into " + folder + " first")
+    try:
+        server = PageServer(where["value"], page_handler(folder))
+    except OSError as error:
+        return fail("cannot serve on " + where["value"][0] + " port " + str(where["value"][1]) + ": " + str(error))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return ok_result({"server": server, "thread": thread, "address": where["value"][0], "port": where["value"][1],
+                      "folder": folder, "base": base})
+
+
+def stop_server(running):
+    running["server"].shutdown()
+    running["server"].server_close()
+    running["thread"].join(5)
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=7f06570e4d3f38be064617cb6690640ec9975c9ddcb7dcb093e59511a2145c35 ====

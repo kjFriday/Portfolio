@@ -31,12 +31,34 @@ redirect pages of the short-link section in use (or `--section local|nonlocal`) 
 
 | Tab | What |
 |---|---|
-| Make | Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. |
+| Make | Type a link (or build it with *From template…*), then pick a color from the board. The board shows the 118 cube colors dark enough to scan, best first for the chosen preset and your votes. **Good** / **Bad** vote on the picked color (one vote per color; press it again to take it back). Tick **Short link** to print a short address instead of the link (see below). *Save PNG…* or *Save SVG…* writes the code, reads the file back to prove it scans, and registers it. *Print size…* says how wide to print it for a scanning distance (see below). |
 | Read | Open or paste a picture of a QR code. It shows the text, the color it detects, and the codes in the registry that hold the same text. *Register this picture…* adds a PNG or SVG made elsewhere, in the color you confirm. |
-| Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, open the link, send a short link somewhere else (*Change destination…*), or forget the record (the file stays). The **Ask** row asks in plain English through a local model you pick. |
+| Find | Find by **QR code** (a link, words in it, a short-link ID, a file path, or a picture) or by **Color** (`#rrggbb`, "near", or a family such as blue). Each result shows the color, the link, the path and whether the file is still there. From there: open the picture, show it in its folder, copy the path or link, or open the link. Pick several results (Ctrl+click or Shift+click) and *Change destination…* sends their short links somewhere else, *Redraw…* draws them again in another color or size over their own files (each read back first), and *Forget record* removes them from the registry (the files stay). The **Ask** row asks in plain English through a local model you pick. |
 
 *File → Import votes from Color Voats…* brings in Color Voats' votes, with the newer vote winning for each color, so
-importing again changes nothing.
+importing again changes nothing. The rest of the File menu: exporting and serving the redirect pages (below),
+*Back up the registry…*, *Export the registry (CSV or JSON)…*, *Audit log…* and *Open settings.json*.
+
+The window runs one slow task at a time and queues the rest, so Save or Find asked for while a model loads simply
+waits its turn.
+
+### Print size
+
+*Print size…* in the Make tab takes the printed width of the picture and the scanning distance, and for each
+error-correction level gives the code's version, the module size, whether it is big enough, the smallest width
+that is, and how tall the printed address's letters come out. The rules of thumb: a module of at least 0.4 mm to
+print well, and the code at least a tenth as wide as the distance (a module at least 1/250 of it); address letters
+under 1.5 mm are flagged as hard to read. They are guidance, not guarantees: try a print before printing a batch.
+
+### Keeping your data
+
+- **Backups.** *File → Back up the registry…* copies `palette.db` with SQLite's own backup, consistent even while
+  the window writes, into a new file (by default `backups\palette-DATE-TIME.db` in the data folder), and checks the
+  copy before saying it is done. To restore one, close the window and copy it over `palette.db`.
+- **Exports.** *File → Export the registry (CSV or JSON)…* writes a CSV with one row per code (color, link,
+  destination, short-link ID and section, path, format, level, version, when) for spreadsheets, with a byte-order
+  mark so they read it as UTF-8, or a JSON file with everything: codes, short links and votes. A CSV cell that
+  starts with `=`, `+`, `-` or `@` gets a leading apostrophe, so a spreadsheet never runs a link as a formula.
 
 ## Short links: print once, change where it goes later
 
@@ -73,15 +95,20 @@ as `links.use`. The Find tab marks each short link local or nonlocal.
 
 - **A code keeps its address.** Switching changes which address new codes print, and which pages each Export
   writes; a code already made stays local or nonlocal. The same link in the same color gets one ID in each section.
-- **Trying local codes.** Export the local pages, then serve that folder from this computer:
+- **Trying local codes.** *File → Serve local pages* exports the local pages (into `links.json`'s local export
+  folder, or `local pages` in the data folder) and serves them from this computer at the local base, until you
+  choose *Stop serving local pages* or close the window. While they are served, they are written again after every
+  local short link you save or send somewhere else. The server only answers GET and HEAD for files in that
+  folder, never lists files, and logs nothing.
+
+  `LOCALHOST` only works in this computer's own browser, and then the server listens to this computer alone. For
+  phones on the same Wi-Fi, set the local base to this computer's network address (`ipconfig` shows it), such as
+  `HTTP://192.168.1.20:8000/`; the window then asks before letting your network in, and Windows may ask to let
+  Python through its firewall. To serve an exported folder without the window:
 
   ```bash
   python -m http.server 8000 --bind 127.0.0.1 --directory "C:\path\to\local pages"
   ```
-
-  `LOCALHOST` only works in this computer's own browser. For phones on the same Wi-Fi, set the local base to this
-  computer's network address (`ipconfig` shows it), such as `HTTP://192.168.1.20:8000/`, and leave out
-  `--bind 127.0.0.1`; Windows may ask to let Python through its firewall. Stop the server with Ctrl+C when done.
 - **Nonlocal must be an internet address.** A local name or address there (`LOCALHOST`, `192.168.…`,
   `….LOCAL`) is refused with a warning, so printed codes never point at your own network by mistake. Use a domain
   or subdomain you control and will keep: every printed code depends on it, and whoever owned a lapsed domain could
@@ -204,7 +231,10 @@ python qr_palette.py --mcp
 - **Answers are data:** every answer is labelled `untrusted-db-content`. Links and paths are cleaned of hidden
   characters and capped. Do not pass them on to another tool as instructions.
 - **Audit log:** every call adds a line to `audit.jsonl`, chained by SHA-256, with hashes of the prompt and the
-  planner and the plan as it ran, never the prompt itself.
+  planner and the plan as it ran, never the prompt itself. An anchor beside it (`audit.jsonl.anchor`) records the
+  last line, so lines cut off the end show too. *File → Audit log…* lists the lines newest first, checks the chain,
+  and copies the last line's fingerprint for you to keep somewhere else; *Check a kept fingerprint…* compares the
+  log with it later, which still works if someone rewrote the anchor as well.
 
 To add it to Claude Code, use `python.exe` (not `pythonw`) and your own path to the file:
 

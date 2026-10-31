@@ -263,6 +263,15 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - The window queues its slow tasks first come, first served: Save, Ask or Find asked for while a model is still loading now waits its turn instead of being refused as busy. Cancel stops waiting for the running task; the ones queued behind it go on.
 - Checked: the 240 tests pass on Python 3.14 (twice) and 3.11; `--selftest` and `--smoke` pass. The window was driven through a template link, local and nonlocal short-link saves, Find and a local export, with screenshots. `stamp.py --check` is clean.
 
+**qr_color_registry** (quick wins)
+- *File → Serve local pages*: exports the local short links' pages and serves them from this computer (GET and HEAD of that folder only, no file lists, its own 404 page), so local codes work at once. LOCALHOST binds to this computer alone; a network address asks first. On Windows the server never shares a port (no `SO_REUSEADDR`). Served pages are written again after each local change.
+- *File → Back up the registry…*: SQLite's backup into a new file, checked (marks, version, `quick_check`) before it counts. *File → Export the registry (CSV or JSON)…*: one row per code for spreadsheets (with a byte-order mark, and an apostrophe before any cell that starts like a formula), or everything as JSON.
+- *Print size…* in Make: for a printed width and a scanning distance, each level's version, module size, the smallest width that works and the printed address's letter height (rules of thumb: modules of at least 0.4 mm and 1/250 of the distance; letters of at least 1.5 mm).
+- Find acts on several results at once: *Change destination…*, *Forget record*, and the new *Redraw…* (another color or size over the same files, each read back before it replaces the old one).
+- Audit log: an anchor beside it (`audit.jsonl.anchor`) makes lines cut off the end show; *File → Audit log…* lists the lines, checks the chain, and copies the last line's fingerprint to keep elsewhere, which *Check a kept fingerprint…* compares later.
+- `HANDOFF.md` describes features 6-15 (batch make, print sheets, scan analytics, destination history, logos, more code types, a robustness score, publishing, tamper checks, short links in ECP) for whoever builds them next.
+- Checked: the 252 tests pass on Python 3.14 (three times) and 3.11; `--selftest` and `--smoke` pass. The window was driven through serving and stopping the local pages (fetching a page, an unknown ID's 404), the print-size dialog, Redraw, the audit log, a backup and a CSV export, with screenshots. `stamp.py --check` is clean.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

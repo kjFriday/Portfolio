@@ -9,6 +9,7 @@
 """Tests for QR Palette's core and its command line: making, registering, finding, votes, settings, and
 the MCP server (--mcp, --ecp) run as a real process."""
 
+import csv
 import hashlib
 import json
 import os
@@ -252,6 +253,74 @@ class ShortLinkTests(CoreCase):
         self.assertFalse(qr_palette.export_redirects(self.path("none.db"), site, "local")["ok"])
 
 
+class QuickWinTests(CoreCase):
+    def test_csv_export_for_spreadsheets(self):
+        self.make("a.png", "https://example.com/a", "#3366cc")
+        self.make("b.png", "=example", "#006633")
+        short = qr_palette.make_qr(self.db, "https://shop.example.com/hours", "#3366cc", "M", self.path("s.png"), 4,
+                                   qr_palette.short_request(shortlinks.new_code(7), "nonlocal"))["value"]
+        exported = qr_palette.export_registry(self.db, self.path("codes.csv"))
+        self.assertEqual((exported["value"]["codes"], exported["value"]["short_links"]), (3, 1))
+        handle = open(self.path("codes.csv"), "rb")
+        raw = handle.read()
+        handle.close()
+        self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))  # a byte-order mark, so spreadsheets read it as UTF-8
+        rows = list(csv.DictReader(raw.decode("utf-8-sig").splitlines()))
+        self.assertEqual(list(rows[0].keys()), list(qr_palette.CSV_COLUMNS))
+        by_id = {}
+        for row in rows:
+            by_id[int(row["id"])] = row
+        self.assertEqual(by_id[2]["link"], "'=example")  # never read as a formula
+        self.assertEqual((by_id[short["id"]]["destination"], by_id[short["id"]]["short_id"],
+                          by_id[short["id"]]["section"]), (self.TARGET, short["short_code"], "nonlocal"))
+        self.assertFalse(qr_palette.export_registry(self.db, self.path("codes.txt"))["ok"])
+
+    def test_json_export_holds_everything(self):
+        self.make("a.png", "https://example.com/a", "#3366cc")
+        qr_palette.vote_color(self.db, "#3366cc", 1)
+        self.assertTrue(qr_palette.export_registry(self.db, self.path("all.json"))["ok"])
+        handle = open(self.path("all.json"), encoding="utf-8")
+        data = json.load(handle)
+        handle.close()
+        self.assertEqual((len(data["codes"]), data["short_links"], data["votes"][0]["color"]), (1, [], "#3366cc"))
+
+    def test_print_advice(self):
+        url = "HTTPS://GO.EXAMPLE.COM/12345674"
+        advice = qr_palette.print_advice(url, 3.0, 0.3, "GO.EXAMPLE.COM/12345674")["value"]
+        self.assertEqual(advice["need_mm"], 1.2)  # 300 mm / 250
+        level_m = advice["levels"][1]
+        self.assertEqual((level_m["level"], level_m["version"], level_m["modules"]), ("M", 2, 33))
+        self.assertFalse(level_m["fits"])
+        self.assertEqual(level_m["min_width_cm"], 4.0)
+        self.assertGreater(level_m["caption_mm"], 1.0)
+        roomy = qr_palette.print_advice(url, 5.0, 0.3, "")["value"]
+        self.assertTrue(roomy["levels"][1]["fits"])
+        self.assertIsNone(roomy["levels"][1]["caption_mm"])
+        self.assertEqual(qr_palette.print_advice(url, 3.0, 0.05, "")["value"]["need_mm"], qr_palette.MIN_MODULE_MM)
+        for width, distance in ((0, 0.3), (3, 0), ("3", 0.3), (True, 0.3)):
+            self.assertFalse(qr_palette.print_advice(url, width, distance, "")["ok"], (width, distance))
+
+    def test_redraw_keeps_the_link_and_the_short_link(self):
+        short = qr_palette.make_qr(self.db, "https://shop.example.com/hours", "#3366cc", "Q", self.path("s.png"), 4,
+                                   qr_palette.short_request(shortlinks.new_code(7), "local"))["value"]
+        redrawn = qr_palette.redraw_record(self.db, short["id"], "#663399", 6)
+        self.assertTrue(redrawn["ok"], redrawn["error"])
+        picture = qr_codec.read_qr_file(short["path"])["value"]
+        self.assertEqual((picture["reading"]["text"], picture["color"], picture["reading"]["level"]),
+                         (short["link"], "#663399", "Q"))
+        found = qr_palette.search(self.db, "qr_code", short["short_code"], False, 20)["value"]
+        self.assertEqual((len(found), found[0]["hex"], found[0]["target"]), (1, "#663399", self.TARGET))
+        self.assertIn("dark enough", qr_palette.redraw_record(self.db, short["id"], "#ffff00", 6)["error"])
+        self.assertEqual(qr_codec.read_qr_file(short["path"])["value"]["color"], "#663399")  # left as it was
+        self.assertFalse(qr_palette.redraw_record(self.db, 999, "#663399", 6)["ok"])
+        self.assertEqual(sorted(os.listdir(self.folder)), ["palette.db", "s.png"])
+
+    TARGET = "https://shop.example.com/hours"
+
+    def test_local_pages_have_a_home(self):
+        self.assertEqual(qr_palette.local_pages_folder(), os.path.join(qr_palette.data_folder(), "local pages"))
+
+
 class ApplySettingsTests(unittest.TestCase):
     def tearDown(self):
         qr_palette.apply_settings(settings.load("no-such-settings.json")["values"])
@@ -441,4 +510,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4eb405681a22f197e8ca2c4521796455a76f19e0d98d9a55e9162d152ef0cdb5 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=e53fcee13acc014a915c808a15b949545f42c0edd8a53ad3021f1bff403b59fd ====

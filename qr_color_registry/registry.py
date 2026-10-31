@@ -586,6 +586,54 @@ def row_by_id(connection, number):
     return row_record(row)
 
 
+def vote_entries(connection):
+    """Every vote with its time, oldest first: [{"color", "voat", "voted"}] (for exports)."""
+    found = []
+    for row in connection.execute("SELECT c.hex, v.voat, v.voted FROM votes v JOIN colors c ON c.id = v.color_id "
+                                  "ORDER BY v.voted, c.hex").fetchall():
+        found.append({"color": row[0], "voat": row[1], "voted": row[2]})
+    return found
+
+
+def backup(path, target):
+    """Copy the registry into `target`, a new file -> Result target. SQLite's backup copies it page by
+    page, consistently even while the window writes; the copy is checked (marks, version, quick_check)
+    before it counts, and written next to its place first."""
+    if not os.path.isfile(path):
+        return fail("no registry yet at " + path)
+    if os.path.exists(target):
+        return fail(target + " already exists")
+    temporary = target + ".part"
+    source = None
+    copy = None
+    try:
+        folder = os.path.dirname(os.path.abspath(target))
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        source = sqlite3.connect(pathlib.Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=BUSY_SECONDS)
+        copy = sqlite3.connect(temporary)
+        source.backup(copy)
+        copy.close()
+        copy = None
+        os.replace(temporary, target)
+    except (sqlite3.Error, OSError) as error:
+        if copy is not None:
+            copy.close()
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        return fail("cannot back up the registry: " + str(error))
+    finally:
+        if source is not None:
+            source.close()
+    checked = connect(target, True)
+    if not checked["ok"]:
+        return fail("the backup did not check out: " + checked["error"])
+    close(checked["value"])
+    return ok_result(target)
+
+
 def short_links(connection):
     """Every short link, oldest first, as ShortLink records ("pictures" counts the files that print it).
     A version 1 registry has none."""
@@ -714,4 +762,4 @@ def find_rows(rows, filters, limit):
             found.append(row)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f4860a115bcc6cff2597799bcdd58a58a062c2f8776b2dca44aedf0c59afe21b ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=998661ee3f5f5c1a5c71c777016f89f0164e724418872691a69b59be11b1f05f ====

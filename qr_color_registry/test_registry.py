@@ -279,6 +279,28 @@ class ShortLinkTests(RegistryCase):
         self.assertIn("another version", registry.connect(self.path, True)["error"])
 
 
+class BackupTests(RegistryCase):
+    def test_a_backup_is_a_checked_copy(self):
+        connection = self.open(False)
+        registry.save_qr(connection, entry(self.folder, "a.png", "https://example.com/a", "#3366cc"))
+        registry.vote(connection, "#3366cc", 1)
+        target = os.path.join(self.folder, "backups", "copy.db")
+        made = registry.backup(self.path, target)
+        self.assertTrue(made["ok"], made["error"])
+        copy = self.open_path(target)
+        self.assertEqual(registry.counts(copy), registry.counts(connection))
+        self.assertEqual(registry.vote_entries(copy)[0]["color"], "#3366cc")
+        self.assertFalse(os.path.exists(target + ".part"))
+        self.assertIn("already exists", registry.backup(self.path, target)["error"])
+        self.assertIn("no registry", registry.backup(os.path.join(self.folder, "none.db"), target + "2")["error"])
+
+    def open_path(self, path):
+        opened = registry.connect(path, True)
+        self.assertTrue(opened["ok"], opened["error"])
+        self.connections.append(opened["value"])
+        return opened["value"]
+
+
 class SavingTests(RegistryCase):
     def test_saving_the_same_file_again_replaces_its_record(self):
         connection = self.open(False)
@@ -445,4 +467,4 @@ class FindTests(RegistryCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=48f7ef7b769bf80dc5a1d4ee24f9fbaf5588b624c6a190fe949ff406c2417df0 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d4860fd45743dddcc3d0141c5b10dfa86cd68f2c9a17793dff807505685507e9 ====

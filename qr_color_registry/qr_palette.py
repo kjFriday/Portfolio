@@ -55,6 +55,7 @@ Usage
                                              it, write a JSON report, close
 """
 
+import csv
 import json
 import os
 import shutil
@@ -64,6 +65,7 @@ import sys
 import tempfile
 import time
 
+import audit
 import ecp
 import local_inference
 import mcp_server
@@ -92,6 +94,11 @@ TILE = 30
 GAP = 4
 COLUMNS = 14
 PREVIEW = 340
+MIN_MODULE_MM = 0.4  # the smallest module most printers and phone cameras handle well
+DISTANCE_PER_MODULE = 250  # the 10:1 rule (scan from at most ten times a code's width) for a 25-module code
+MIN_CAPTION_MM = 1.5  # the smallest letters of a printed address most people can read
+CSV_COLUMNS = ("id", "color", "color_name", "family", "link", "destination", "short_id", "section", "path", "format",
+               "ec_level", "version", "origin", "created")
 LINKS = shortlinks.copy_links(shortlinks.DEFAULT_LINKS)  # links.json, put in place by apply_settings()
 LINK_SECTION = "local"  # the section new short links use: settings.json's links.use
 
@@ -371,6 +378,180 @@ def short_note(shown):
     if section == "":
         return ""
     return " (" + section + ")"
+
+
+def local_pages_folder():
+    """Where the local pages are exported to be served: links.json's local export folder, else
+    "local pages" in the program's data folder."""
+    return LINKS["local"]["export_folder"] or os.path.join(data_folder(), "local pages")
+
+
+def default_backup_path():
+    return os.path.join(data_folder(), "backups", "palette-" + time.strftime("%Y%m%d-%H%M%S") + ".db")
+
+
+def safe_cell(value):
+    """A spreadsheet cell that is never read as a formula: text that starts with = + - @, a tab or a
+    carriage return gets a leading apostrophe."""
+    text = ""
+    if value is not None:
+        text = str(value)
+    if text != "" and text[0] in "=+-@\t\r":
+        return "'" + text
+    return text
+
+
+def export_registry(db_path, path):
+    """The registry as CSV (one row per QR code, for spreadsheets) or JSON (codes, short links and
+    votes), by `path`'s extension -> Result {"path", "codes", "short_links"}. Read on the read-only
+    rail, and written next to its place first."""
+    kind = os.path.splitext(path)[1].lower()
+    if kind not in (".csv", ".json"):
+        return fail("export to a .csv or a .json file")
+    opened = registry.connect(db_path, True)
+    if not opened["ok"]:
+        return opened
+    try:
+        codes = registry.all_rows(opened["value"])
+        links = registry.short_links(opened["value"])
+        votes = registry.vote_entries(opened["value"])
+    except Exception as error:
+        return fail("cannot read the registry: " + str(error))
+    finally:
+        registry.close(opened["value"])
+    rows = []
+    for row in codes:
+        section = ""
+        if row["short_code"] != "":
+            section = shortlinks.section_of(LINKS, row["link"])
+        rows.append({"id": row["id"], "color": row["hex"], "color_name": row["name"], "family": row["family"],
+                     "link": row["link"], "destination": row["target"] or row["link"], "short_id": row["short_code"],
+                     "section": section, "path": row["path"], "format": row["format"], "ec_level": row["ec_level"],
+                     "version": row["version"], "origin": row["origin"], "created": row["created"]})
+    temporary = path + ".part"
+    try:
+        if kind == ".csv":
+            handle = open(temporary, "w", encoding="utf-8-sig", newline="")
+            try:
+                writer = csv.writer(handle)
+                writer.writerow(CSV_COLUMNS)
+                for row in rows:
+                    cells = []
+                    for key in CSV_COLUMNS:
+                        cells.append(safe_cell(row[key]))
+                    writer.writerow(cells)
+            finally:
+                handle.close()
+        else:
+            data = {"program": APP_NAME + " " + __version__, "exported": registry.now_text(), "codes": rows,
+                    "short_links": links, "votes": votes}
+            handle = open(temporary, "w", encoding="utf-8", newline="\n")
+            try:
+                handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            finally:
+                handle.close()
+        os.replace(temporary, path)
+    except OSError as error:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        return fail("cannot write " + path + ": " + str(error))
+    return ok_result({"path": path, "codes": len(rows), "short_links": len(links)})
+
+
+def print_advice(text, width_cm, distance_m, caption):
+    """How a code holding `text`, printed `width_cm` wide (the whole picture, quiet zone included),
+    scans from `distance_m` -> Result {"need_mm", "levels": [{"level", "version", "modules",
+    "module_mm", "fits", "min_width_cm", "caption_mm"}]}, one per error-correction level. Rules of
+    thumb, not guarantees: a module at least MIN_MODULE_MM, and at least 1/DISTANCE_PER_MODULE of the
+    scanning distance; the printed address's letters at least MIN_CAPTION_MM tall."""
+    for value, low, high, name in ((width_cm, 0.5, 500, "the width is 0.5 to 500 cm"),
+                                   (distance_m, 0.05, 50, "the distance is 0.05 to 50 m")):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+            return fail(name)
+    need = max(MIN_MODULE_MM, distance_m * 1000.0 / DISTANCE_PER_MODULE)
+    levels = []
+    for level in registry.EC_LEVELS:
+        made = qr_codec.encode_text(text, level, 1, -1)
+        if not made["ok"]:
+            continue
+        side = made["value"]["size"] + 8
+        across = side
+        caption_mm = None
+        if caption != "":
+            lines, pixel = qr_codec.caption_layout(caption, side * DEFAULT_SCALE, DEFAULT_SCALE)
+            band = qr_codec.caption_size(lines, pixel, DEFAULT_SCALE)
+            across = max(side * DEFAULT_SCALE, band[0] + 2 * DEFAULT_SCALE) / DEFAULT_SCALE
+        module_mm = width_cm * 10.0 / across
+        if caption != "":
+            caption_mm = round(7.0 * pixel / DEFAULT_SCALE * module_mm, 2)
+        levels.append({"level": level, "version": made["value"]["version"], "modules": side,
+                       "module_mm": round(module_mm, 2), "fits": module_mm >= need,
+                       "min_width_cm": round(need * across / 10.0 + 0.05, 1), "caption_mm": caption_mm})
+    if len(levels) == 0:
+        return fail("this text is too long for a QR code")
+    return ok_result({"need_mm": round(need, 2), "levels": levels})
+
+
+def redraw_record(db_path, number, color, scale):
+    """Draw registered code `number` again in `color` (a PNG at `scale` pixels per module) over its
+    own file -> Result Made. The new drawing is read back before it replaces the old one; its link,
+    error-correction level and short link stay as they were."""
+    color = swatch.normalize_hex(color)
+    if color == "" or not swatch.usable(color):
+        return fail("pick a color dark enough to scan on white")
+    if isinstance(scale, bool) or not isinstance(scale, int) or not 1 <= scale <= 40:
+        return fail("the size is 1 to 40 pixels per module")
+
+    def read(connection):
+        row = registry.row_by_id(connection, number)
+        if row is None:
+            return fail("there is no record " + str(number))
+        return ok_result(row)
+
+    found = with_registry(db_path, read)
+    if not found["ok"]:
+        return found
+    row = found["value"]
+    made = qr_codec.encode_text(row["link"], row["ec_level"], 1, -1)
+    if not made["ok"]:
+        return made
+    caption = ""
+    if row["short_code"] != "":
+        caption = shortlinks.caption(row["link"])
+    folder, name = os.path.split(row["path"])
+    if not os.path.isdir(folder):
+        return fail("the folder of " + row["path"] + " is not there any more")
+    trial = os.path.join(folder, ".redraw-" + name)
+    saved = qr_codec.save_matrix(made["value"], trial, scale, color, caption)
+    if not saved["ok"]:
+        return saved
+    picture = qr_codec.read_qr_file(trial)
+    if not picture["ok"] or picture["value"]["reading"]["text"] != row["link"] or picture["value"]["color"] != color:
+        try:
+            os.remove(trial)
+        except OSError:
+            pass
+        return fail("the new drawing did not read back the same; " + row["path"] + " was left as it was")
+    try:
+        os.replace(trial, row["path"])
+    except OSError as error:
+        return fail("cannot replace " + row["path"] + ": " + str(error))
+    entry = {"link": row["link"], "color": color, "path": row["path"], "format": qr_codec.file_kind(row["path"]),
+             "ec_level": row["ec_level"], "version": made["value"]["version"], "origin": "made"}
+    if row["short_code"] != "":
+        entry["short"] = {"code": row["short_code"], "target": row["target"]}
+
+    def register(connection):
+        return registry.save_qr(connection, entry)
+
+    saved_record = with_registry(db_path, register)
+    if not saved_record["ok"]:
+        return saved_record
+    return ok_result({"id": saved_record["value"], "path": row["path"], "link": row["link"], "color": color,
+                      "version": made["value"]["version"], "level": row["ec_level"], "short_code": row["short_code"],
+                      "target": row["target"]})
 
 
 def picture_from_image(image):
@@ -718,7 +899,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
              "places": {}, "make_after": None, "matrix": None, "photos": {}, "swatches": {}, "picture": None,
              "picture_path": "", "picture_source": "", "results": [], "folder": folder, "models": [],
              "engine": engine, "model_id": "", "inference": "checking",
-             "remembered_model": values["inference"]["model"], "short_candidate": "", "export_folders": {}}
+             "remembered_model": values["inference"]["model"], "short_candidate": "", "export_folders": {},
+             "server": None, "serve_index": None, "preview_text": "", "preview_caption": ""}
 
     window = tk.Tk()
     window.title("Generic Company Inc. — QR Palette " + __version__)
@@ -797,8 +979,11 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         records = 0
         if counted["ok"]:
             records = counted["value"]["records"]
-        footer.set(str(records) + " QR code(s)  ·  local inference: " + state["inference"] + "  ·  registry: " +
-                   db_path)
+        serving = ""
+        if state["server"] is not None:
+            serving = "  ·  serving local pages at " + state["server"]["base"]
+        footer.set(str(records) + " QR code(s)  ·  local inference: " + state["inference"] + serving +
+                   "  ·  registry: " + db_path)
 
     def swatch_image(color):
         if color not in state["swatches"]:
@@ -874,9 +1059,264 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
 
         start_job("Exporting redirect pages", lambda: export_redirects(db_path, folder, section), done)
 
+    def serve_pages():
+        """Start or stop serving the local pages from this computer, so local short links work now."""
+        if state["server"] is not None:
+            shortlinks.stop_server(state["server"])
+            state["server"] = None
+            file_menu.entryconfig(state["serve_index"], label="Serve local pages")
+            status.set("Stopped serving the local pages")
+            refresh_footer()
+            return
+        base = LINKS["local"]["base"]
+        network = False
+        where = shortlinks.serve_address(base, False)
+        if not where["ok"]:
+            if "network" not in where["error"]:
+                messagebox.showerror("Serve local pages", where["error"])
+                return
+            if not messagebox.askyesno("Serve local pages", "The local base " + base + " is an address on your "
+                                       "network. While the pages are served, phones and computers on your network can "
+                                       "open them (Windows may ask to let Python through its firewall). Serve them?"):
+                return
+            network = True
+        folder = local_pages_folder()
+
+        def done(outcome):
+            if not outcome["ok"]:
+                messagebox.showerror("Serve local pages", outcome["error"])
+                return
+            started = shortlinks.start_server(folder, base, network)
+            if not started["ok"]:
+                messagebox.showerror("Serve local pages", started["error"])
+                return
+            state["server"] = started["value"]
+            file_menu.entryconfig(state["serve_index"], label="Stop serving local pages")
+            status.set("Serving " + str(outcome["value"]["written"]) + " local page(s) at " + base + " from " + folder +
+                       "; they follow your changes until you stop")
+            refresh_footer()
+
+        start_job("Exporting the local pages", lambda: export_redirects(db_path, folder, "local"), done)
+
+    def refresh_served():
+        """While the local pages are served, write them again after a change, so they stay current."""
+        if state["server"] is None:
+            return
+        folder = state["server"]["folder"]
+        start_job("Updating the local pages", lambda: export_redirects(db_path, folder, "local"), lambda outcome: None)
+
+    def back_up():
+        suggested = default_backup_path()
+        try:
+            os.makedirs(os.path.dirname(suggested), exist_ok=True)
+        except OSError:
+            pass
+        target = filedialog.asksaveasfilename(title="Back up the registry", initialdir=os.path.dirname(suggested),
+                                              initialfile=os.path.basename(suggested), defaultextension=".db",
+                                              filetypes=[("Registry backup", "*.db")])
+        if not target:
+            return
+        target = registry.display_path(target)
+
+        def done(outcome):
+            if not outcome["ok"]:
+                messagebox.showerror("Back up the registry", outcome["error"])
+                return
+            status.set("Backed up the registry to " + outcome["value"] + " (checked)")
+
+        start_job("Backing up the registry", lambda: registry.backup(db_path, target), done)
+
+    def export_table():
+        path = filedialog.asksaveasfilename(title="Export the registry", initialfile="qr-palette.csv",
+                                            defaultextension=".csv",
+                                            filetypes=[("CSV, one row per code (spreadsheets)", "*.csv"),
+                                                       ("JSON, everything", "*.json")])
+        if not path:
+            return
+        path = registry.display_path(path)
+
+        def done(outcome):
+            if not outcome["ok"]:
+                messagebox.showerror("Export the registry", outcome["error"])
+                return
+            status.set("Exported " + str(outcome["value"]["codes"]) + " code(s) and " +
+                       str(outcome["value"]["short_links"]) + " short link(s) to " + outcome["value"]["path"])
+
+        start_job("Exporting the registry", lambda: export_registry(db_path, path), done)
+
+    def show_audit():
+        """The audit log, newest first: any line in full, the chain checked, and its fingerprint to keep
+        somewhere else (so lines cut off the end would show even if the anchor beside it went too)."""
+        path = state["engine"]["audit_file"]
+        dialog = tk.Toplevel(window)
+        dialog.title("Audit log")
+        dialog.geometry("940x600")
+        dialog.transient(window)
+        top = ttk.Frame(dialog, padding=8)
+        top.pack(fill="x")
+        ttk.Label(top, text=path, foreground="#555555").pack(anchor="w")
+        bar = ttk.Frame(top)
+        bar.pack(anchor="w", pady=(6, 0))
+        outcome_text = tk.StringVar(value="")
+        ttk.Label(top, textvariable=outcome_text, wraplength=900, justify="left").pack(anchor="w", pady=(6, 0))
+        table = ttk.Treeview(dialog, columns=("time", "tool", "result", "model", "rows", "ms"), show="tree headings",
+                             height=14)
+        table.heading("#0", text="Line")
+        table.column("#0", width=60, stretch=False)
+        for name, title, width in (("time", "Time (UTC)", 180), ("tool", "Tool", 180), ("result", "Result", 140),
+                                   ("model", "Model", 170), ("rows", "Rows", 50), ("ms", "ms", 70)):
+            table.heading(name, text=title)
+            table.column(name, width=width, stretch=name == "model")
+        table.pack(fill="both", expand=True, padx=8)
+        detail = tk.Text(dialog, height=10, wrap="word")
+        detail.pack(fill="x", padx=8, pady=8)
+        records = []
+
+        def alive():
+            return dialog.winfo_exists()
+
+        def load():
+            records.clear()
+            records.extend(audit.read_records(path, 500))
+            for item in table.get_children():
+                table.delete(item)
+            for index in range(len(records) - 1, -1, -1):
+                record = records[index]
+                table.insert("", "end", iid=str(index), text=str(record.get("audit_id", "?")),
+                             values=(record.get("ts", ""), record.get("tool", ""), record.get("result_kind", ""),
+                                     str(record.get("model_id", "")).split("@")[0], record.get("row_count", ""),
+                                     record.get("elapsed_ms", "")))
+            if len(records) == 0:
+                outcome_text.set("The audit log is empty.")
+            else:
+                outcome_text.set("The last " + str(len(records)) + " line(s), newest first. Click one to read it.")
+
+        def show_line(event=None):
+            chosen = table.selection()
+            if len(chosen) == 0:
+                return
+            detail.config(state="normal")
+            detail.delete("1.0", "end")
+            detail.insert("end", json.dumps(records[int(chosen[0])], indent=2, ensure_ascii=False))
+            detail.config(state="disabled")
+
+        def check():
+            def done(outcome):
+                if not alive():
+                    return
+                if outcome["ok"]:
+                    outcome_text.set("The chain is whole: " + str(outcome["value"]) + " line(s), and it still reaches "
+                                     "its anchor.")
+                else:
+                    outcome_text.set("Problem: " + outcome["error"])
+
+            start_job("Checking the audit log", lambda: audit.verify(path), done)
+
+        def copy_fingerprint():
+            found = audit.fingerprint(path)
+            if not found["ok"]:
+                outcome_text.set(found["error"])
+                return
+            text = audit.fingerprint_text(found["value"])
+            window.clipboard_clear()
+            window.clipboard_append(text)
+            outcome_text.set("Copied fingerprint " + text[:20] + "…  Keep it somewhere else (a note, an email to "
+                             "yourself); Check a kept fingerprint… compares the log with it later.")
+
+        def check_kept():
+            text = simpledialog.askstring("Check a kept fingerprint", "Paste a fingerprint you kept (a line number, "
+                                          "a colon and 64 hex digits):", parent=dialog)
+            if not text:
+                return
+
+            def done(outcome):
+                if not alive():
+                    return
+                if outcome["ok"]:
+                    outcome_text.set("It matches: line " + text.strip().split(":")[0] + " is as it was written, and "
+                                     "the chain is whole (" + str(outcome["value"]) + " lines).")
+                else:
+                    outcome_text.set("Problem: " + outcome["error"])
+
+            start_job("Checking the fingerprint", lambda: audit.check_fingerprint(path, text), done)
+
+        ttk.Button(bar, text="Check the chain", command=check).pack(side="left")
+        ttk.Button(bar, text="Copy fingerprint", command=copy_fingerprint).pack(side="left", padx=6)
+        ttk.Button(bar, text="Check a kept fingerprint…", command=check_kept).pack(side="left")
+        ttk.Button(bar, text="Refresh", command=load).pack(side="left", padx=6)
+        table.bind("<<TreeviewSelect>>", show_line)
+        load()
+
+    def print_size():
+        """Advice on how big to print the code in the preview, for a scanning distance."""
+        text = state["preview_text"]
+        if text == "":
+            status.set("Type a link first: the advice is for the code in the preview")
+            return
+        caption = state["preview_caption"]
+        dialog = tk.Toplevel(window)
+        dialog.title("Print size")
+        dialog.transient(window)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="For the code holding " + textsafe.clean(text, 80)).grid(row=0, column=0, columnspan=2,
+                                                                                     sticky="w")
+        width_text = tk.StringVar(value="3")
+        distance_text = tk.StringVar(value="0.3")
+        ttk.Label(body, text="Printed width of the picture (cm)").grid(row=1, column=0, sticky="w", pady=(8, 2))
+        width_entry = ttk.Entry(body, textvariable=width_text, width=8)
+        width_entry.grid(row=1, column=1, sticky="w", pady=(8, 2))
+        ttk.Label(body, text="Scanning distance (m)").grid(row=2, column=0, sticky="w")
+        distance_entry = ttk.Entry(body, textvariable=distance_text, width=8)
+        distance_entry.grid(row=2, column=1, sticky="w")
+        answer = tk.StringVar(value="")
+        ttk.Label(body, textvariable=answer, justify="left", wraplength=620).grid(row=3, column=0, columnspan=2,
+                                                                                 sticky="w", pady=8)
+
+        def update(event=None):
+            try:
+                width = float(width_text.get().replace(",", "."))
+                distance = float(distance_text.get().replace(",", "."))
+            except ValueError:
+                answer.set("Type two numbers, such as 3 and 0.3.")
+                return
+            advice = print_advice(text, width, distance, caption)
+            if not advice["ok"]:
+                answer.set(advice["error"] + ".")
+                return
+            lines = ["Modules need " + str(advice["value"]["need_mm"]) + " mm or more here (rules of thumb: at least " +
+                     str(MIN_MODULE_MM) + " mm to print well, and the code at least a tenth as wide as the distance)."]
+            for row in advice["value"]["levels"]:
+                line = "Level " + row["level"]
+                if row["level"] == chosen_level():
+                    line = line + " (chosen)"
+                line = line + ": version " + str(row["version"]) + ", modules " + str(row["module_mm"]) + " mm, "
+                if row["fits"]:
+                    line = line + "fits"
+                else:
+                    line = line + "too small: print it at least " + str(row["min_width_cm"]) + " cm wide"
+                if row["caption_mm"] is not None:
+                    line = line + "; address letters " + str(row["caption_mm"]) + " mm"
+                    if row["caption_mm"] < MIN_CAPTION_MM:
+                        line = line + " (too small to read)"
+                lines.append(line)
+            answer.set("\n".join(lines))
+
+        width_entry.bind("<KeyRelease>", update)
+        distance_entry.bind("<KeyRelease>", update)
+        ttk.Button(body, text="Close", command=dialog.destroy).grid(row=4, column=1, sticky="e")
+        update()
+
     file_menu.add_command(label="Import votes from Color Voats…", command=import_votes)
     file_menu.add_command(label="Export local redirect pages…", command=lambda: export_pages("local"))
     file_menu.add_command(label="Export nonlocal redirect pages…", command=lambda: export_pages("nonlocal"))
+    file_menu.add_command(label="Serve local pages", command=serve_pages)
+    state["serve_index"] = file_menu.index("end")
+    file_menu.add_separator()
+    file_menu.add_command(label="Back up the registry…", command=back_up)
+    file_menu.add_command(label="Export the registry (CSV or JSON)…", command=export_table)
+    file_menu.add_command(label="Audit log…", command=lambda: show_audit())
     file_menu.add_command(label="Open settings.json", command=open_settings)
     file_menu.add_separator()
     file_menu.add_command(label="Exit", command=window.destroy)
@@ -1027,6 +1467,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         preview.delete("all")
         state["photos"]["preview"] = None
         state["matrix"] = None
+        state["preview_text"] = ""
         text = textsafe.clean(link_text.get(), None).strip()
         if text == "":
             make_info.set("Type a link and pick a color.")
@@ -1064,6 +1505,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
             make_info.set(made["error"] + ".")
             return
         state["matrix"] = made["value"]
+        state["preview_text"] = text
+        state["preview_caption"] = caption
         photo = photo_from_png(fitted_png(made["value"], color, caption, PREVIEW))
         state["photos"]["preview"] = photo
         preview.create_image((PREVIEW + 20) // 2, (PREVIEW + 20) // 2, image=photo)
@@ -1124,6 +1567,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 message = (message + "  ·  " + short["section"] + " short link " + outcome["value"]["short_code"] +
                            " sends people to " + outcome["value"]["target"] + " (File → Export " + short["section"] +
                            " redirect pages… publishes it)")
+                refresh_served()
             status.set(message)
             refresh_footer()
             refresh_used()
@@ -1207,6 +1651,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     bad_button.config(command=lambda: cast_vote(-1))
     ttk.Button(save_bar, text="Save PNG…", command=lambda: save_as("png")).pack(side="left")
     ttk.Button(save_bar, text="Save SVG…", command=lambda: save_as("svg")).pack(side="left", padx=6)
+    ttk.Button(save_bar, text="Print size…", command=print_size).pack(side="left", padx=(12, 0))
 
     # --- Read tab ---------------------------------------------------------------------------------
     read_tab = ttk.Frame(tabs, padding=8)
@@ -1419,8 +1864,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     model_box = ttk.Combobox(ask_row, values=[], width=24, state="readonly")
     model_box.pack(side="left", padx=6)
     question = tk.StringVar(value="")
-    question_entry = ttk.Entry(ask_row, textvariable=question, width=36)
-    question_entry.pack(side="left", padx=6)
+    question_entry = ttk.Entry(ask_row, textvariable=question, width=26)
+    question_entry.pack(side="left", padx=6, fill="x", expand=True)  # narrow windows keep the buttons whole
     plan_text = tk.StringVar(value="Pick a local model to ask in plain English, e.g. \"blue codes that link to the shop\".")
     results = ttk.Treeview(find_tab, columns=("hex", "link", "path", "exists"), show="tree headings", height=8)
     results.heading("#0", text="Color")
@@ -1469,7 +1914,9 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         detail_text.set("Select a result to see it here.")
         status.set(note)
 
-    def run_search():
+    def run_search(note=""):
+        """Find by QR code or color. `note`, when given, is shown instead of the count, so a change
+        that searches again to show its result keeps its own message."""
         by = selector.get()
         if by == "qr_code":
             value = find_text.get()
@@ -1483,7 +1930,7 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 show_results([], outcome["error"])
                 return
             plan_text.set("Found by " + {"qr_code": "QR code", "color": "color"}[by] + ": " + value)
-            show_results(outcome["value"], str(len(outcome["value"])) + " QR code(s) found")
+            show_results(outcome["value"], note or str(len(outcome["value"])) + " QR code(s) found")
 
         start_job("Searching", lambda: search(db_path, by, value, near, registry.MAX_LIMIT), done)
 
@@ -1537,14 +1984,17 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 photo = photo.subsample(factor, factor)
                 state["photos"]["detail"] = photo
             detail_preview.create_image(86, 86, image=photo)
+        more = ""
+        if len(results.selection()) > 1:
+            more = ("\n…and " + str(len(results.selection()) - 1) + " more selected: Change destination…, Redraw… and "
+                    "Forget record act on them all.")
         if shown["short_code"] != "":
             detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["target"], 300) +
                             "\nPrinted as: " + shown["link"] + short_note(shown) +
-                            "  (Change destination… sends it elsewhere)" +
-                            "\nPath: " + shown["path"])
+                            "\nPath: " + shown["path"] + more)
         else:
             detail_text.set(shown["name"] + "  " + shown["hex"] + "\nLink: " + textsafe.clean(shown["link"], 300) +
-                            "\nPath: " + shown["path"])
+                            "\nPath: " + shown["path"] + more)
 
     def open_shown_picture():
         shown = selected_shown()
@@ -1592,36 +2042,112 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         if messagebox.askyesno("Open link", "Open this link in your browser?\n\n" + link):
             webbrowser.open(link.strip())
 
+    def selected_all():
+        """Every selected result (Ctrl+click or Shift+click picks several)."""
+        chosen = []
+        for item in results.selection():
+            chosen.append(state["results"][int(item)])
+        return chosen
+
     def change_destination():
-        shown = selected_shown()
-        if shown is None:
+        """Send the selected short links somewhere else (all of them to the same place)."""
+        codes = []
+        first = None
+        for shown in selected_all():
+            if shown["short_code"] != "" and shown["short_code"] not in codes:
+                codes.append(shown["short_code"])
+                if first is None:
+                    first = shown
+        if first is None:
+            status.set("Pick a code with a short link: a code that holds its link itself cannot be sent elsewhere")
             return
-        if shown["short_code"] == "":
-            status.set("This code holds its link itself; only a short link can be sent somewhere else")
-            return
-        link = simpledialog.askstring("Change destination", "Where should " + shown["link"] + " send people?\n"
-                                      "Printed codes keep working; export the redirect pages again to publish it.",
-                                      initialvalue=shown["target"], parent=window)
+        question = "Where should " + first["link"] + " send people?"
+        if len(codes) > 1:
+            question = "Where should these " + str(len(codes)) + " short links send people?"
+        link = simpledialog.askstring("Change destination", question + "\nPrinted codes keep working; export the "
+                                      "redirect pages again to publish it.", initialvalue=first["target"],
+                                      parent=window)
         if link is None:
             return
+
+        def work():
+            for code in codes:
+                changed = retarget_link(db_path, code, link)
+                if not changed["ok"]:
+                    return changed
+            return ok_result(len(codes))
 
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Change destination", outcome["error"])
                 return
-            status.set("Short link " + shown["short_code"] + " now sends people to " + link.strip() +
-                       "  ·  File → Export redirect pages… publishes it")
-            run_search()
+            run_search(str(outcome["value"]) + " short link(s) now send people to " + link.strip() +
+                       "  ·  export the redirect pages again to publish it")
+            refresh_served()
 
-        start_job("Changing the destination", lambda: retarget_link(db_path, shown["short_code"], link), done)
+        start_job("Changing the destination", work, done)
+
+    def redraw_shown():
+        """Draw the selected codes again, in another color or size, over their own files."""
+        chosen = selected_all()
+        if len(chosen) == 0:
+            return
+        color = simpledialog.askstring("Redraw", "Redraw " + str(len(chosen)) + " picture(s) in which color?\n"
+                                       "#rrggbb, or leave it empty to keep each code's own color.",
+                                       initialvalue=state["picked"], parent=window)
+        if color is None:
+            return
+        scale = simpledialog.askinteger("Redraw", "Pixels per module for PNG pictures (1-40):",
+                                        initialvalue=DEFAULT_SCALE, minvalue=1, maxvalue=40, parent=window)
+        if scale is None:
+            return
+        jobs = []
+        for shown in chosen:
+            jobs.append((shown["id"], color.strip() or shown["hex"]))
+
+        def work():
+            redrawn = 0
+            problems = []
+            for number, hex_value in jobs:
+                outcome = redraw_record(db_path, number, hex_value, scale)
+                if outcome["ok"]:
+                    redrawn = redrawn + 1
+                else:
+                    problems.append(outcome["error"])
+            return ok_result({"redrawn": redrawn, "problems": problems})
+
+        def done(outcome):
+            message = "Redrew " + str(outcome["value"]["redrawn"]) + " picture(s), each read back first"
+            if len(outcome["value"]["problems"]) > 0:
+                message = message + "; " + str(len(outcome["value"]["problems"])) + " not: " + outcome["value"]["problems"][0]
+            run_search(message)
+            refresh_used()
+
+        start_job("Redrawing", work, done)
 
     def forget_shown():
-        shown = selected_shown()
-        if shown is None:
+        chosen = selected_all()
+        if len(chosen) == 0:
             return
-        if not messagebox.askyesno("Forget record", "Remove this record from the registry? The picture file stays "
-                                                    "where it is.\n\n" + shown["path"]):
+        question = "Remove this record from the registry? The picture file stays where it is.\n\n" + chosen[0]["path"]
+        if len(chosen) > 1:
+            question = ("Remove these " + str(len(chosen)) + " records from the registry? The picture files stay where "
+                        "they are.")
+        if not messagebox.askyesno("Forget record", question):
             return
+        numbers = []
+        for shown in chosen:
+            numbers.append(shown["id"])
+
+        def work():
+            removed = 0
+            for number in numbers:
+                outcome = forget_record(db_path, number)
+                if not outcome["ok"]:
+                    return outcome
+                if outcome["value"]:
+                    removed = removed + 1
+            return ok_result(removed)
 
         def done(outcome):
             if not outcome["ok"]:
@@ -1629,13 +2155,13 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
                 return
             remaining = []
             for other in state["results"]:
-                if other["id"] != shown["id"]:
+                if other["id"] not in numbers:
                     remaining.append(other)
-            show_results(remaining, "Record removed; the file was not touched")
+            show_results(remaining, str(outcome["value"]) + " record(s) removed; the files were not touched")
             refresh_footer()
             refresh_used()
 
-        start_job("Forgetting", lambda: forget_record(db_path, shown["id"]), done)
+        start_job("Forgetting", work, done)
 
     def find_from_picture(paste):
         if paste:
@@ -1781,8 +2307,13 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     ttk.Button(detail_buttons, text="Copy path", command=lambda: copy_shown("path")).pack(side="left")
     ttk.Button(detail_buttons, text="Copy link", command=lambda: copy_shown("link")).pack(side="left", padx=6)
     ttk.Button(detail_buttons, text="Open link", command=open_shown_link).pack(side="left")
-    ttk.Button(detail_buttons, text="Change destination…", command=change_destination).pack(side="left", padx=6)
-    ttk.Button(detail_buttons, text="Forget record", command=forget_shown).pack(side="left")
+    detail_changes = ttk.Frame(detail_side)  # these act on every selected result
+    detail_changes.pack(anchor="w")
+    ttk.Button(detail_changes, text="Change destination…", command=change_destination).pack(side="left")
+    ttk.Button(detail_changes, text="Redraw…", command=redraw_shown).pack(side="left", padx=6)
+    ttk.Button(detail_changes, text="Forget record", command=forget_shown).pack(side="left")
+    ttk.Label(detail_changes, text="Ctrl+click or Shift+click to pick several.", foreground="#555555").pack(
+        side="left", padx=12)
     results.bind("<<TreeviewSelect>>", show_detail)
     find_entry.bind("<Return>", lambda event: run_search())
     color_entry.bind("<Return>", lambda event: run_search())
@@ -1844,6 +2375,8 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
         window.after(800, write_smoke_report)
 
     window.mainloop()
+    if state["server"] is not None:
+        shortlinks.stop_server(state["server"])
     return 0
 
 
@@ -1948,4 +2481,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ea3dc889f15f290effab031e6dae9c936e0214840fae7928a28b5209873dd245 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=882522941510c8f65a0db81e3b6122834c6b34347660e36023a3097177cd6c59 ====

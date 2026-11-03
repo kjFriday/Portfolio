@@ -141,7 +141,7 @@ pub fn probe(base: &str, method: &str, path: &str, timeout: Duration) -> Result<
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        c.creation_flags(crate::win::CREATE_NO_WINDOW);
     }
     let started = Instant::now();
     let out = c.output().map_err(|e| format!("curl.exe: {e}"))?;
@@ -536,4 +536,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=5429c9cdd4c6ec3d907d88beb219f7c15697a77bdd7853395448ac29b9a7e025 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=c7c18639057777a41739cdbaf8150b88077ec0a829acb205b6ca0b35596d54af ====

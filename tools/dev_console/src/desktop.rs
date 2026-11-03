@@ -15,6 +15,7 @@ use std::sync::mpsc::Sender;
 
 use crate::jobs::{self, Event, Status};
 use crate::registry::{self, Cmd, Program};
+use crate::win::ps_quote;
 
 /// The list of shortcuts placed last time, one full path per line.
 pub const MANIFEST: &str = "desktop-shortcuts.txt";
@@ -67,12 +68,10 @@ pub fn shortcut(root: &Path, p: &Program) -> Result<Shortcut, String> {
         target,
     })
 }
-fn q(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
-}
 
+/// A path as a PowerShell single-quoted string.
 fn qp(p: &Path) -> String {
-    q(&p.to_string_lossy())
+    ps_quote(&p.to_string_lossy())
 }
 
 /// PowerShell that removes `old` shortcuts and places `set` on the desktop (or in `desktop`, for tests),
@@ -90,16 +89,16 @@ pub fn script(set: &[Shortcut], old: &[PathBuf], desktop: Option<&Path>) -> Stri
         format!(
             "$p=Join-Path $d {}; $k=$w.CreateShortcut($p); $k.TargetPath={target}; $k.Arguments={}; \
              $k.WorkingDirectory={}; {icon}$k.Description={}; $k.Save(); Write-Output $p;\n",
-            q(file),
-            q(args),
+            ps_quote(file),
+            ps_quote(args),
             qp(cwd),
-            q(what)
+            ps_quote(what)
         )
     };
     for sc in set {
         // A program without icon/app.ico keeps the default icon of its target.
         let icon = if sc.icon.is_file() {
-            format!("$k.IconLocation={};", q(&format!("{},0", sc.icon.display())))
+            format!("$k.IconLocation={};", ps_quote(&format!("{},0", sc.icon.display())))
         } else {
             String::new()
         };
@@ -309,4 +308,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=78b6149b8302777d231482aacd2aab7c5f974caeb045e4406f61dcf6b48ed088 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=4003a2f706229c2ff70042e45ee2741d628e9177e3eb276387cb8f6cde5714a6 ====

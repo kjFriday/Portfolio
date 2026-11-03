@@ -139,13 +139,13 @@ python export_mock.py
 
 | Project folder | Command |
 |---|---|
-| `company/crud_hub` | `python -m unittest discover` |
+| `company/crud_hub` | `python -m unittest discover -s tests` |
 | `company/doc_pipeline` | `python -m unittest discover -s tests` |
 | `company/journal`, `company/notify_hub`, `company/wizard_maker` | `go test ./...` |
 | `company/ticket_tracker`, `company/data_dash` | `cargo test`, then `cargo test --features desktop` |
 | `utilities/storage_manager` | `python storage_manager.py --selftest` |
 | `utilities/qr_studio` | `python -m unittest test_qr_studio` |
-| `utilities/color_voats` | `python -m unittest discover -p "test_*.py"` |
+| `utilities/color_voats` | `python -m unittest discover -s tests` |
 | `utilities/qr_palette` | `python -m unittest discover -p "test_*.py"` |
 | the portfolio folder (icon tool and stamps) | `python -m unittest discover -s tools` |
 

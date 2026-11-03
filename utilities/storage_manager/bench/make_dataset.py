@@ -42,7 +42,7 @@ PROFILES = {
 }
 DUPLICATE_SHARE = 0.10   # share of originals that get 1-3 copies
 TRAP_SHARE = 0.02        # share of originals that get a trap twin
-SAMPLE = 64 * KB         # must match SAMPLE_SIZE in storage_manager.py
+SAMPLE = 64 * KB         # must match SAMPLE_SIZE in duplicates.py
 
 
 def file_rng(seed, number):

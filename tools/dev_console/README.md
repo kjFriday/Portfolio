@@ -78,6 +78,28 @@ mostly shows buttons and scrolling text is simpler as an immediate-mode native U
 JavaScript to keep in step. Everything else (config parsing, file watching, process handling, install)
 uses the standard library.
 
+## Code
+
+`src/main.rs` is the command line and the start-up; the window is `src/app.rs` and the files under `src/app/`.
+
+| File | What |
+|---|---|
+| `main.rs` | the flags, the config layers, the window icon, opening the window |
+| `app.rs` | the console's state and actions: jobs and their events, live tests, the live site, seed data, versions and commands, the `--smoke` report |
+| `app/keys.rs` | the keyboard controls from `controls.ini` |
+| `app/views.rs` | each frame's panels, the view tabs, the Run bar, the job tabs and the log |
+| `app/views/` | `sidebar.rs` (the program list), and one file per view: `versions.rs`, `seed.rs`, `production.rs` |
+| `config.rs` | the config fileset and its layers |
+| `registry.rs` | `programs.ini` as programs, and the commands each action runs |
+| `jobs.rs` | child processes and their output |
+| `live.rs` | the file watching behind Live tests |
+| `versions.rs` | finding and changing version lines |
+| `seed.rs` | the CRUD Hub's seed scripts and dated backups |
+| `production.rs` | the live-production checks |
+| `desktop.rs` | desktop shortcuts |
+| `install.rs` | per-user install and uninstall |
+| `win.rs` | Windows plumbing: the no-console-window flag and PowerShell quoting |
+
 ## Tests
 
 ```

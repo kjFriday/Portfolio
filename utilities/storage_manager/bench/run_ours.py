@@ -32,6 +32,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+import duplicates  # noqa: E402
 import storage_manager  # noqa: E402
 
 
@@ -101,7 +102,7 @@ def received_bytes():
 def run_once(data_dir):
     before = received_bytes()
     start = time.perf_counter()
-    result = storage_manager.find_duplicates(data_dir, [False], None)
+    result = duplicates.find_duplicates(data_dir, [False], None)
     seconds = time.perf_counter() - start
     after = received_bytes()
     if not result["ok"]:

@@ -70,7 +70,7 @@ pub fn run(id: usize, cmd: &Cmd, tx: &Sender<Event>, wake: &(impl Fn() + Send + 
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes for child tools
+        c.creation_flags(crate::win::CREATE_NO_WINDOW); // no console flashes for child tools
     }
     let mut child = match c.spawn() {
         Ok(ch) => ch,
@@ -99,7 +99,7 @@ pub fn stop(pid: u32) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000);
+        c.creation_flags(crate::win::CREATE_NO_WINDOW);
     }
     let out = c.output().map_err(|e| format!("taskkill: {e}"))?;
     if out.status.success() {
@@ -211,4 +211,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=2592911f44aa50ef44a5e053755f3aade952f525703e47cbcb7d380611307df2 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=c8196a722368654621ed3add2a1689b681e0e9767e6194b3adb3ae4682d5b94a ====

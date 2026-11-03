@@ -24,11 +24,26 @@ Python 3.11+ standard library only (tkinter for the window, `tomllib` for the TO
 python color_voats.py
 ```
 
+Also `--preset NAME` (default `mixer`), `--data FILE` (keep everything in another file), `--selftest`, `--version` and `--smoke FILE`.
+
+The tests are in `tests/`. Run them from this folder:
+
 ```bash
-python -m unittest discover -p "test_*.py"
+python -m unittest discover -s tests
 ```
 
-Also `--preset NAME` (default `mixer`), `--data FILE` (keep everything in another file), `--selftest`, `--version` and `--smoke FILE`.
+One suite: `python -m unittest discover -s tests -p test_factory.py`.
+
+## Files
+
+| File | What it holds |
+|---|---|
+| `color_voats.py` | The entry point: the version and the command line. |
+| `voats_core.py` | The core: posts, votes, comments, saves, the store file and the feed's order. No GUI. |
+| `voats_gui.py` | The window (`VoatsWindow`, tkinter). Everything it changes goes through the core and is saved at once. |
+| `voats_selftest.py` | The quick checks `--selftest` runs. |
+| `algos.py`, `factory.py` | The algos and the factory that writes `rankers/` (below). |
+| `tests/` | `test_algos.py`, `test_factory.py` and `test_color_voats.py` (the core). |
 
 ## How For you is ranked: the algo aggregation factory
 
@@ -69,13 +84,13 @@ python color_voats.py --preset NAME
 
 `python factory.py` regenerates every ranker, and `python factory.py --check` exits 1 when one is out of date. The rankers are committed so their code can be read and reviewed; don't edit them by hand.
 
+A launch, a preset switch, `--selftest` and the tests all rewrite a ranker that is missing or out of date, so after changing `algos.py` or `factory.py`, run `python factory.py --check` before anything else to see which rankers it makes stale.
+
 ## Porting to another language
 
-The layout is QR Studio's:
-
 - `algos.py` is plain functions over plain records with explicit loops: port it first. The generated rankers are already standalone.
-- `test_algos.py`, `test_factory.py` and `test_color_voats.py` hold the checks to port alongside.
-- `color_voats.py` keeps its CORE (posts, votes, comments, saves, the store and the feed's order) apart from the tkinter GUI, which only calls the core.
+- `tests/test_algos.py`, `tests/test_factory.py` and `tests/test_color_voats.py` hold the checks to port alongside.
+- `voats_core.py` keeps the core (posts, votes, comments, saves, the store and the feed's order) apart from the tkinter window in `voats_gui.py`, which only calls the core.
 
 ## Icon
 

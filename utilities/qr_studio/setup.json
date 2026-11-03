@@ -8,6 +8,12 @@
   "license": "LICENSE",
   "files": [
     {"from": "qr_studio.py"},
+    {"from": "studio_clipboard.py"},
+    {"from": "studio_gui.py"},
+    {"from": "studio_history.py"},
+    {"from": "studio_options.py"},
+    {"from": "studio_selftest.py"},
+    {"from": "qr_codec", "to": "qr_codec"},
     {"from": "icon", "to": "icon"},
     {"from": "README.md"}
   ],

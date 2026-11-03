@@ -5,7 +5,7 @@ Goal: a number you can put on a sales page, e.g. "finds duplicates on a 1 TB NAS
 ## Rivals
 | Tool | Why | Command / mode |
 |---|---|---|
-| Storage Manager 0.2.0 | ours | headless: call `find_duplicates(root, cancel_flag, progress)` (`storage_manager.py:445`) from a small timing script |
+| Storage Manager 0.2.0 | ours | headless: call `find_duplicates(root, cancel_flag, progress)` (in `duplicates.py`) from a small timing script |
 | fclones (free, Rust) | fastest free tool | `fclones group \\NAS\share --cache off` |
 | DupScout Pro (paid, trial) | paid rival with network-share support | GUI scan, timed by its own report |
 | dupeGuru (free) | the best-known free option | GUI, standard mode (contents) |

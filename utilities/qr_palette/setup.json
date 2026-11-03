@@ -8,7 +8,7 @@
   "license": "LICENSE",
   "files": [
     {"from": "qr_palette.py"},
-    {"from": "qr_codec.py"},
+    {"from": "qr_codec", "to": "qr_codec"},
     {"from": "swatch.py"},
     {"from": "algos.py"},
     {"from": "ranking.py"},

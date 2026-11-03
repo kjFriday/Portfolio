@@ -11,6 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::win::ps_quote;
+
 pub const NAME: &str = "Generic Company Dev Console";
 pub const GROUP: &str = "Generic Company Inc";
 pub const EXE: &str = "generic-company-console.exe";
@@ -45,17 +47,13 @@ pub fn plan(env: &dyn Fn(&str) -> Option<String>, root: Option<&Path>) -> Result
     })
 }
 
-fn ps_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
-}
-
 fn powershell(script: &str) -> Result<(), String> {
     let mut c = std::process::Command::new("powershell");
     c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000);
+        c.creation_flags(crate::win::CREATE_NO_WINDOW);
     }
     let out = c.output().map_err(|e| e.to_string())?;
     if out.status.success() {
@@ -217,4 +215,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=e0334018daf0c4650ec506e592e01642d595b57b2599a940d5850d98bd13c460 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=985b546d382821e34d9b6c1504a12196f0d6e4047aefda2b3c004334b526382c ====

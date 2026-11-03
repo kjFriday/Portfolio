@@ -171,7 +171,9 @@ class IcoResTest(unittest.TestCase):
         # every project's committed app.res is what this script makes today
         for project, (silk, _, _, extras) in pi.PROJECTS.items():
             path = os.path.join(pi.ROOT, project, "icon", "app.res")
-            if not os.path.exists(path):
+            if not os.path.exists(path):  # e.g. a submodule that is not checked out: report it as a skip
+                with self.subTest(project=project):
+                    self.skipTest(f"{project}/icon/app.res not found, nothing to compare")
                 continue
             with open(os.path.join(pi.SILK, silk), "rb") as f:
                 made = pi.outputs(f.read(), extras)["app.res"]
@@ -226,4 +228,4 @@ class ProjectTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ee51e570b230f220217c17da5f27da871f0990c3b1641c5dc4a75f4834d76591 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b847f87d2aa47ea35ded823165f213ee6d647b68666fc2e61ffcbfbcbc28766b ====

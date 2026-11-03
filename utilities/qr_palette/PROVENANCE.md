@@ -16,6 +16,13 @@ committed files named here; the SHA-256 is of each source file at that commit.
 | `test_qr_codec.py` | `test_qr_studio.py` | `606414AE0EF12EC945AF94D9435FF6B496EB8985DBC547BE4E6758D11BC4EAC6` | The Reed-Solomon, table, matrix and picture tests | Names follow the renames above. The history tests stay in QR Studio. New: color round trips for all 118 usable colors, files, SVG reading, transparency, and the size and damage limits. |
 | `qr_palette.py` (`windows_identity`, `set_icon`, `picture_through_tk`, `option_value`, `check`, the paste script in `clipboard_picture`, the job polling and the smoke report in `run_gui`) | `qr_studio.py` | as above | The same calls and patterns | The window itself is new. |
 
+Since 2026-11-03 `qr_codec.py` is the `qr_codec/` package: one module per chapter (`records.py` to `distort.py` as in QR Studio,
+then this project's `captions.py`, `logos.py`, `svg.py`, `files.py` and `robustness.py`), and `import qr_codec` gives the same names.
+The code moved unchanged, except that `read_svg_matrix` and `read_qr_file` read the file limit as `images.MAX_FILE_BYTES`, its one home.
+`qr_codec.MAX_FILE_BYTES` and `qr_codec.LOGO_SHARES` still read and set the two limits, in `images.py` and `logos.py`.
+QR Studio's codec is now a package with the same layout and the names `EC_LEVELS` and `point_distance`, so every module both
+packages have, except `images.py` and `distort.py`, is byte-identical.
+
 ## Copied from Color Voats (`color_tile_recommender`)
 
 | File | From | Commit | sha256 of the source | What | Changes |

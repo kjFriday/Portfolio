@@ -1,12 +1,12 @@
 # ==== Generic Company Inc. portfolio ====================================
-# Project: color_voats | File: test_algos.py
+# Project: color_voats | File: tests/test_algos.py
 # About: Tests for the Color Voats algos.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
-"""Tests for the Color Voats algos. Run: python -m unittest test_algos"""
+"""Tests for the Color Voats algos. Run from the program folder: python -m unittest discover -s tests -p test_algos.py"""
 
 import unittest
 
@@ -204,4 +204,4 @@ class AggregatorTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=661230a82f463e923514a1ca8bdeaf15fda718a7a419c006b19eecd9acce5e7d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a691565571b372287d5514ddd95c1c78647c9296983f0ad988c5eaefb4cf5180 ====

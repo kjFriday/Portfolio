@@ -1,12 +1,15 @@
 # ==== Generic Company Inc. portfolio ====================================
-# Project: color_voats | File: test_color_voats.py
+# Project: color_voats | File: tests/test_color_voats.py
 # About: Tests for the Color Voats feed's core: posts, votes, comments, saves, the store and the...
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
-"""Tests for the Color Voats feed's core: posts, votes, comments, saves, the store and the feed's order."""
+"""Tests for the Color Voats feed's core: posts, votes, comments, saves, the store and the feed's order.
+
+They test voats_core.py. Run from the program folder: python -m unittest discover -s tests -p test_color_voats.py
+"""
 
 import json
 import os
@@ -16,7 +19,7 @@ import time
 import unittest
 
 import algos
-import color_voats as app
+import voats_core as app
 
 LATER = app.SEED_TIME + 60.0
 
@@ -249,7 +252,14 @@ class FeedTests(unittest.TestCase):
         self.assertIn("presets/nothing_here", loaded["error"])
 
 
+class ModuleTests(unittest.TestCase):
+    def test_the_entry_and_window_modules_import(self):
+        """No other test loads the window module: importing it catches a file that no longer compiles."""
+        import color_voats  # noqa: F401
+        import voats_gui  # noqa: F401
+
+
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f9ad36d0b5f8cc8fc08bd2f60dbca9b8b95ed010c15c45a7b1cd36522f701120 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=be49688e6dcbe7f8e3ec6ad04681b3145a0a9bfa1529ec65bff83a769785a84c ====

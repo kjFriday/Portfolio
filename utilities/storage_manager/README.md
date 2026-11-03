@@ -2,7 +2,7 @@
 
 A desktop program that organizes and cleans folders on local drives and handles network shares (NAS / SMB).
 
-Self-contained: one file, `storage_manager.py`, Python 3.10+ standard library only (tkinter for the window). No installs.
+Self-contained: Python 3.10+ standard library only (tkinter for the window). No installs. `storage_manager.py` starts it; the code is split into small modules beside it, one per topic (see [Code map](#code-map)).
 
 ```bash
 python storage_manager.py
@@ -87,15 +87,39 @@ Over repeated rounds the scan was 2 to 7% slower, inside this PC's run-to-run no
 - A backup lists the source and the share once each and compares them in memory instead of asking the share about every file.
 - The window reads progress from the worker every 100 ms and caps each list at 2,000 rows, so it stays responsive on big drives.
 
+## Code map
+
+`storage_manager.py` starts the program and holds who it is: its name, id, version and icon, where its settings live, and the command line. Everything else is in one module per topic beside it:
+
+| Module | What it holds |
+|---|---|
+| `records.py` | The Result record, cancelling and progress; its docstring lists every record the core passes around. |
+| `paths.py` | Path tests, the names of the trash folder and the undo log, and which names are one file (hard links). |
+| `scanning.py` | `walk_tree`, one pass over a folder tree with each file's space on disk, and the scan report built from it. |
+| `duplicates.py` | Comparing files step by step (size, both ends, SHA-256), duplicate groups and the copy to keep. |
+| `moves.py` | Planning moves to the trash, carrying them out, and the undo log. |
+| `space_map.py` | The space map: folder tree, sunburst layout and colours. |
+| `organize.py` | Sorting a folder's files into subfolders by type or by year-month. |
+| `backup.py` | One-way backup: which files to copy, then copying them. |
+| `shares.py` | Network shares: check, map and disconnect. |
+| `desktop.py` | Drives, showing a file in the system file manager, starting programs, folders typed by hand. |
+| `settings.py` | The settings record and its file. |
+| `formatting.py` | Sizes, counts, dates and plurals in words. |
+| `windows_calls.py` | The two Windows calls the walk makes, through ctypes. |
+| `selftest.py` | The built-in checks, run by `--selftest`. |
+| `gui.py` | The window (tkinter). |
+
+The modules from `records.py` to `formatting.py` are the core: they import only each other, the standard library and `windows_calls.py`, never the window. `gui.py` and `selftest.py` sit on top of the core, and `storage_manager.py` starts one or the other.
+
 ## Porting to another language
 
-The file is written to translate line by line:
+The code is written to translate line by line:
 
-- **CORE** section: plain functions over plain records (dicts with fixed keys, listed in the file's docstring). Explicit loops, no decorators, generators or comprehensions. Errors are returned as `{"ok", "value", "error"}` records. Progress is a plain callback, `progress(text, done, total, unit)`.
-- **SELF-TEST** section: the checks to port alongside the core.
-- **GUI** section: tkinter only, and it only calls core functions. Rewrite it in any toolkit.
+- **The core** (`records.py` to `formatting.py` above): plain functions over plain records (dicts with fixed keys, listed in the docstring of `records.py`). Explicit loops, no decorators, generators or comprehensions. Errors are returned as `{"ok", "value", "error"}` records. Progress is a plain callback, `progress(text, done, total, unit)`. Port it first.
+- **`selftest.py`**: the checks to port alongside the core.
+- **`gui.py`**: tkinter only, and it only calls core functions. Rewrite it in any toolkit.
 
-A few pieces map to a library call in the target language: `hash_many` and `run_on_workers` (any thread pool or parallel-for) and `largest_files` (a top-N / priority queue). OS-specific pieces are isolated in `map_command`, `unmap_command`, `ping_command`, `reveal_command`, `open_folder_command`, `list_drives`, and the two Windows calls behind `windows_api`: `allocated_size` (GetCompressedFileSizeW) and `is_network_path` (GetDriveTypeW).
+A few pieces map to a library call in the target language: `hash_many` and `run_on_workers` (any thread pool or parallel-for) and `largest_files` (a top-N / priority queue). OS-specific pieces are isolated in `map_command`, `unmap_command` and `ping_command` (`shares.py`), `reveal_command`, `open_folder_command` and `list_drives` (`desktop.py`), and the two Windows calls in `windows_calls.py`: `allocated_size` (GetCompressedFileSizeW) and `is_network_path` (GetDriveTypeW).
 
 ## Icon
 

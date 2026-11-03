@@ -8,6 +8,9 @@
   "license": "LICENSE",
   "files": [
     {"from": "color_voats.py"},
+    {"from": "voats_core.py"},
+    {"from": "voats_gui.py"},
+    {"from": "voats_selftest.py"},
     {"from": "factory.py"},
     {"from": "algos.py"},
     {"from": "weights", "to": "weights"},

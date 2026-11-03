@@ -1,13 +1,5 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: test_stamp.py
-# About: ==== Generic Company Inc. portfolio ===============================================...
-# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
-# You may change this file under the AGPL-3.0. The stamp at the end marks
-# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
-# ========================================================================
-
-# ==== Generic Company Inc. portfolio ===============================================
-# Project: portfolio | File: test_stamp.py
 # About: Tests for stamp.py.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
@@ -146,6 +138,47 @@ class Placement(unittest.TestCase):
         self.assertIsNone(st.decode(b"\xff\xfe\x00x"))
 
 
+class LegacyHeaders(unittest.TestCase):
+    """Headers written under an older, wider TITLE are found and replaced, never kept in the body."""
+
+    @staticmethod
+    def legacy(ext, width=83):
+        wrap = st.STYLES[ext].wrap
+        title = "==== Old Name Inc. portfolio "
+        return [wrap(title + "=" * (width - len(title))), wrap("Project: proj | File: a" + ext),
+                wrap("About: ==== Old Name Inc. portfolio ===="), wrap("=" * width)]
+
+    def test_a_stale_block_after_the_header_is_dropped(self):
+        for ext, doc in ((".py", '"""Load the rows."""\nx = 1\n'), (".go", "// Package foo parses.\npackage foo\n"),
+                         (".html", "<html><head><title>Tickets</title></head></html>\n")):
+            with self.subTest(ext=ext):
+                once = stamped(doc, ext)
+                rule = once.split("\n").index(st.STYLES[ext].wrap(st.RULE))
+                lines = once.split("\n")
+                damaged = "\n".join(lines[:rule + 2] + self.legacy(ext) + [""] + lines[rule + 2:])
+                healed = stamped(damaged, ext)
+                self.assertEqual(healed, once)
+                self.assertEqual(st.check_text(healed, ext, "proj/a" + ext, KEY), "ok")
+
+    def test_two_stale_blocks_are_both_dropped(self):
+        once = stamped("// Package foo parses.\npackage foo\n", ".go")
+        lines = once.split("\n")
+        rule = lines.index("// " + st.RULE)
+        damaged = "\n".join(lines[:rule + 2] + self.legacy(".go", 83) + [""] + self.legacy(".go", 88) + [""] + lines[rule + 2:])
+        self.assertEqual(stamped(damaged, ".go"), once)
+
+    def test_a_file_with_only_a_legacy_header_gets_one_header(self):
+        text = "\n".join(self.legacy(".py") + ["", '"""Doc."""', "x = 1", ""])
+        out = stamped(text, ".py")
+        self.assertEqual(out.count("portfolio ="), 1)
+        self.assertIn("# About: Doc.", out)
+        self.assertEqual(stamped(out, ".py"), out)
+
+    def test_a_body_comment_that_only_looks_like_a_rule_is_kept(self):
+        out = stamped("x = 1\n# " + "=" * 30 + "\n", ".py")
+        self.assertIn("# " + "=" * 30 + "\n", out)
+
+
 class Tamper(unittest.TestCase):
     def setUp(self):
         self.out = stamped("def f():\n    return 1\n", ".py")
@@ -208,4 +241,4 @@ class Repository(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=861cc5bad045f0f5ee2c5fe6a0731f8270b476d3821bf0f765fffb155ede6595 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b8a9b57a7932df04dc6144662c3c6de387662c129b1cb221c7f41aba648b34af ====

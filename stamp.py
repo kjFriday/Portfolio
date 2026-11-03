@@ -6,14 +6,6 @@
 # the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
 # ========================================================================
 
-# ==== Generic Company Inc. portfolio ===============================================
-# Project: portfolio | File: stamp.py
-# About: Add a license header and a keyed stamp footer to every tracked source file (standard...
-# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
-# You may change this file under the AGPL-3.0. The stamp at the end marks
-# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
-# ========================================================================
-
 """Add a license header and a keyed stamp footer to every tracked source file (standard library only).
 
     python stamp.py --init-key     # once: create the private key outside the repo (back it up)
@@ -119,21 +111,53 @@ def strip_footer(text, ext):
     return text, None
 
 
+def header_block(lines, start, style):
+    """The header that begins at lines[start] and its length, or (None, 0).
+
+    A header is a title line through the next rule line, at most 20 lines on. The title is today's
+    TITLE or a legacy one of any width (a rename of the company once made it longer), so headers
+    written before a change of TITLE or WIDTH are still found.
+    """
+    if start >= len(lines):
+        return None, 0
+    line = lines[start]
+    if line != style.wrap(TITLE) and not legacy_title_re(style).match(line):
+        return None, 0
+    for end in range(start + 1, min(len(lines), start + 20)):
+        if lines[end] == style.wrap(RULE) or legacy_rule_re(style).match(lines[end]):
+            return lines[start:end + 1], end + 1 - start
+    return None, 0
+
+
+def legacy_title_re(style):
+    return re.compile("^" + re.escape(style.open) + r"==== .*\bportfolio =+" + re.escape(style.close) + "$")
+
+
+def legacy_rule_re(style):
+    return re.compile("^" + re.escape(style.open) + r"={20,}" + re.escape(style.close) + "$")
+
+
 def split(text, ext):
-    """Split LF text into (prelude, header, body, footer); header and footer are None if absent."""
+    """Split LF text into (prelude, header, body, footer); header and footer are None if absent.
+
+    Stale header blocks that follow the header (left by earlier stamps whose TITLE differed) are
+    dropped, so a restamp leaves exactly one header.
+    """
     style = STYLES[ext]
     core, footer = strip_footer(text, ext)
     lines = core[:-1].split("\n") if core.endswith("\n") else (core.split("\n") if core else [])
     n = prelude_count(lines, ext)
-    header = None
-    if n < len(lines) and lines[n] == style.wrap(TITLE):
-        for end in range(n + 1, min(len(lines), n + 20)):
-            if lines[end] == style.wrap(RULE):
-                header = lines[n:end + 1]
-                break
-    rest = n + len(header) if header else n
+    header, size = header_block(lines, n, style)
+    rest = n + size
     if header and rest < len(lines) and lines[rest] == "":
         rest += 1
+    while header:
+        stale, size = header_block(lines, rest, style)
+        if not stale:
+            break
+        rest += size
+        if rest < len(lines) and lines[rest] == "":
+            rest += 1
     return lines[:n], header, lines[rest:], footer
 
 
@@ -406,4 +430,4 @@ def main(argv=None):
 if __name__ == "__main__":
     sys.exit(main())
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=6f6ce1ecf5a17f568da920d72778ae310ad4f7f0d7f254dbc4693c9459fd5480 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=2b2d539d67283c267ac8474f00a8f790a6875eafb66df8b2bfe76d989c80c58a ====

@@ -39,7 +39,9 @@ pub fn parse(text: &str) -> Ini {
             continue;
         }
         if let Some((k, v)) = line.split_once('=') {
-            ini.entry(section.clone()).or_default().insert(k.trim().to_lowercase(), v.trim().to_string());
+            ini.entry(section.clone())
+                .or_default()
+                .insert(k.trim().to_lowercase(), v.trim().to_string());
         }
     }
     ini
@@ -116,13 +118,21 @@ impl Config {
 
     pub fn list(&self, section: &str, key: &str) -> Vec<String> {
         self.get(section, key)
-            .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     /// Save one setting to the user's settings.ini, keeping whatever else is there.
     pub fn save(&mut self, section: &str, key: &str, value: String) -> Result<(), String> {
-        self.settings.entry(section.into()).or_default().insert(key.into(), value.clone());
+        self.settings
+            .entry(section.into())
+            .or_default()
+            .insert(key.into(), value.clone());
         let dir = self.user_dir.clone().ok_or("no user folder")?;
         let path = dir.join(SETTINGS);
         let mut user = std::fs::read_to_string(&path).map(|t| parse(&t)).unwrap_or_default();
@@ -166,7 +176,14 @@ pub fn load(dirs: &[PathBuf], user: Option<PathBuf>) -> Config {
             Err(e) => warnings.push(format!("controls.ini {action}: {e}")),
         }
     }
-    Config { settings, controls, warnings, user_dir: user, programs, programs_file }
+    Config {
+        settings,
+        controls,
+        warnings,
+        user_dir: user,
+        programs,
+        programs_file,
+    }
 }
 
 #[cfg(test)]
@@ -206,7 +223,15 @@ mod tests {
     fn defaults_have_every_control_and_no_warnings() {
         let c = load(&[], None);
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
-        for a in ["zoom_in", "zoom_out", "zoom_reset", "test_all", "test", "run", "toggle_live"] {
+        for a in [
+            "zoom_in",
+            "zoom_out",
+            "zoom_reset",
+            "test_all",
+            "test",
+            "run",
+            "toggle_live",
+        ] {
             assert!(c.controls.contains_key(a), "{a}");
         }
         assert_eq!(c.number("view", "zoom", 0.0), 1.0);
@@ -230,4 +255,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=b8f667f4335846f620df616656e29e429c708e439015a7e42f02d5aa8ae58116 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=ba719591e18b9fd5d926b2f213d94d5f9be9ee01c50c343862b1b8c6f0754396 ====

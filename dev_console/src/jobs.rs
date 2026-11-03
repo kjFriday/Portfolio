@@ -63,7 +63,10 @@ pub fn spawn(id: usize, cmd: Cmd, tx: Sender<Event>, wake: impl Fn() + Send + Cl
 /// Run `cmd` on this thread, streaming its lines to `tx` as job `id`; returns how it ended.
 pub fn run(id: usize, cmd: &Cmd, tx: &Sender<Event>, wake: &(impl Fn() + Send + Clone + 'static)) -> Status {
     let mut c = Command::new(&cmd.program);
-    c.args(&cmd.args).current_dir(&cmd.cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.args(&cmd.args)
+        .current_dir(&cmd.cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -74,7 +77,10 @@ pub fn run(id: usize, cmd: &Cmd, tx: &Sender<Event>, wake: &(impl Fn() + Send + 
         Err(e) => return Status::Failed(format!("{}: {e}", cmd.program)),
     };
     let _ = tx.send(Event::Started(id, child.id()));
-    let readers = [pipe(child.stdout.take(), id, tx, wake), pipe(child.stderr.take(), id, tx, wake)];
+    let readers = [
+        pipe(child.stdout.take(), id, tx, wake),
+        pipe(child.stderr.take(), id, tx, wake),
+    ];
     for r in readers.into_iter().flatten() {
         let _ = r.join();
     }
@@ -87,7 +93,9 @@ pub fn run(id: usize, cmd: &Cmd, tx: &Sender<Event>, wake: &(impl Fn() + Send + 
 /// End process `pid` and every process it started (`go run` starts the real server as a child).
 pub fn stop(pid: u32) -> Result<(), String> {
     let mut c = Command::new("taskkill");
-    c.args(["/PID", &pid.to_string(), "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::piped());
+    c.args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -126,7 +134,11 @@ mod tests {
 
     #[test]
     fn push_caps_lines() {
-        let mut j = Job { title: "t".into(), lines: vec![], status: Status::Running };
+        let mut j = Job {
+            title: "t".into(),
+            lines: vec![],
+            status: Status::Running,
+        };
         for i in 0..MAX_LINES + 10 {
             j.push(i.to_string());
         }
@@ -161,12 +173,21 @@ mod tests {
     fn stop_ends_the_process_and_its_children() {
         let (tx, rx) = channel();
         // cmd starts ping as a child: stopping cmd must take the child with it
-        let cmd = Cmd { program: "cmd".into(), args: vec!["/C".into(), "ping -n 60 127.0.0.1 >nul".into()], cwd: std::env::temp_dir() };
+        let cmd = Cmd {
+            program: "cmd".into(),
+            args: vec!["/C".into(), "ping -n 60 127.0.0.1 >nul".into()],
+            cwd: std::env::temp_dir(),
+        };
         spawn(2, cmd, tx, || {});
-        let Event::Started(2, pid) = rx.recv().unwrap() else { panic!("expected Started first") };
+        let Event::Started(2, pid) = rx.recv().unwrap() else {
+            panic!("expected Started first")
+        };
         stop(pid).unwrap();
         let done = loop {
-            match rx.recv_timeout(std::time::Duration::from_secs(10)).expect("job did not end after stop") {
+            match rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("job did not end after stop")
+            {
                 Event::Done(2, s) => break s,
                 _ => {}
             }
@@ -177,7 +198,11 @@ mod tests {
     #[test]
     fn spawn_reports_missing_program() {
         let (tx, rx) = channel();
-        let cmd = Cmd { program: "no-such-program-gc".into(), args: vec![], cwd: std::env::temp_dir() };
+        let cmd = Cmd {
+            program: "no-such-program-gc".into(),
+            args: vec![],
+            cwd: std::env::temp_dir(),
+        };
         spawn(1, cmd, tx, || {});
         match rx.recv().unwrap() {
             Event::Done(1, Status::Failed(_)) => {}
@@ -186,4 +211,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=86e722fd2536c7b44fe786688d6fd17f0b5900fa6e070d6f64379c300cb3ee61 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=f7c3b7b001f4bdf22e79df9f61dcdc7a5758fb33bc993242fbe116b26398dace ====

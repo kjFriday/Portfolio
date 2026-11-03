@@ -35,7 +35,12 @@ pub fn plan(env: &dyn Fn(&str) -> Option<String>, root: Option<&Path>) -> Result
     let roaming = env("APPDATA").ok_or("APPDATA is not set")?;
     Ok(Plan {
         dir: Path::new(&local).join("Programs").join(GROUP).join(NAME),
-        start_menu: Path::new(&roaming).join("Microsoft").join("Windows").join("Start Menu").join("Programs").join(GROUP),
+        start_menu: Path::new(&roaming)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join(GROUP),
         registry_file: None,
     })
 }
@@ -61,7 +66,10 @@ fn powershell(script: &str) -> Result<(), String> {
 }
 
 fn reg_key() -> String {
-    format!(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", crate::config::APP_ID)
+    format!(
+        r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}",
+        crate::config::APP_ID
+    )
 }
 
 /// Copy `exe` and the `config` folder beside it (if any) into place and register the program.
@@ -122,14 +130,20 @@ pub fn install(p: &Plan, exe: &Path, config_src: Option<&Path>, version: &str) -
 /// deleted a moment after this process exits; returns true in that case.
 pub fn uninstall(p: &Plan, running: &Path) -> Result<bool, String> {
     let _ = std::fs::remove_file(p.start_menu.join(format!("{NAME}.lnk")));
-    if std::fs::read_dir(&p.start_menu).map(|mut d| d.next().is_none()).unwrap_or(false) {
+    if std::fs::read_dir(&p.start_menu)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(false)
+    {
         let _ = std::fs::remove_dir(&p.start_menu);
     }
     match &p.registry_file {
         Some(f) => {
             let _ = std::fs::remove_file(f);
         }
-        None => powershell(&format!("Remove-Item -Path {} -Recurse -ErrorAction SilentlyContinue", ps_quote(&reg_key())))?,
+        None => powershell(&format!(
+            "Remove-Item -Path {} -Recurse -ErrorAction SilentlyContinue",
+            ps_quote(&reg_key())
+        ))?,
     }
     if !p.dir.exists() {
         return Ok(false);
@@ -167,8 +181,14 @@ mod tests {
             _ => None,
         };
         let p = plan(&env, None).unwrap();
-        assert!(p.dir.ends_with(r"Programs\Generic Company Inc\Generic Company Dev Console"));
-        assert!(p.start_menu.starts_with(r"C:\U\Roaming\Microsoft\Windows\Start Menu\Programs"));
+        assert!(
+            p.dir
+                .ends_with(r"Programs\Generic Company Inc\Generic Company Dev Console")
+        );
+        assert!(
+            p.start_menu
+                .starts_with(r"C:\U\Roaming\Microsoft\Windows\Start Menu\Programs")
+        );
         assert!(p.registry_file.is_none());
         assert!(plan(&|_| None, None).is_err());
     }
@@ -197,4 +217,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=5e2714d106d039f8a2646434605bbdf3bbbc0d4aa1be55ab45da45e0532a4323 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=ed2bf92fae0b7396154018dde178ae3500976dc0f3ec63602c5aace28c469e4a ====

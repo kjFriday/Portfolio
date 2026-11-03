@@ -51,11 +51,19 @@ impl Op {
     pub fn help(self) -> &'static str {
         match self {
             Op::Counts => "Read how many rows each table holds (read-only).",
-            Op::Backup => "Copy the database to a dated backup beside it (seed.backup) and check the copy's row counts.",
-            Op::Reseed => "python seed.py --db PATH: backs the file up, empties it in place and refills it with the deterministic mock data. Programs that have it open keep working.",
-            Op::Fresh => "python seed.py --fresh --db PATH: deletes the file and builds it again from nothing (byte-identical every run). No backup is made, so close the other programs first.",
+            Op::Backup => {
+                "Copy the database to a dated backup beside it (seed.backup) and check the copy's row counts."
+            }
+            Op::Reseed => {
+                "python seed.py --db PATH: backs the file up, empties it in place and refills it with the deterministic mock data. Programs that have it open keep working."
+            }
+            Op::Fresh => {
+                "python seed.py --fresh --db PATH: deletes the file and builds it again from nothing (byte-identical every run). No backup is made, so close the other programs first."
+            }
             Op::Restore => "Back up the current database, then copy the chosen backup over it.",
-            Op::Export => "python export_mock.py: write each program's mock/ snapshot from the database, so each runs on its own.",
+            Op::Export => {
+                "python export_mock.py: write each program's mock/ snapshot from the database, so each runs on its own."
+            }
         }
     }
 
@@ -85,7 +93,13 @@ pub fn command(op: Op, root: &Path, db: &Path, backup: Option<&Path>) -> Option<
         Op::Backup => vec!["python".into(), "-c".into(), BACKUP.into(), d],
         Op::Reseed => vec!["python".into(), "seed.py".into(), "--db".into(), d],
         Op::Fresh => vec!["python".into(), "seed.py".into(), "--fresh".into(), "--db".into(), d],
-        Op::Restore => vec!["python".into(), "-c".into(), RESTORE.into(), d, backup?.to_string_lossy().into_owned()],
+        Op::Restore => vec![
+            "python".into(),
+            "-c".into(),
+            RESTORE.into(),
+            d,
+            backup?.to_string_lossy().into_owned(),
+        ],
         Op::Export => vec!["python".into(), "export_mock.py".into()],
     };
     Cmd::new(words, root.join(HUB_DIR))
@@ -116,7 +130,10 @@ pub fn backups(db: &Path) -> Vec<Backup> {
     let (Some(dir), Some(stem)) = (db.parent(), db.file_stem().map(|s| s.to_string_lossy().into_owned())) else {
         return vec![];
     };
-    let ext = db.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_else(|| ".db".into());
+    let ext = db
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_else(|| ".db".into());
     let mut out: Vec<Backup> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -128,8 +145,20 @@ pub fn backups(db: &Path) -> Vec<Backup> {
             if d.len() != 8 || t.len() != 6 || !(d.chars().chain(t.chars())).all(|c| c.is_ascii_digit()) {
                 return None;
             }
-            let when = format!("{}-{}-{} {}:{}:{}", &d[..4], &d[4..6], &d[6..], &t[..2], &t[2..4], &t[4..]);
-            Some(Backup { size: e.metadata().map(|m| m.len()).unwrap_or(0), path: e.path(), when })
+            let when = format!(
+                "{}-{}-{} {}:{}:{}",
+                &d[..4],
+                &d[4..6],
+                &d[6..],
+                &t[..2],
+                &t[2..4],
+                &t[4..]
+            );
+            Some(Backup {
+                size: e.metadata().map(|m| m.len()).unwrap_or(0),
+                path: e.path(),
+                when,
+            })
         })
         .collect();
     out.sort_by(|a, b| b.when.cmp(&a.when));
@@ -178,7 +207,10 @@ mod tests {
         };
         assert_eq!(default_db(&env), Some(PathBuf::from(r"X:\shared.db")));
         let env = |k: &str| (k == "LOCALAPPDATA").then(|| r"C:\U\Local".to_string());
-        assert_eq!(default_db(&env), Some(PathBuf::from(r"C:\U\Local\Generic Company Inc\generic_company.db")));
+        assert_eq!(
+            default_db(&env),
+            Some(PathBuf::from(r"C:\U\Local\Generic Company Inc\generic_company.db"))
+        );
     }
 
     #[test]
@@ -194,7 +226,10 @@ mod tests {
     #[test]
     fn counts_parse() {
         let lines = ["> python", "COUNT customers 40", "COUNT orders 120", "COUNT bad x"].map(String::from);
-        assert_eq!(parse_counts(&lines), [("customers".to_string(), 40), ("orders".to_string(), 120)]);
+        assert_eq!(
+            parse_counts(&lines),
+            [("customers".to_string(), 40), ("orders".to_string(), 120)]
+        );
     }
 
     #[test]
@@ -202,8 +237,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gc-console-seed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for f in ["generic_company.db", "generic_company-20261017-093005.db", "generic_company-20261018-120000.db",
-                  "generic_company-moved.db", "other-20261017-093005.db", "generic_company.db-wal"] {
+        for f in [
+            "generic_company.db",
+            "generic_company-20261017-093005.db",
+            "generic_company-20261018-120000.db",
+            "generic_company-moved.db",
+            "other-20261017-093005.db",
+            "generic_company.db-wal",
+        ] {
             std::fs::write(dir.join(f), "x").unwrap();
         }
         let b = backups(&dir.join("generic_company.db"));
@@ -223,9 +264,16 @@ mod tests {
         let db = dir.join("generic_company.db");
         let run = |op: Op, backup: Option<&Path>| {
             let c = command(op, &root, &db, backup).unwrap();
-            let out = std::process::Command::new(&c.program).args(&c.args).current_dir(&c.cwd).output().unwrap();
+            let out = std::process::Command::new(&c.program)
+                .args(&c.args)
+                .current_dir(&c.cwd)
+                .output()
+                .unwrap();
             assert!(out.status.success(), "{op:?}: {}", String::from_utf8_lossy(&out.stderr));
-            String::from_utf8_lossy(&out.stdout).lines().map(String::from).collect::<Vec<_>>()
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(String::from)
+                .collect::<Vec<_>>()
         };
         run(Op::Fresh, None);
         let counts = parse_counts(&run(Op::Counts, None));
@@ -239,4 +287,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=6e83b126469fb99d00479e7084102a547369fcc5f1cfc445ed28ff1555ab2523 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=88415b29902ee98981bae9eda7f4606bfbcf8712822a97558f9f2bf8cc3f7d93 ====

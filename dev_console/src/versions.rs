@@ -24,7 +24,10 @@ pub struct Spot {
 pub fn version_on(line: &str) -> Option<(usize, usize)> {
     let t = line.trim_start();
     let lead = line.len() - t.len();
-    let key_len = ["\"version\"", "__version__", "Version", "version"].iter().find(|k| t.starts_with(*k))?.len();
+    let key_len = ["\"version\"", "__version__", "Version", "version"]
+        .iter()
+        .find(|k| t.starts_with(*k))?
+        .len();
     let rest = &t[key_len..];
     let after = rest.trim_start();
     let sep = after.chars().next()?;
@@ -41,7 +44,11 @@ pub fn find_in(file: &Path) -> Result<Spot, String> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     for (i, l) in text.lines().enumerate() {
         if let Some((a, b)) = version_on(l) {
-            return Ok(Spot { file: file.to_path_buf(), line: i, value: l[a..b].to_string() });
+            return Ok(Spot {
+                file: file.to_path_buf(),
+                line: i,
+                value: l[a..b].to_string(),
+            });
         }
     }
     Err(format!("{}: no version line", file.display()))
@@ -50,7 +57,10 @@ pub fn find_in(file: &Path) -> Result<Spot, String> {
 /// A version the programs can use: numbers separated by dots, 2 to 4 parts.
 pub fn valid(v: &str) -> bool {
     let parts: Vec<&str> = v.split('.').collect();
-    (2..=4).contains(&parts.len()) && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    (2..=4).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Bump the last part: 0.2.0 -> 0.2.1.
@@ -77,7 +87,9 @@ pub fn set(spots: &[Spot], new: &str) -> Result<Vec<PathBuf>, String> {
         let text = std::fs::read_to_string(&s.file).map_err(|e| e.to_string())?;
         let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
         let mut lines: Vec<String> = text.split(nl).map(String::from).collect();
-        let l = lines.get_mut(s.line).ok_or_else(|| format!("{}: file changed", s.file.display()))?;
+        let l = lines
+            .get_mut(s.line)
+            .ok_or_else(|| format!("{}: file changed", s.file.display()))?;
         let (a, b) = version_on(l).ok_or_else(|| format!("{}: version line moved; reload", s.file.display()))?;
         if &l[a..b] == new {
             continue;
@@ -124,7 +136,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let toml = dir.join("Cargo.toml");
-        std::fs::write(&toml, "[package]\r\nname = \"x\"\r\nversion = \"0.2.0\"\r\n\r\n[dependencies]\r\nfoo = { version = \"1\" }\r\n").unwrap();
+        std::fs::write(
+            &toml,
+            "[package]\r\nname = \"x\"\r\nversion = \"0.2.0\"\r\n\r\n[dependencies]\r\nfoo = { version = \"1\" }\r\n",
+        )
+        .unwrap();
         let json = dir.join("setup.json");
         std::fs::write(&json, "{\n  \"version\": \"0.2.0\"\n}\n").unwrap();
         let spots = vec![find_in(&toml).unwrap(), find_in(&json).unwrap()];
@@ -139,4 +155,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=8b10f7dfcbf9ff1a653ddc46e16709ea6f2cc154cb72685a72be8fd641fe8f84 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=30f67ea6d1ed9379e4bb3fe77fa4a030c954993b5270b9bb0e39154e72fa82ef ====

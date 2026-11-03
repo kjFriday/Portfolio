@@ -1,0 +1,2 @@
+# Formatting for `cargo fmt`: rustfmt's defaults, at the 120 columns the portfolio's code uses in every language.
+max_width = 120

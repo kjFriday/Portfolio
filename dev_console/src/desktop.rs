@@ -22,7 +22,11 @@ pub const MANIFEST: &str = "desktop-shortcuts.txt";
 /// The string value of `"key": "..."` in a small JSON file (setup.json); enough for name and version.
 pub fn json_str(text: &str, key: &str) -> Option<String> {
     let at = text.find(&format!("\"{key}\""))? + key.len() + 2;
-    let rest = text[at..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let rest = text[at..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
 }
@@ -46,7 +50,8 @@ pub enum TargetPath {
 /// Name and version from the project's setup.json, and where its shortcut points (`desktop_run`).
 pub fn shortcut(root: &Path, p: &Program) -> Result<Shortcut, String> {
     let folder = root.join(&p.dir);
-    let setup = std::fs::read_to_string(folder.join("setup.json")).map_err(|e| format!("{}: setup.json: {e}", p.dir))?;
+    let setup =
+        std::fs::read_to_string(folder.join("setup.json")).map_err(|e| format!("{}: setup.json: {e}", p.dir))?;
     let name = json_str(&setup, "name").ok_or_else(|| format!("{}: setup.json has no name", p.dir))?;
     let version = json_str(&setup, "version").ok_or_else(|| format!("{}: setup.json has no version", p.dir))?;
     let words = registry::split_args(&p.desktop_run);
@@ -55,7 +60,12 @@ pub fn shortcut(root: &Path, p: &Program) -> Result<Shortcut, String> {
         Some((first, rest)) if first.eq_ignore_ascii_case("pythonw") => TargetPath::Pythonw(rest.to_vec()),
         Some(_) => TargetPath::File(folder.join(p.desktop_run.trim().trim_matches('"'))),
     };
-    Ok(Shortcut { label: format!("{name} {version}"), icon: folder.join("icon").join("app.ico"), folder, target })
+    Ok(Shortcut {
+        label: format!("{name} {version}"),
+        icon: folder.join("icon").join("app.ico"),
+        folder,
+        target,
+    })
 }
 fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
@@ -88,12 +98,23 @@ pub fn script(set: &[Shortcut], old: &[PathBuf], desktop: Option<&Path>) -> Stri
     };
     for sc in set {
         // A program without icon/app.ico keeps the default icon of its target.
-        let icon = if sc.icon.is_file() { format!("$k.IconLocation={};", q(&format!("{},0", sc.icon.display()))) } else { String::new() };
+        let icon = if sc.icon.is_file() {
+            format!("$k.IconLocation={};", q(&format!("{},0", sc.icon.display())))
+        } else {
+            String::new()
+        };
         let (target, args) = match &sc.target {
             TargetPath::File(p) => (qp(p), String::new()),
             TargetPath::Pythonw(a) => ("(Get-Command 'pythonw').Source".to_string(), a.join(" ")),
         };
-        s += &place(&format!("{}.lnk", sc.label), &target, &args, &sc.folder, &icon, &format!("{} (built from source)", sc.label));
+        s += &place(
+            &format!("{}.lnk", sc.label),
+            &target,
+            &args,
+            &sc.folder,
+            &icon,
+            &format!("{} (built from source)", sc.label),
+        );
         let folder_name = sc.label.rsplit_once(' ').map_or(sc.label.as_str(), |(n, _)| n);
         s += &place(
             &format!("{folder_name} source.lnk"),
@@ -114,17 +135,33 @@ pub fn placed(user_dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn powershell(id: usize, script: &str, tx: &Sender<Event>, wake: &(impl Fn() + Send + Clone + 'static)) -> (Status, Vec<PathBuf>) {
+fn powershell(
+    id: usize,
+    script: &str,
+    tx: &Sender<Event>,
+    wake: &(impl Fn() + Send + Clone + 'static),
+) -> (Status, Vec<PathBuf>) {
     let out = std::env::temp_dir().join(format!("gc-console-desktop-{}-{id}.txt", std::process::id()));
-    let full = format!("& {{ {script} }} | Set-Content -Encoding utf8 -LiteralPath {}", qp(&out));
+    let full = format!(
+        "& {{ {script} }} | Set-Content -Encoding utf8 -LiteralPath {}",
+        qp(&out)
+    );
     let cmd = Cmd {
         program: "powershell".into(),
-        args: ["-NoProfile", "-NonInteractive", "-Command", &full].map(String::from).to_vec(),
+        args: ["-NoProfile", "-NonInteractive", "-Command", &full]
+            .map(String::from)
+            .to_vec(),
         cwd: std::env::temp_dir(),
     };
     let status = jobs::run(id, &cmd, tx, wake);
     let made = std::fs::read_to_string(&out)
-        .map(|t| t.trim_start_matches('\u{feff}').lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect())
+        .map(|t| {
+            t.trim_start_matches('\u{feff}')
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
         .unwrap_or_default();
     let _ = std::fs::remove_file(out);
     (status, made)
@@ -159,7 +196,9 @@ pub fn make(
             say(format!("== {} ==", sc.label));
             let mut ok = true;
             for step in registry::steps(&r.desktop_build) {
-                let Some(cmd) = Cmd::new(step, sc.folder.clone()) else { continue };
+                let Some(cmd) = Cmd::new(step, sc.folder.clone()) else {
+                    continue;
+                };
                 say(format!("> {} {}", cmd.program, cmd.args.join(" ")));
                 let st = jobs::run(id, &cmd, &tx, &wake);
                 if st != Status::Exited(0) {
@@ -180,7 +219,11 @@ pub fn make(
                 failed += 1;
             }
         }
-        say(format!("placing {} program shortcuts and {} folder shortcuts", set.len(), set.len()));
+        say(format!(
+            "placing {} program shortcuts and {} folder shortcuts",
+            set.len(),
+            set.len()
+        ));
         let (st, made) = powershell(id, &script(&set, &placed(&user_dir), desktop.as_deref()), &tx, &wake);
         let _ = std::fs::create_dir_all(&user_dir);
         let list: String = made.iter().map(|p| format!("{}\n", p.display())).collect();
@@ -266,4 +309,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=5a33af3653fc1f91762d47c522856e2223e9ba7297c27c0c11bcad89972f046b ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=d8bb8b8a58bea25d97e15c6b83c0456f1384aa6b59598b01533511051cb3a099 ====

@@ -22,7 +22,7 @@ mod versions;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,10 +47,30 @@ enum View {
 
 impl View {
     const ALL: [(View, &'static str, &'static str, &'static str); 4] = [
-        (View::Run, "Run", "view_run", "Build, test, run and smoke-check the selected program, and read its output."),
-        (View::Versions, "Versions & commands", "view_versions", "Change the selected program's version (in every file that holds it) and the commands the console runs for it."),
-        (View::Seed, "Seed data", "view_seed", "The CRUD Hub's shared database: row counts, backups, reseeding and mock snapshots."),
-        (View::Production, "live-production", "view_production", "Start and stop a program's live site from its production command, open it, and check what it answers."),
+        (
+            View::Run,
+            "Run",
+            "view_run",
+            "Build, test, run and smoke-check the selected program, and read its output.",
+        ),
+        (
+            View::Versions,
+            "Versions & commands",
+            "view_versions",
+            "Change the selected program's version (in every file that holds it) and the commands the console runs for it.",
+        ),
+        (
+            View::Seed,
+            "Seed data",
+            "view_seed",
+            "The CRUD Hub's shared database: row counts, backups, reseeding and mock snapshots.",
+        ),
+        (
+            View::Production,
+            "live-production",
+            "view_production",
+            "Start and stop a program's live site from its production command, open it, and check what it answers.",
+        ),
     ];
 }
 
@@ -154,7 +174,9 @@ impl App {
         cfg.warnings.extend(problems);
         let n = programs.len();
         let env = |k: &str| std::env::var(k).ok();
-        let db = seed::default_db(&env).map(|p| p.display().to_string()).unwrap_or_default();
+        let db = seed::default_db(&env)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         let (ptx, prx) = channel();
         App {
             root,
@@ -175,8 +197,21 @@ impl App {
             self_smoke,
             started: false,
             notes: vec![],
-            ver: Versions { for_program: None, spots: vec![], new_version: String::new(), edit: programs.clone() },
-            seed: SeedView { db, counts: None, counts_error: None, backups: vec![], pick: None, armed: None, loaded: false },
+            ver: Versions {
+                for_program: None,
+                spots: vec![],
+                new_version: String::new(),
+                edit: programs.clone(),
+            },
+            seed: SeedView {
+                db,
+                counts: None,
+                counts_error: None,
+                backups: vec![],
+                pick: None,
+                armed: None,
+                loaded: false,
+            },
             prod: ProdView {
                 pick: None,
                 outcomes: vec![],
@@ -229,7 +264,11 @@ impl App {
     /// Add a job and return its id; `header` is the first log line.
     fn add_job(&mut self, title: String, header: String, kind: Kind, smoke: Option<PathBuf>) -> usize {
         let id = self.jobs.len();
-        let mut job = Job { title, lines: vec![], status: Status::Running };
+        let mut job = Job {
+            title,
+            lines: vec![],
+            status: Status::Running,
+        };
         job.push(header);
         self.jobs.push(job);
         self.smoke.push(smoke);
@@ -249,11 +288,22 @@ impl App {
         if p >= self.programs.len() || self.busy(Kind::Program(p, a)) {
             return;
         }
-        let report = std::env::temp_dir().join(format!("gc-console-smoke-{}-{}.json", std::process::id(), self.jobs.len()));
-        let Some(cmd) = registry::command(&self.programs[p], Action::ALL[a], &root, &report) else { return };
+        let report = std::env::temp_dir().join(format!(
+            "gc-console-smoke-{}-{}.json",
+            std::process::id(),
+            self.jobs.len()
+        ));
+        let Some(cmd) = registry::command(&self.programs[p], Action::ALL[a], &root, &report) else {
+            return;
+        };
         let title = format!("{} · {}", self.programs[p].name, Action::ALL[a].label());
         let header = format!("> {} {}", cmd.program, cmd.args.join(" "));
-        let id = self.add_job(title, header, Kind::Program(p, a), (Action::ALL[a] == Action::Smoke).then_some(report));
+        let id = self.add_job(
+            title,
+            header,
+            Kind::Program(p, a),
+            (Action::ALL[a] == Action::Smoke).then_some(report),
+        );
         self.last[p][a] = Some(Status::Running);
         jobs::spawn(id, cmd, self.tx.clone(), Self::wake(ctx));
     }
@@ -301,7 +351,14 @@ impl App {
                         }
                         Kind::Stamp => {
                             let ok = s == Status::Exited(0);
-                            self.notes.push((ok, if ok { "Stamps renewed.".into() } else { "stamp.py --restamp failed; see its log.".into() }));
+                            self.notes.push((
+                                ok,
+                                if ok {
+                                    "Stamps renewed.".into()
+                                } else {
+                                    "stamp.py --restamp failed; see its log.".into()
+                                },
+                            ));
                         }
                         Kind::Desktop | Kind::Production(_) => {}
                     }
@@ -322,7 +379,11 @@ impl App {
                 }
             }
         }
-        let changed: Vec<usize> = self.live_rx.as_ref().map(|r| r.try_iter().collect()).unwrap_or_default();
+        let changed: Vec<usize> = self
+            .live_rx
+            .as_ref()
+            .map(|r| r.try_iter().collect())
+            .unwrap_or_default();
         for p in changed {
             self.start(ctx, p, TEST);
         }
@@ -332,23 +393,43 @@ impl App {
     }
 
     fn busy(&self, kind: Kind) -> bool {
-        self.kind.iter().zip(&self.jobs).any(|(&k, j)| k == kind && j.status == Status::Running)
+        self.kind
+            .iter()
+            .zip(&self.jobs)
+            .any(|(&k, j)| k == kind && j.status == Status::Running)
     }
 
     fn seed_busy(&self) -> bool {
-        self.kind.iter().zip(&self.jobs).any(|(k, j)| matches!(k, Kind::Seed(_)) && j.status == Status::Running)
+        self.kind
+            .iter()
+            .zip(&self.jobs)
+            .any(|(k, j)| matches!(k, Kind::Seed(_)) && j.status == Status::Running)
     }
 
     /// Start a desktop-shortcut job: build and place the set (`make`), or take it away.
     fn desktop_job(&mut self, ctx: &egui::Context, make: bool) {
-        let (Some(root), Some(user)) = (self.root.clone(), self.cfg.user_dir.clone()) else { return };
+        let (Some(root), Some(user)) = (self.root.clone(), self.cfg.user_dir.clone()) else {
+            return;
+        };
         if self.busy(Kind::Desktop) {
             return;
         }
-        let title = if make { "Desktop shortcuts" } else { "Remove desktop shortcuts" };
+        let title = if make {
+            "Desktop shortcuts"
+        } else {
+            "Remove desktop shortcuts"
+        };
         let id = self.add_job(title.into(), format!("> {title}"), Kind::Desktop, None);
         if make {
-            desktop::make(id, self.programs.clone(), root, user, None, self.tx.clone(), Self::wake(ctx));
+            desktop::make(
+                id,
+                self.programs.clone(),
+                root,
+                user,
+                None,
+                self.tx.clone(),
+                Self::wake(ctx),
+            );
         } else {
             desktop::remove(id, user, self.tx.clone(), Self::wake(ctx));
         }
@@ -358,17 +439,25 @@ impl App {
 
     /// The running live-site job of program `p`, if any.
     fn production_job(&self, p: usize) -> Option<usize> {
-        (0..self.jobs.len()).rev().find(|&id| self.kind[id] == Kind::Production(p) && self.jobs[id].status == Status::Running)
+        (0..self.jobs.len())
+            .rev()
+            .find(|&id| self.kind[id] == Kind::Production(p) && self.jobs[id].status == Status::Running)
     }
 
     /// The last live-site job of program `p`, running or not.
     fn last_production_job(&self, p: usize) -> Option<usize> {
-        (0..self.jobs.len()).rev().find(|&id| self.kind[id] == Kind::Production(p))
+        (0..self.jobs.len())
+            .rev()
+            .find(|&id| self.kind[id] == Kind::Production(p))
     }
 
     /// Folders whose paths a public page must never show: the user's own and the portfolio's.
     fn local_paths(&self) -> Vec<PathBuf> {
-        let mut v: Vec<PathBuf> = ["USERPROFILE", "LOCALAPPDATA"].iter().filter_map(|k| std::env::var_os(k)).map(PathBuf::from).collect();
+        let mut v: Vec<PathBuf> = ["USERPROFILE", "LOCALAPPDATA"]
+            .iter()
+            .filter_map(|k| std::env::var_os(k))
+            .map(PathBuf::from)
+            .collect();
         v.extend(self.root.clone());
         v
     }
@@ -380,15 +469,30 @@ impl App {
             return;
         }
         let prog = self.programs[p].clone();
-        let Some(cmd) = registry::Cmd::new(registry::split_args(&prog.production), root.join(&prog.dir)) else { return };
+        let Some(cmd) = registry::Cmd::new(registry::split_args(&prog.production), root.join(&prog.dir)) else {
+            return;
+        };
         let addr = production::host_port(&prog.production_url);
-        if let Some(a) = addr.as_deref().filter(|a| production::answers(a, Duration::from_millis(300))) {
-            self.prod.note = Some((false, format!("Something already answers on {a}. Stop it first, so the checks reach the server started here.")));
+        if let Some(a) = addr
+            .as_deref()
+            .filter(|a| production::answers(a, Duration::from_millis(300)))
+        {
+            self.prod.note = Some((
+                false,
+                format!(
+                    "Something already answers on {a}. Stop it first, so the checks reach the server started here."
+                ),
+            ));
             return;
         }
         self.prod.note = None;
         let header = format!("> {} {}", cmd.program, cmd.args.join(" "));
-        let id = self.add_job(format!("{} · live-production", prog.name), header, Kind::Production(p), None);
+        let id = self.add_job(
+            format!("{} · live-production", prog.name),
+            header,
+            Kind::Production(p),
+            None,
+        );
         let alive = Arc::new(AtomicBool::new(true));
         self.procs[id].alive = Some(alive.clone());
         jobs::spawn(id, cmd, self.tx.clone(), Self::wake(ctx));
@@ -424,7 +528,12 @@ impl App {
                     } else {
                         "ended before it answered; see its log".to_string()
                     };
-                    vec![production::Outcome { label: format!("Server on {addr}"), ok: false, detail, ms: None }]
+                    vec![production::Outcome {
+                        label: format!("Server on {addr}"),
+                        ok: false,
+                        detail,
+                        ms: None,
+                    }]
                 }
                 _ => production::run(&url, &checks, &leaks, timeout),
             };
@@ -455,10 +564,20 @@ impl App {
             return;
         }
         let db = self.db_path();
-        let backup = self.seed.pick.and_then(|i| self.seed.backups.get(i)).map(|b| b.path.clone());
-        let Some(cmd) = seed::command(op, &root, &db, backup.as_deref()) else { return };
+        let backup = self
+            .seed
+            .pick
+            .and_then(|i| self.seed.backups.get(i))
+            .map(|b| b.path.clone());
+        let Some(cmd) = seed::command(op, &root, &db, backup.as_deref()) else {
+            return;
+        };
         let header = match op {
-            seed::Op::Restore => format!("> restore {} from {}", db.display(), backup.unwrap_or_default().display()),
+            seed::Op::Restore => format!(
+                "> restore {} from {}",
+                db.display(),
+                backup.unwrap_or_default().display()
+            ),
             seed::Op::Counts | seed::Op::Backup => format!("> {} {}", op.label().to_lowercase(), db.display()),
             _ => format!("> {} {}", cmd.program, cmd.args.join(" ")),
         };
@@ -469,7 +588,11 @@ impl App {
     /// Rescan backups and re-read the counts.
     fn refresh_seed(&mut self, ctx: &egui::Context) {
         self.seed.loaded = true;
-        let picked = self.seed.pick.and_then(|i| self.seed.backups.get(i)).map(|b| b.path.clone());
+        let picked = self
+            .seed
+            .pick
+            .and_then(|i| self.seed.backups.get(i))
+            .map(|b| b.path.clone());
         self.seed.backups = seed::backups(&self.db_path());
         self.seed.pick = picked.and_then(|p| self.seed.backups.iter().position(|b| b.path == p));
         if self.db_path().is_file() {
@@ -495,9 +618,20 @@ impl App {
     fn load_versions(&mut self) {
         let Some(root) = &self.root else { return };
         let p = &self.programs[self.selected];
-        self.ver.spots = p.version_files.iter().map(|f| versions::find_in(&root.join(&p.dir).join(f))).collect();
+        self.ver.spots = p
+            .version_files
+            .iter()
+            .map(|f| versions::find_in(&root.join(&p.dir).join(f)))
+            .collect();
         self.ver.for_program = Some(self.selected);
-        self.ver.new_version = self.ver.spots.iter().flatten().next().map(|s| s.value.clone()).unwrap_or_default();
+        self.ver.new_version = self
+            .ver
+            .spots
+            .iter()
+            .flatten()
+            .next()
+            .map(|s| s.value.clone())
+            .unwrap_or_default();
     }
 
     fn apply_version(&mut self, ctx: &egui::Context) {
@@ -507,13 +641,16 @@ impl App {
         let name = self.programs[self.selected].name.clone();
         match versions::set(&spots, &new) {
             Err(e) => self.notes.push((false, e)),
-            Ok(changed) if changed.is_empty() => self.notes.push((true, format!("{name} is already {new} everywhere."))),
+            Ok(changed) if changed.is_empty() => {
+                self.notes.push((true, format!("{name} is already {new} everywhere.")))
+            }
             Ok(changed) => {
                 let rel: Vec<String> = changed
                     .iter()
                     .map(|f| f.strip_prefix(&root).unwrap_or(f).to_string_lossy().replace('\\', "/"))
                     .collect();
-                self.notes.push((true, format!("{name} is now {new} in {}.", rel.join(", "))));
+                self.notes
+                    .push((true, format!("{name} is now {new} in {}.", rel.join(", "))));
                 // Stamped sources need a new stamp after an edit; JSON files carry none.
                 let stamped: Vec<String> = rel.into_iter().filter(|f| !f.ends_with(".json")).collect();
                 if !stamped.is_empty() && root.join("stamp.py").is_file() {
@@ -536,7 +673,8 @@ impl App {
 
     fn save_commands(&mut self) {
         let Some(path) = self.cfg.programs_file.clone() else {
-            self.notes.push((false, "No config folder to save programs.ini in.".into()));
+            self.notes
+                .push((false, "No config folder to save programs.ini in.".into()));
             return;
         };
         let text = registry::render(&self.ver.edit);
@@ -545,13 +683,18 @@ impl App {
             self.notes.push((false, format!("Not saved: {}", problems.join("; "))));
             return;
         }
-        let result = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text));
+        let result = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&path, text));
         match result {
             Ok(()) => {
                 self.programs = self.ver.edit.clone();
                 self.notes.push((true, format!("Saved to {}.", path.display())));
             }
-            Err(e) => self.notes.push((false, format!("Could not save {}: {e}", path.display()))),
+            Err(e) => self
+                .notes
+                .push((false, format!("Could not save {}: {e}", path.display()))),
         }
     }
 
@@ -566,7 +709,10 @@ impl App {
     }
 
     fn set_zoom(&mut self, ctx: &egui::Context, z: f32) {
-        let (lo, hi) = (self.cfg.number("view", "zoom_min", 0.5), self.cfg.number("view", "zoom_max", 3.0));
+        let (lo, hi) = (
+            self.cfg.number("view", "zoom_min", 0.5),
+            self.cfg.number("view", "zoom_max", 3.0),
+        );
         let z = (z.clamp(lo, hi) * 100.0).round() / 100.0;
         if z == self.zoom {
             return;
@@ -580,7 +726,9 @@ impl App {
 
     /// True once per press of the control named `action` in controls.ini.
     fn pressed(&self, ctx: &egui::Context, action: &str) -> bool {
-        let Some(sc) = self.cfg.controls.get(action) else { return false };
+        let Some(sc) = self.cfg.controls.get(action) else {
+            return false;
+        };
         // Ctrl+Plus arrives as Ctrl+= on most keyboards; accept both.
         let alt = (sc.logical_key == Key::Plus).then(|| KeyboardShortcut::new(sc.modifiers, Key::Equals));
         ctx.input_mut(|i| i.consume_shortcut(sc) || alt.is_some_and(|a| i.consume_shortcut(&a)))
@@ -628,7 +776,11 @@ impl App {
 
     /// " (Ctrl+L)" for a control, or "".
     fn hint(&self, action: &str) -> String {
-        self.cfg.controls.get(action).map(|sc| format!(" ({})", sc_text(sc))).unwrap_or_default()
+        self.cfg
+            .controls
+            .get(action)
+            .map(|sc| format!(" ({})", sc_text(sc)))
+            .unwrap_or_default()
     }
 
     /// Hover text with the control's keys on a line of its own.
@@ -641,7 +793,10 @@ impl App {
 
     fn write_self_smoke(&mut self, ctx: &egui::Context) {
         let Some(path) = self.self_smoke.take() else { return };
-        let views: Vec<String> = View::ALL.iter().map(|(_, label, _, _)| format!("\"{label}\"")).collect();
+        let views: Vec<String> = View::ALL
+            .iter()
+            .map(|(_, label, _, _)| format!("\"{label}\""))
+            .collect();
         let sites = self.programs.iter().filter(|p| p.has_production()).count();
         let report = format!(
             "{{\"title\": \"{}\", \"version\": \"{VERSION}\", \"programs\": {}, \"root_found\": {}, \"controls\": {}, \"warnings\": {}, \"views\": [{}], \"live_sites\": {sites}}}\n",
@@ -659,7 +814,8 @@ impl App {
     // ---- drawing -----------------------------------------------------------------------------
 
     fn sidebar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Programs").on_hover_text("Every program in config/programs.ini. Pick one to work on it.");
+        ui.heading("Programs")
+            .on_hover_text("Every program in config/programs.ini. Pick one to work on it.");
         ui.separator();
         for i in 0..self.programs.len() {
             let p = self.programs[i].clone();
@@ -678,7 +834,8 @@ impl App {
                 }
                 ui.weak(p.lang.label());
                 if self.is_live(i) {
-                    ui.colored_label(GREEN, "live").on_hover_text("Live tests are on: saving a file in this program's folder runs its tests.");
+                    ui.colored_label(GREEN, "live")
+                        .on_hover_text("Live tests are on: saving a file in this program's folder runs its tests.");
                 }
             });
         }
@@ -708,20 +865,34 @@ impl App {
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.weak(format!("Text {:.0}%", self.zoom * 100.0)).on_hover_text("Text and UI size. It is saved between runs.");
+            ui.weak(format!("Text {:.0}%", self.zoom * 100.0))
+                .on_hover_text("Text and UI size. It is saved between runs.");
             let step = self.cfg.number("view", "zoom_step", 0.1);
-            if ui.small_button("−").on_hover_text(self.tip("Smaller text", "zoom_out")).clicked() {
+            if ui
+                .small_button("−")
+                .on_hover_text(self.tip("Smaller text", "zoom_out"))
+                .clicked()
+            {
                 self.set_zoom(ctx, self.zoom - step);
             }
-            if ui.small_button("+").on_hover_text(self.tip("Larger text", "zoom_in")).clicked() {
+            if ui
+                .small_button("+")
+                .on_hover_text(self.tip("Larger text", "zoom_in"))
+                .clicked()
+            {
                 self.set_zoom(ctx, self.zoom + step);
             }
-            if ui.small_button("100%").on_hover_text(self.tip("Normal text size", "zoom_reset")).clicked() {
+            if ui
+                .small_button("100%")
+                .on_hover_text(self.tip("Normal text size", "zoom_reset"))
+                .clicked()
+            {
                 self.set_zoom(ctx, 1.0);
             }
         });
         for w in &self.cfg.warnings {
-            ui.colored_label(Color32::YELLOW, w).on_hover_text("A problem in the config files; the rest still works.");
+            ui.colored_label(Color32::YELLOW, w)
+                .on_hover_text("A problem in the config files; the rest still works.");
         }
         ui.add_space(8.0);
         ui.collapsing("About", |ui| {
@@ -734,7 +905,8 @@ impl App {
         .on_hover_text("Version, licence and icon credit.");
         if let Some(root) = &self.root {
             ui.add_space(8.0);
-            ui.weak(format!("Root: {}", root.display())).on_hover_text("The portfolio folder (found by looking upward for RULES.md).");
+            ui.weak(format!("Root: {}", root.display()))
+                .on_hover_text("The portfolio folder (found by looking upward for RULES.md).");
         }
     }
 
@@ -742,7 +914,8 @@ impl App {
         ui.horizontal(|ui| {
             for (v, label, key, help) in View::ALL {
                 let tip = self.tip(help, key);
-                ui.selectable_value(&mut self.view, v, RichText::new(label).strong()).on_hover_text(tip);
+                ui.selectable_value(&mut self.view, v, RichText::new(label).strong())
+                    .on_hover_text(tip);
             }
         });
     }
@@ -766,7 +939,12 @@ impl App {
                     Some(c) => format!("{}\n\nRuns: {} {}", act.help(), c.program, c.args.join(" ")),
                     None => format!("{}\n\n{} has no {} command.", act.help(), prog.name, key),
                 };
-                if ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text(self.tip(&what, &key)).on_disabled_hover_text(what).clicked() {
+                if ui
+                    .add_enabled(enabled, egui::Button::new(label))
+                    .on_hover_text(self.tip(&what, &key))
+                    .on_disabled_hover_text(what)
+                    .clicked()
+                {
                     self.start(ctx, p, a);
                 }
                 ui.colored_label(col, mark).on_hover_text(match &self.last[p][a] {
@@ -775,8 +953,15 @@ impl App {
                 });
             }
             let mut on = self.is_live(p);
-            let tip = self.tip("Run this program's tests again whenever a file in its folder is saved.", "toggle_live");
-            if ui.checkbox(&mut on, format!("Live tests{}", self.hint("toggle_live"))).on_hover_text(tip).changed() {
+            let tip = self.tip(
+                "Run this program's tests again whenever a file in its folder is saved.",
+                "toggle_live",
+            );
+            if ui
+                .checkbox(&mut on, format!("Live tests{}", self.hint("toggle_live")))
+                .on_hover_text(tip)
+                .changed()
+            {
                 self.set_live(p, on);
             }
         });
@@ -786,13 +971,22 @@ impl App {
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.jobs.is_empty() {
-                    ui.weak("No jobs yet").on_hover_text("Each action you start gets a tab here with its output.");
+                    ui.weak("No jobs yet")
+                        .on_hover_text("Each action you start gets a tab here with its output.");
                 }
                 for id in (0..self.jobs.len()).rev() {
                     let (mark, col) = badge(&Some(self.jobs[id].status.clone()));
                     ui.colored_label(col, mark);
-                    let tip = format!("{}: {}\nClick to show its output.", self.jobs[id].title, status_text(&self.jobs[id].status));
-                    if ui.selectable_label(self.shown == Some(id), &self.jobs[id].title).on_hover_text(tip).clicked() {
+                    let tip = format!(
+                        "{}: {}\nClick to show its output.",
+                        self.jobs[id].title,
+                        status_text(&self.jobs[id].status)
+                    );
+                    if ui
+                        .selectable_label(self.shown == Some(id), &self.jobs[id].title)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
                         self.shown = Some(id);
                     }
                 }
@@ -814,16 +1008,24 @@ impl App {
                 Status::Failed(e) => ui.colored_label(RED, e.to_string()),
                 Status::Stopped => ui.weak("stopped"),
             };
-            if ui.small_button("Copy").on_hover_text("Copy this job's whole output to the clipboard.").clicked() {
+            if ui
+                .small_button("Copy")
+                .on_hover_text("Copy this job's whole output to the clipboard.")
+                .clicked()
+            {
                 ui.ctx().copy_text(job.lines.join("\n"));
             }
         });
         ui.separator();
-        egui::ScrollArea::vertical().id_salt("log").stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
-            for l in &job.lines {
-                ui.monospace(l);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("log")
+            .stick_to_bottom(true)
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                for l in &job.lines {
+                    ui.monospace(l);
+                }
+            });
     }
 
     fn notes_ui(&mut self, ui: &mut egui::Ui) {
@@ -845,21 +1047,32 @@ impl App {
         }
         let p = self.selected;
         let name = self.programs[p].name.clone();
-        ui.heading(format!("{name} — version")).on_hover_text("Where this program's version is written, from version_files in programs.ini.");
+        ui.heading(format!("{name} — version"))
+            .on_hover_text("Where this program's version is written, from version_files in programs.ini.");
         let values: Vec<String> = self.ver.spots.iter().flatten().map(|s| s.value.clone()).collect();
         let agree = values.windows(2).all(|w| w[0] == w[1]);
         egui::Grid::new("spots").num_columns(2).striped(true).show(ui, |ui| {
             for s in &self.ver.spots {
                 match s {
                     Ok(s) => {
-                        let rel = self.root.as_ref().and_then(|r| s.file.strip_prefix(r).ok()).unwrap_or(&s.file);
-                        ui.monospace(rel.display().to_string()).on_hover_text(format!("Line {} of this file", s.line + 1));
+                        let rel = self
+                            .root
+                            .as_ref()
+                            .and_then(|r| s.file.strip_prefix(r).ok())
+                            .unwrap_or(&s.file);
+                        ui.monospace(rel.display().to_string())
+                            .on_hover_text(format!("Line {} of this file", s.line + 1));
                         let text = RichText::new(&s.value).monospace();
                         ui.label(if agree { text } else { text.color(Color32::YELLOW) })
-                            .on_hover_text(if agree { "Matches the other files." } else { "Differs from another file: Apply sets them all to the same version." });
+                            .on_hover_text(if agree {
+                                "Matches the other files."
+                            } else {
+                                "Differs from another file: Apply sets them all to the same version."
+                            });
                     }
                     Err(e) => {
-                        ui.colored_label(RED, e).on_hover_text("Fix version_files in programs.ini, or add a version line to the file.");
+                        ui.colored_label(RED, e)
+                            .on_hover_text("Fix version_files in programs.ini, or add a version line to the file.");
                         ui.label("");
                     }
                 }
@@ -892,14 +1105,23 @@ impl App {
             }
         });
         ui.add_space(10.0);
-        ui.heading(format!("{name} — commands")).on_hover_text("What the console runs for this program. Saved to config/programs.ini.");
+        ui.heading(format!("{name} — commands"))
+            .on_hover_text("What the console runs for this program. Saved to config/programs.ini.");
         egui::Grid::new("commands").num_columns(2).striped(true).show(ui, |ui| {
             for (key, label, help) in registry::FIELDS {
                 let changed = self.ver.edit[p].field(key) != self.programs[p].field(key);
-                let text = if changed { RichText::new(format!("{label} *")).color(Color32::YELLOW) } else { RichText::new(label) };
+                let text = if changed {
+                    RichText::new(format!("{label} *")).color(Color32::YELLOW)
+                } else {
+                    RichText::new(label)
+                };
                 ui.label(text).on_hover_text(help);
                 let words = if key == "desktop_build" {
-                    registry::steps(self.ver.edit[p].field(key)).iter().map(|s| format!("[{}]", s.join("] ["))).collect::<Vec<_>>().join("\nthen ")
+                    registry::steps(self.ver.edit[p].field(key))
+                        .iter()
+                        .map(|s| format!("[{}]", s.join("] [")))
+                        .collect::<Vec<_>>()
+                        .join("\nthen ")
                 } else {
                     format!("[{}]", registry::split_args(self.ver.edit[p].field(key)).join("] ["))
                 };
@@ -912,15 +1134,29 @@ impl App {
         });
         ui.horizontal(|ui| {
             let dirty = self.commands_dirty();
-            let file = self.cfg.programs_file.as_ref().map(|f| f.display().to_string()).unwrap_or_default();
-            if ui.add_enabled(dirty, egui::Button::new("Save commands")).on_hover_text(format!("Write every program's commands to {file}.")).clicked() {
+            let file = self
+                .cfg
+                .programs_file
+                .as_ref()
+                .map(|f| f.display().to_string())
+                .unwrap_or_default();
+            if ui
+                .add_enabled(dirty, egui::Button::new("Save commands"))
+                .on_hover_text(format!("Write every program's commands to {file}."))
+                .clicked()
+            {
                 self.save_commands();
             }
-            if ui.add_enabled(dirty, egui::Button::new("Revert")).on_hover_text("Throw away unsaved command changes.").clicked() {
+            if ui
+                .add_enabled(dirty, egui::Button::new("Revert"))
+                .on_hover_text("Throw away unsaved command changes.")
+                .clicked()
+            {
                 self.ver.edit = self.programs.clone();
             }
             if dirty {
-                ui.colored_label(Color32::YELLOW, "unsaved changes").on_hover_text("Fields marked * differ from the saved programs.ini.");
+                ui.colored_label(Color32::YELLOW, "unsaved changes")
+                    .on_hover_text("Fields marked * differ from the saved programs.ini.");
             }
         });
         self.notes_ui(ui);
@@ -951,16 +1187,36 @@ impl App {
                 };
             }
         });
-        ui.weak(seed::describe(&self.db_path())).on_hover_text("Size of the file and when it last changed.");
+        ui.weak(seed::describe(&self.db_path()))
+            .on_hover_text("Size of the file and when it last changed.");
         ui.add_space(6.0);
 
         ui.horizontal_wrapped(|ui| {
             let busy = self.seed_busy();
-            for op in [seed::Op::Counts, seed::Op::Backup, seed::Op::Reseed, seed::Op::Fresh, seed::Op::Export] {
+            for op in [
+                seed::Op::Counts,
+                seed::Op::Backup,
+                seed::Op::Reseed,
+                seed::Op::Fresh,
+                seed::Op::Export,
+            ] {
                 let armed = self.seed.armed.map(|(o, _)| o) == Some(op);
-                let label = if armed { RichText::new(format!("Click again: {}", op.label())).color(RED) } else { RichText::new(op.label()) };
-                let tip = if op.needs_confirm() { format!("{}\n\nAsks for a second click.", op.help()) } else { op.help().to_string() };
-                if ui.add_enabled(!busy, egui::Button::new(label)).on_hover_text(tip).on_disabled_hover_text("Waiting for the running seed job.").clicked() {
+                let label = if armed {
+                    RichText::new(format!("Click again: {}", op.label())).color(RED)
+                } else {
+                    RichText::new(op.label())
+                };
+                let tip = if op.needs_confirm() {
+                    format!("{}\n\nAsks for a second click.", op.help())
+                } else {
+                    op.help().to_string()
+                };
+                if ui
+                    .add_enabled(!busy, egui::Button::new(label))
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text("Waiting for the running seed job.")
+                    .clicked()
+                {
                     self.seed_click(ctx, op);
                 }
             }
@@ -968,47 +1224,71 @@ impl App {
         ui.add_space(6.0);
 
         ui.columns(2, |cols| {
-            cols[0].strong("Rows per table").on_hover_text("Read from the database; refreshed after every seed job.");
+            cols[0]
+                .strong("Rows per table")
+                .on_hover_text("Read from the database; refreshed after every seed job.");
             match (&self.seed.counts, &self.seed.counts_error) {
                 (Some(c), _) if !c.is_empty() => {
-                    egui::Grid::new("counts").num_columns(2).striped(true).show(&mut cols[0], |ui| {
-                        let total: u64 = c.iter().map(|(_, n)| n).sum();
-                        for (t, n) in c {
-                            ui.monospace(t);
-                            ui.monospace(n.to_string());
+                    egui::Grid::new("counts")
+                        .num_columns(2)
+                        .striped(true)
+                        .show(&mut cols[0], |ui| {
+                            let total: u64 = c.iter().map(|(_, n)| n).sum();
+                            for (t, n) in c {
+                                ui.monospace(t);
+                                ui.monospace(n.to_string());
+                                ui.end_row();
+                            }
+                            ui.strong("total");
+                            ui.strong(total.to_string());
                             ui.end_row();
-                        }
-                        ui.strong("total");
-                        ui.strong(total.to_string());
-                        ui.end_row();
-                    });
+                        });
                 }
                 (Some(_), _) => {
                     cols[0].weak("The file has no tables yet.");
                 }
                 (None, Some(e)) => {
-                    cols[0].colored_label(RED, e).on_hover_text("Could not read the file. Is it a database?");
+                    cols[0]
+                        .colored_label(RED, e)
+                        .on_hover_text("Could not read the file. Is it a database?");
                 }
                 (None, None) => {
-                    cols[0].weak(if self.db_path().is_file() { "Reading…" } else { "No database file yet." });
+                    cols[0].weak(if self.db_path().is_file() {
+                        "Reading…"
+                    } else {
+                        "No database file yet."
+                    });
                 }
             }
 
-            cols[1].strong("Backups").on_hover_text("Dated copies beside the database (made by Reseed, Back up now and Restore). Pick one to restore it.");
+            cols[1].strong("Backups").on_hover_text(
+                "Dated copies beside the database (made by Reseed, Back up now and Restore). Pick one to restore it.",
+            );
             if self.seed.backups.is_empty() {
                 cols[1].weak("None yet.");
             }
-            egui::ScrollArea::vertical().id_salt("backups").max_height(180.0).show(&mut cols[1], |ui| {
-                for (i, b) in self.seed.backups.iter().enumerate() {
-                    let text = format!("{}   {}", b.when, seed::size(b.size));
-                    if ui.selectable_label(self.seed.pick == Some(i), text).on_hover_text(b.path.display().to_string()).clicked() {
-                        self.seed.pick = Some(i);
+            egui::ScrollArea::vertical()
+                .id_salt("backups")
+                .max_height(180.0)
+                .show(&mut cols[1], |ui| {
+                    for (i, b) in self.seed.backups.iter().enumerate() {
+                        let text = format!("{}   {}", b.when, seed::size(b.size));
+                        if ui
+                            .selectable_label(self.seed.pick == Some(i), text)
+                            .on_hover_text(b.path.display().to_string())
+                            .clicked()
+                        {
+                            self.seed.pick = Some(i);
+                        }
                     }
-                }
-            });
+                });
             let op = seed::Op::Restore;
             let armed = self.seed.armed.map(|(o, _)| o) == Some(op);
-            let label = if armed { RichText::new("Click again: Restore").color(RED) } else { RichText::new("Restore selected") };
+            let label = if armed {
+                RichText::new("Click again: Restore").color(RED)
+            } else {
+                RichText::new("Restore selected")
+            };
             let can = self.seed.pick.is_some() && !self.seed_busy();
             if cols[1]
                 .add_enabled(can, egui::Button::new(label))
@@ -1022,7 +1302,9 @@ impl App {
     }
 
     fn production_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let sites: Vec<usize> = (0..self.programs.len()).filter(|&i| self.programs[i].has_production()).collect();
+        let sites: Vec<usize> = (0..self.programs.len())
+            .filter(|&i| self.programs[i].has_production())
+            .collect();
         ui.heading("live-production")
             .on_hover_text("Programs with a production command or URL in programs.ini: their live site, started from here, and what it answers.");
         let Some(&first) = sites.first() else {
@@ -1046,11 +1328,21 @@ impl App {
             ui.label("Program");
             ui.strong(&prog.name);
             ui.end_row();
-            ui.label("Command").on_hover_text("production in programs.ini; it runs in the program's folder.");
-            ui.monospace(if prog.production.is_empty() { "(none: checks only)" } else { prog.production.as_str() });
+            ui.label("Command")
+                .on_hover_text("production in programs.ini; it runs in the program's folder.");
+            ui.monospace(if prog.production.is_empty() {
+                "(none: checks only)"
+            } else {
+                prog.production.as_str()
+            });
             ui.end_row();
-            ui.label("Address").on_hover_text("production_url in programs.ini: where the checks go.");
-            ui.monospace(if prog.production_url.is_empty() { "(no production_url)" } else { prog.production_url.as_str() });
+            ui.label("Address")
+                .on_hover_text("production_url in programs.ini: where the checks go.");
+            ui.monospace(if prog.production_url.is_empty() {
+                "(no production_url)"
+            } else {
+                prog.production_url.as_str()
+            });
             ui.end_row();
             ui.label("Server");
             match (running, &self.prod.waiting) {
@@ -1077,32 +1369,52 @@ impl App {
             let can_start = running.is_none() && !prog.production.trim().is_empty() && self.root.is_some();
             if ui
                 .add_enabled(can_start, egui::Button::new("Start"))
-                .on_hover_text(format!("Run {} in {}, then check the site once it answers.", prog.production, prog.dir))
-                .on_disabled_hover_text(if running.is_some() { "It is running already." } else { "This program has no production command." })
+                .on_hover_text(format!(
+                    "Run {} in {}, then check the site once it answers.",
+                    prog.production, prog.dir
+                ))
+                .on_disabled_hover_text(if running.is_some() {
+                    "It is running already."
+                } else {
+                    "This program has no production command."
+                })
                 .clicked()
             {
                 self.start_production(ctx, p);
             }
             let can_stop = running.is_some_and(|id| self.procs[id].pid.is_some());
-            if ui.add_enabled(can_stop, egui::Button::new("Stop")).on_hover_text("End the live site and every process it started.").clicked() {
+            if ui
+                .add_enabled(can_stop, egui::Button::new("Stop"))
+                .on_hover_text("End the live site and every process it started.")
+                .clicked()
+            {
                 if let Some(id) = running {
                     self.stop_job(id);
                 }
             }
             let has_url = !prog.production_url.trim().is_empty();
-            if ui.add_enabled(has_url, egui::Button::new("Open in browser")).on_hover_text(format!("Open {} in your browser.", prog.production_url)).clicked() {
+            if ui
+                .add_enabled(has_url, egui::Button::new("Open in browser"))
+                .on_hover_text(format!("Open {} in your browser.", prog.production_url))
+                .clicked()
+            {
                 ctx.open_url(egui::OpenUrl::new_tab(prog.production_url.trim()));
             }
             if ui
                 .add_enabled(has_url && !self.prod.checking, egui::Button::new("Check now"))
-                .on_hover_text("Send production_checks to the address now, whether or not the console started the server.")
+                .on_hover_text(
+                    "Send production_checks to the address now, whether or not the console started the server.",
+                )
                 .clicked()
             {
                 self.check_production(ctx, p, None);
             }
             let every = self.cfg.number("production", "interval_s", 30.0).max(5.0);
-            ui.checkbox(&mut self.prod.keep_checking, format!("Keep checking every {every:.0} s"))
-                .on_hover_text("Run the checks again on a timer while this is ticked (interval_s in settings.ini).");
+            ui.checkbox(
+                &mut self.prod.keep_checking,
+                format!("Keep checking every {every:.0} s"),
+            )
+            .on_hover_text("Run the checks again on a timer while this is ticked (interval_s in settings.ini).");
         });
         if let Some((ok, text)) = &self.prod.note {
             ui.colored_label(if *ok { GREEN } else { RED }, text);
@@ -1119,12 +1431,19 @@ impl App {
         });
         match &self.prod.checked {
             None => {
-                ui.weak(if self.prod.checking { "Checking…" } else { "Not checked yet: Start the site, or Check now." });
+                ui.weak(if self.prod.checking {
+                    "Checking…"
+                } else {
+                    "Not checked yet: Start the site, or Check now."
+                });
             }
             Some((when, url)) => {
                 let passed = self.prod.outcomes.iter().filter(|o| o.ok).count();
                 let n = self.prod.outcomes.len();
-                ui.colored_label(if passed == n { GREEN } else { RED }, format!("{passed} of {n} passed, {} ago, at {url}", ago(when.elapsed())));
+                ui.colored_label(
+                    if passed == n { GREEN } else { RED },
+                    format!("{passed} of {n} passed, {} ago, at {url}", ago(when.elapsed())),
+                );
                 egui::Grid::new("checks").num_columns(4).striped(true).show(ui, |ui| {
                     for o in &self.prod.outcomes {
                         ui.colored_label(if o.ok { GREEN } else { RED }, if o.ok { "✔" } else { "✖" });
@@ -1176,7 +1495,11 @@ fn status_text(s: &Status) -> String {
 fn window_icon() -> egui::IconData {
     const RAW: &[u8] = include_bytes!("../icon/app-32.rgba");
     let dim = |i: usize| u32::from_le_bytes(RAW[i..i + 4].try_into().unwrap());
-    egui::IconData { rgba: RAW[8..].to_vec(), width: dim(0), height: dim(4) }
+    egui::IconData {
+        rgba: RAW[8..].to_vec(),
+        width: dim(0),
+        height: dim(4),
+    }
 }
 
 fn sc_text(sc: &KeyboardShortcut) -> String {
@@ -1212,14 +1535,21 @@ impl eframe::App for App {
         }
         self.drain(ctx);
         self.keys(ctx);
-        let site_up = self.kind.iter().zip(&self.jobs).any(|(k, j)| matches!(k, Kind::Production(_)) && j.status == Status::Running);
+        let site_up = self
+            .kind
+            .iter()
+            .zip(&self.jobs)
+            .any(|(k, j)| matches!(k, Kind::Production(_)) && j.status == Status::Running);
         if site_up || self.prod.keep_checking {
             ctx.request_repaint_after(Duration::from_secs(1)); // uptime and the check timer
         }
 
-        egui::Panel::left("projects").resizable(false).min_size(260.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.sidebar(ui, ctx));
-        });
+        egui::Panel::left("projects")
+            .resizable(false)
+            .min_size(260.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.sidebar(ui, ctx));
+            });
 
         egui::Panel::top("actions").show(ui, |ui| {
             self.tabs(ui);
@@ -1229,7 +1559,10 @@ impl eframe::App for App {
             } else if self.view == View::Run {
                 self.run_bar(ui, ctx);
             } else if self.view == View::Versions {
-                ui.weak(format!("Editing {}. Pick another program on the left.", self.programs[self.selected].name));
+                ui.weak(format!(
+                    "Editing {}. Pick another program on the left.",
+                    self.programs[self.selected].name
+                ));
             } else if self.view == View::Seed {
                 ui.weak("Seed data for the shared database (CRUD Hub).");
             } else {
@@ -1242,21 +1575,33 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ui, |ui| {
             if self.root.is_none() {
-                ui.colored_label(Color32::YELLOW, "Portfolio root not found: start the console inside the portfolio folder.");
+                ui.colored_label(
+                    Color32::YELLOW,
+                    "Portfolio root not found: start the console inside the portfolio folder.",
+                );
                 return;
             }
             match self.view {
                 View::Run => {}
                 View::Versions if !self.programs.is_empty() => {
-                    egui::ScrollArea::vertical().id_salt("versions").max_height(ui.available_height() * 0.6).show(ui, |ui| self.versions_view(ui, ctx));
+                    egui::ScrollArea::vertical()
+                        .id_salt("versions")
+                        .max_height(ui.available_height() * 0.6)
+                        .show(ui, |ui| self.versions_view(ui, ctx));
                     ui.separator();
                 }
                 View::Seed => {
-                    egui::ScrollArea::vertical().id_salt("seed").max_height(ui.available_height() * 0.6).show(ui, |ui| self.seed_view(ui, ctx));
+                    egui::ScrollArea::vertical()
+                        .id_salt("seed")
+                        .max_height(ui.available_height() * 0.6)
+                        .show(ui, |ui| self.seed_view(ui, ctx));
                     ui.separator();
                 }
                 View::Production => {
-                    egui::ScrollArea::vertical().id_salt("production").max_height(ui.available_height() * 0.6).show(ui, |ui| self.production_view(ui, ctx));
+                    egui::ScrollArea::vertical()
+                        .id_salt("production")
+                        .max_height(ui.available_height() * 0.6)
+                        .show(ui, |ui| self.production_view(ui, ctx));
                     ui.separator();
                 }
                 _ => {}
@@ -1278,7 +1623,14 @@ struct Args {
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { install: false, uninstall: false, version: false, quiet: false, root: None, smoke: None };
+    let mut a = Args {
+        install: false,
+        uninstall: false,
+        version: false,
+        quiet: false,
+        root: None,
+        smoke: None,
+    };
     let mut it = args.iter();
     while let Some(x) = it.next() {
         match x.trim_start_matches('-') {
@@ -1303,7 +1655,9 @@ fn tell(quiet: bool, text: &str, error: bool) {
             text.replace('\'', "''"),
             install::NAME
         );
-        let _ = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).status();
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .status();
     }
 }
 
@@ -1326,13 +1680,17 @@ fn main() {
         let env = |k: &str| std::env::var(k).ok();
         let result = install::plan(&env, args.root.as_deref()).and_then(|p| {
             if args.install {
-                let config = [exe_dir.join("config"), PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config")]
-                    .into_iter()
-                    .find(|d| d.is_dir());
+                let config = [
+                    exe_dir.join("config"),
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config"),
+                ]
+                .into_iter()
+                .find(|d| d.is_dir());
                 install::install(&p, &exe, config.as_deref(), VERSION)
                     .map(|_| format!("{} {VERSION} is installed in {}.", install::NAME, p.dir.display()))
             } else {
-                install::uninstall(&p, &exe).map(|_| format!("{} is uninstalled. Your settings are kept.", install::NAME))
+                install::uninstall(&p, &exe)
+                    .map(|_| format!("{} is uninstalled. Your settings are kept.", install::NAME))
             }
         });
         match result {
@@ -1383,7 +1741,10 @@ mod tests {
         let a = parse_args(&v(&["--install", "-root", "X", "--quiet"])).unwrap();
         assert!(a.install && a.quiet && !a.uninstall);
         assert_eq!(a.root.as_deref(), Some(Path::new("X")));
-        assert_eq!(parse_args(&v(&["--smoke", "r.json"])).unwrap().smoke.as_deref(), Some(Path::new("r.json")));
+        assert_eq!(
+            parse_args(&v(&["--smoke", "r.json"])).unwrap().smoke.as_deref(),
+            Some(Path::new("r.json"))
+        );
         assert!(parse_args(&v(&["--root"])).is_err());
         assert!(parse_args(&v(&["--bogus"])).is_err());
     }
@@ -1419,8 +1780,18 @@ mod tests {
         let (_, label, key, _) = View::ALL.iter().find(|(v, ..)| *v == View::Production).unwrap();
         assert_eq!((*label, *key), ("live-production", "view_production"));
         let cfg = config::load(&[], None);
-        assert_eq!(cfg.controls.get("view_production").map(sc_text).as_deref(), Some("Ctrl+4"));
-        assert_eq!((ago(Duration::from_secs(9)), ago(Duration::from_secs(75)), ago(Duration::from_secs(3720))), ("9 s".into(), "1 m 15 s".into(), "1 h 2 m".into()));
+        assert_eq!(
+            cfg.controls.get("view_production").map(sc_text).as_deref(),
+            Some("Ctrl+4")
+        );
+        assert_eq!(
+            (
+                ago(Duration::from_secs(9)),
+                ago(Duration::from_secs(75)),
+                ago(Duration::from_secs(3720))
+            ),
+            ("9 s".into(), "1 m 15 s".into(), "1 h 2 m".into())
+        );
     }
 
     /// The view's own Start, checks and Stop, on the Journal at a free port. Needs Go; slow.
@@ -1428,9 +1799,17 @@ mod tests {
     #[ignore]
     fn app_starts_checks_and_stops_the_live_site() {
         let root = registry::find_root(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
-        let mut app = App::new(config::load(&[root.join("dev_console").join("config")], None), Some(root), None);
+        let mut app = App::new(
+            config::load(&[root.join("dev_console").join("config")], None),
+            Some(root),
+            None,
+        );
         let p = app.programs.iter().position(|p| p.name == "Journal").unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let addr = format!("127.0.0.1:{port}");
         let old = production::host_port(&app.programs[p].production_url).unwrap();
         app.programs[p].production = app.programs[p].production.replace(&old, &addr);
@@ -1445,7 +1824,11 @@ mod tests {
             app.drain(&ctx);
         }
         let failed: Vec<_> = app.prod.outcomes.iter().filter(|o| !o.ok).collect();
-        assert!(failed.is_empty() && app.prod.outcomes.len() >= 7, "{:#?}", app.prod.outcomes);
+        assert!(
+            failed.is_empty() && app.prod.outcomes.len() >= 7,
+            "{:#?}",
+            app.prod.outcomes
+        );
         assert!(app.procs[id].pid.is_some());
         app.stop_job(id);
         let stopping = Instant::now();
@@ -1455,8 +1838,11 @@ mod tests {
             app.drain(&ctx);
         }
         assert_eq!(app.jobs[id].status, Status::Stopped);
-        assert!(!production::answers(&addr, Duration::from_millis(500)), "{addr} still answers after Stop");
+        assert!(
+            !production::answers(&addr, Duration::from_millis(500)),
+            "{addr} still answers after Stop"
+        );
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=72b5ebef464441c8314a28503beb4d2f778d75290b4d4c134f37e363422fab24 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=e027dbba94f9d6cdc84b8b4b7c4386ea87a996be139a499cc18cd3436a5f1e54 ====

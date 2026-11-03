@@ -40,14 +40,42 @@ impl Lang {
 
 /// The editable command fields, in the order the editor shows them: (key, label, help).
 pub const FIELDS: [(&str, &str, &str); 8] = [
-    ("launch", "Launch", "Starts the program. Run uses it as is; Version and Smoke add --version / --smoke FILE after it."),
+    (
+        "launch",
+        "Launch",
+        "Starts the program. Run uses it as is; Version and Smoke add --version / --smoke FILE after it.",
+    ),
     ("test", "Test", "Runs the program's tests (Test, Test all, live tests)."),
-    ("build", "Build", "Builds the program (Build button). Leave empty when there is nothing to build."),
-    ("desktop_build", "Desktop build", "Steps the Desktop shortcuts button runs before placing the shortcut, separated by &&."),
-    ("desktop_run", "Desktop run", "What the desktop shortcut starts: an exe relative to the project folder, or \"pythonw <args>\"."),
-    ("production", "Production", "Serves the live site (live-production view, Start). Leave empty for a program with no site."),
-    ("production_url", "Production URL", "Where the live site answers, such as http://127.0.0.1:8722 or a deployed https:// address."),
-    ("production_checks", "Production checks", "What live-production checks: METHOD /path STATUS, separated by commas, such as GET / 200, POST /about 405."),
+    (
+        "build",
+        "Build",
+        "Builds the program (Build button). Leave empty when there is nothing to build.",
+    ),
+    (
+        "desktop_build",
+        "Desktop build",
+        "Steps the Desktop shortcuts button runs before placing the shortcut, separated by &&.",
+    ),
+    (
+        "desktop_run",
+        "Desktop run",
+        "What the desktop shortcut starts: an exe relative to the project folder, or \"pythonw <args>\".",
+    ),
+    (
+        "production",
+        "Production",
+        "Serves the live site (live-production view, Start). Leave empty for a program with no site.",
+    ),
+    (
+        "production_url",
+        "Production URL",
+        "Where the live site answers, such as http://127.0.0.1:8722 or a deployed https:// address.",
+    ),
+    (
+        "production_checks",
+        "Production checks",
+        "What live-production checks: METHOD /path STATUS, separated by commas, such as GET / 200, POST /about 405.",
+    ),
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,7 +135,11 @@ impl Program {
 pub fn load(ini: &Ini) -> (Vec<Program>, Vec<String>) {
     let mut out = vec![];
     let mut warnings = vec![];
-    let order = ini.get("programs").and_then(|s| s.get("order")).cloned().unwrap_or_default();
+    let order = ini
+        .get("programs")
+        .and_then(|s| s.get("order"))
+        .cloned()
+        .unwrap_or_default();
     for key in order.split(',').map(str::trim).filter(|k| !k.is_empty()) {
         let Some(s) = ini.get(key) else {
             warnings.push(format!("programs.ini: no [{key}] section"));
@@ -124,7 +156,11 @@ pub fn load(ini: &Ini) -> (Vec<Program>, Vec<String>) {
         }
         out.push(Program {
             key: key.to_string(),
-            name: if get("name").is_empty() { key.to_string() } else { get("name") },
+            name: if get("name").is_empty() {
+                key.to_string()
+            } else {
+                get("name")
+            },
             dir: get("dir"),
             lang,
             launch: get("launch"),
@@ -135,7 +171,11 @@ pub fn load(ini: &Ini) -> (Vec<Program>, Vec<String>) {
             production: get("production"),
             production_url: get("production_url"),
             production_checks: get("production_checks"),
-            version_files: get("version_files").split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect(),
+            version_files: get("version_files")
+                .split(',')
+                .map(|f| f.trim().to_string())
+                .filter(|f| !f.is_empty())
+                .collect(),
         });
     }
     (out, warnings)
@@ -151,7 +191,13 @@ pub fn render(programs: &[Program]) -> String {
     let order: Vec<&str> = programs.iter().map(|p| p.key.as_str()).collect();
     s += &format!("[programs]\norder = {}\n", order.join(", "));
     for p in programs {
-        s += &format!("\n[{}]\nname = {}\ndir = {}\nlang = {}\n", p.key, p.name, p.dir, p.lang.label());
+        s += &format!(
+            "\n[{}]\nname = {}\ndir = {}\nlang = {}\n",
+            p.key,
+            p.name,
+            p.dir,
+            p.lang.label()
+        );
         for (k, _, _) in FIELDS {
             s += &format!("{k} = {}\n", p.field(k));
         }
@@ -222,7 +268,9 @@ impl Action {
             Action::Test => "Run the program's tests.",
             Action::Run => "Start the program from source.",
             Action::Version => "Start the program with --version and show what it prints.",
-            Action::Smoke => "Open the program with --smoke: it opens its window, writes a JSON report and closes. The report is added to the log.",
+            Action::Smoke => {
+                "Open the program with --smoke: it opens its window, writes a JSON report and closes. The report is added to the log."
+            }
         }
     }
 }
@@ -237,7 +285,11 @@ pub struct Cmd {
 impl Cmd {
     pub fn new(words: Vec<String>, cwd: PathBuf) -> Option<Cmd> {
         let (program, args) = words.split_first()?;
-        Some(Cmd { program: program.clone(), args: args.to_vec(), cwd })
+        Some(Cmd {
+            program: program.clone(),
+            args: args.to_vec(),
+            cwd,
+        })
     }
 }
 
@@ -259,7 +311,10 @@ pub fn command(p: &Program, action: Action, root: &Path, smoke: &Path) -> Option
 
 /// The portfolio root: the first folder at or above `start` that holds RULES.md.
 pub fn find_root(start: &Path) -> Option<PathBuf> {
-    start.ancestors().find(|d| d.join("RULES.md").is_file()).map(Path::to_path_buf)
+    start
+        .ancestors()
+        .find(|d| d.join("RULES.md").is_file())
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -292,14 +347,20 @@ mod tests {
 
     #[test]
     fn split_args_keeps_quoted_words() {
-        assert_eq!(split_args(r#"go build -ldflags "-H windowsgui" -o x.exe ."#), ["go", "build", "-ldflags", "-H windowsgui", "-o", "x.exe", "."]);
+        assert_eq!(
+            split_args(r#"go build -ldflags "-H windowsgui" -o x.exe ."#),
+            ["go", "build", "-ldflags", "-H windowsgui", "-o", "x.exe", "."]
+        );
         assert_eq!(split_args(r#"  a   "" b "#), ["a", "", "b"]);
         assert!(split_args("   ").is_empty());
     }
 
     #[test]
     fn steps_split_on_and() {
-        assert_eq!(steps("a b && c && "), vec![vec!["a".to_string(), "b".into()], vec!["c".to_string()]]);
+        assert_eq!(
+            steps("a b && c && "),
+            vec![vec!["a".to_string(), "b".into()], vec!["c".to_string()]]
+        );
     }
 
     #[test]
@@ -312,7 +373,9 @@ mod tests {
 
     #[test]
     fn load_reports_bad_sections() {
-        let (ps, w) = load(&parse("[programs]\norder = a, b, c\n[a]\nlang = Cobol\n[b]\nlang = Go\n"));
+        let (ps, w) = load(&parse(
+            "[programs]\norder = a, b, c\n[a]\nlang = Cobol\n[b]\nlang = Go\n",
+        ));
         assert!(ps.is_empty());
         assert_eq!(w.len(), 3);
     }
@@ -326,7 +389,13 @@ mod tests {
     #[test]
     fn version_appends_flag_after_launch() {
         let ps = defaults();
-        let c = command(&by_name(&ps, "Data Dash"), Action::Version, Path::new("R"), Path::new("s")).unwrap();
+        let c = command(
+            &by_name(&ps, "Data Dash"),
+            Action::Version,
+            Path::new("R"),
+            Path::new("s"),
+        )
+        .unwrap();
         assert_eq!(c.program, "cargo");
         assert_eq!(c.args.last().unwrap(), "--version");
         assert_eq!(c.args[c.args.len() - 2], "--");
@@ -336,7 +405,13 @@ mod tests {
     #[test]
     fn smoke_passes_report_path() {
         let ps = defaults();
-        let c = command(&by_name(&ps, "Notify Hub"), Action::Smoke, Path::new("R"), Path::new("rep.json")).unwrap();
+        let c = command(
+            &by_name(&ps, "Notify Hub"),
+            Action::Smoke,
+            Path::new("R"),
+            Path::new("rep.json"),
+        )
+        .unwrap();
         assert_eq!(&c.args[c.args.len() - 2..], ["--smoke", "rep.json"]);
     }
 
@@ -353,7 +428,11 @@ mod tests {
         let j = by_name(&ps, "Journal");
         assert!(j.has_production());
         assert!(j.production.contains("-public"), "{}", j.production);
-        assert!(j.production_url.starts_with("http://127.0.0.1:"), "{}", j.production_url);
+        assert!(
+            j.production_url.starts_with("http://127.0.0.1:"),
+            "{}",
+            j.production_url
+        );
         assert!(crate::production::parse_checks(&j.production_checks).unwrap().len() >= 5);
         assert!(!by_name(&ps, "Data Dash").has_production());
     }
@@ -369,4 +448,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=193e5904b52218d8f8d59f31cf62ceba3ddff74ddb5853f58404ea94080158ac ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=e53b1085d91e9e37c8ecde87ede5deba14fe27e394accaabdc84be0cd1d54213 ====

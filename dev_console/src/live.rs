@@ -20,7 +20,10 @@ pub fn newest(dir: &Path, skip: &[String]) -> Option<SystemTime> {
         for e in entries.flatten() {
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                if !skip.iter().any(|s| e.file_name().to_string_lossy().eq_ignore_ascii_case(s)) {
+                if !skip
+                    .iter()
+                    .any(|s| e.file_name().to_string_lossy().eq_ignore_ascii_case(s))
+                {
                     stack.push(e.path());
                 }
             } else if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
@@ -82,4 +85,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=51a7bb68ab446d906b6ef1e6f51f3aea41b9042eb46e778a2e01aa1cebaf9ef2 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=5dccf6b16072039c39c6e797d65109dcbbabbe16c2707942d0b3a8832403019d ====

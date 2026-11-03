@@ -16,7 +16,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Headers every page of a public site should send.
-pub const HEADERS: [&str; 4] = ["Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy"];
+pub const HEADERS: [&str; 4] = [
+    "Content-Security-Policy",
+    "X-Frame-Options",
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+];
 
 const METHODS: [&str; 7] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
@@ -53,10 +58,18 @@ pub fn parse_checks(text: &str) -> Result<Vec<Check>, String> {
         let Some(want) = status.parse::<u16>().ok().filter(|c| (100..600).contains(c)) else {
             return Err(format!("'{item}': {status} is not an HTTP status"));
         };
-        out.push(Check { method, path: path.to_string(), want });
+        out.push(Check {
+            method,
+            path: path.to_string(),
+            want,
+        });
     }
     if out.is_empty() {
-        out.push(Check { method: "GET".into(), path: "/".into(), want: 200 });
+        out.push(Check {
+            method: "GET".into(),
+            path: "/".into(),
+            want: 200,
+        });
     }
     Ok(out)
 }
@@ -71,7 +84,10 @@ pub struct Response {
 
 impl Response {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -92,8 +108,15 @@ pub fn parse_response(raw: &str) -> Option<Response> {
             rest = body;
             continue;
         }
-        let headers = lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).collect();
-        return Some(Response { status, headers, body: body.to_string() });
+        let headers = lines
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect();
+        return Some(Response {
+            status,
+            headers,
+            body: body.to_string(),
+        });
     }
 }
 
@@ -111,7 +134,10 @@ pub fn probe(base: &str, method: &str, path: &str, timeout: Duration) -> Result<
             c.args(["-X", method, "-d", ""]);
         }
     }
-    c.arg(&url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -122,9 +148,15 @@ pub fn probe(base: &str, method: &str, path: &str, timeout: Duration) -> Result<
     let ms = started.elapsed().as_millis();
     if !out.status.success() {
         let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if why.is_empty() { format!("curl exited with code {}", out.status.code().unwrap_or(-1)) } else { why });
+        return Err(if why.is_empty() {
+            format!("curl exited with code {}", out.status.code().unwrap_or(-1))
+        } else {
+            why
+        });
     }
-    parse_response(&String::from_utf8_lossy(&out.stdout)).map(|r| (r, ms)).ok_or_else(|| "no HTTP answer".to_string())
+    parse_response(&String::from_utf8_lossy(&out.stdout))
+        .map(|r| (r, ms))
+        .ok_or_else(|| "no HTTP answer".to_string())
 }
 
 /// One row of the checks grid.
@@ -138,8 +170,10 @@ pub struct Outcome {
 
 /// Run every check against `base`, then judge the answers.
 pub fn run(base: &str, checks: &[Check], leaks: &[String], timeout: Duration) -> Vec<Outcome> {
-    let answers: Vec<(Check, Result<(Response, u128), String>)> =
-        checks.iter().map(|c| (c.clone(), probe(base, &c.method, &c.path, timeout))).collect();
+    let answers: Vec<(Check, Result<(Response, u128), String>)> = checks
+        .iter()
+        .map(|c| (c.clone(), probe(base, &c.method, &c.path, timeout)))
+        .collect();
     judge(&answers, leaks)
 }
 
@@ -152,11 +186,25 @@ pub fn judge(answers: &[(Check, Result<(Response, u128), String>)], leaks: &[Str
         match a {
             Ok((r, ms)) => {
                 let ok = r.status == c.want;
-                let detail = if ok { r.status.to_string() } else { format!("{} (want {})", r.status, c.want) };
-                out.push(Outcome { label: c.label(), ok, detail, ms: Some(*ms) });
+                let detail = if ok {
+                    r.status.to_string()
+                } else {
+                    format!("{} (want {})", r.status, c.want)
+                };
+                out.push(Outcome {
+                    label: c.label(),
+                    ok,
+                    detail,
+                    ms: Some(*ms),
+                });
                 answered.push((c, r));
             }
-            Err(e) => out.push(Outcome { label: c.label(), ok: false, detail: e.clone(), ms: None }),
+            Err(e) => out.push(Outcome {
+                label: c.label(),
+                ok: false,
+                detail: e.clone(),
+                ms: None,
+            }),
         }
     }
     let pages: Vec<&(&Check, &Response)> = answered.iter().filter(|(_, r)| r.status == 200).collect();
@@ -169,8 +217,17 @@ pub fn judge(answers: &[(Check, Result<(Response, u128), String>)], leaks: &[Str
                 }
             }
         }
-        let detail = if missing.is_empty() { format!("all {} on {} page(s)", HEADERS.len(), pages.len()) } else { format!("missing {}", missing.join(", ")) };
-        out.push(Outcome { label: "Security headers".into(), ok: missing.is_empty(), detail, ms: None });
+        let detail = if missing.is_empty() {
+            format!("all {} on {} page(s)", HEADERS.len(), pages.len())
+        } else {
+            format!("missing {}", missing.join(", "))
+        };
+        out.push(Outcome {
+            label: "Security headers".into(),
+            ok: missing.is_empty(),
+            detail,
+            ms: None,
+        });
     }
     if !answered.is_empty() {
         let mut found = vec![];
@@ -182,8 +239,17 @@ pub fn judge(answers: &[(Check, Result<(Response, u128), String>)], leaks: &[Str
                 }
             }
         }
-        let detail = if found.is_empty() { format!("{} answer(s) read", answered.len()) } else { found.join(", ") };
-        out.push(Outcome { label: "No local paths".into(), ok: found.is_empty(), detail, ms: None });
+        let detail = if found.is_empty() {
+            format!("{} answer(s) read", answered.len())
+        } else {
+            found.join(", ")
+        };
+        out.push(Outcome {
+            label: "No local paths".into(),
+            ok: found.is_empty(),
+            detail,
+            ms: None,
+        });
     }
     out
 }
@@ -223,7 +289,9 @@ pub fn host_port(url: &str) -> Option<String> {
 
 /// Whether something accepts connections on `addr` now.
 pub fn answers(addr: &str, timeout: Duration) -> bool {
-    addr.to_socket_addrs().map(|mut a| a.any(|sa| TcpStream::connect_timeout(&sa, timeout).is_ok())).unwrap_or(false)
+    addr.to_socket_addrs()
+        .map(|mut a| a.any(|sa| TcpStream::connect_timeout(&sa, timeout).is_ok()))
+        .unwrap_or(false)
 }
 
 /// Wait until `addr` accepts connections (true), the time is up, or `alive` turns false (the server ended).
@@ -245,7 +313,11 @@ mod tests {
     use std::net::TcpListener;
 
     fn answer(status: u16, headers: &[(&str, &str)], body: &str) -> Response {
-        Response { status, headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), body: body.into() }
+        Response {
+            status,
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: body.into(),
+        }
     }
 
     fn secure() -> Vec<(&'static str, &'static str)> {
@@ -256,8 +328,22 @@ mod tests {
     fn checks_parse_and_refuse() {
         let c = parse_checks("GET / 200, post /about 405,, GET /api/health 404").unwrap();
         assert_eq!(c.len(), 3);
-        assert_eq!(c[1], Check { method: "POST".into(), path: "/about".into(), want: 405 });
-        assert_eq!(parse_checks("").unwrap(), [Check { method: "GET".into(), path: "/".into(), want: 200 }]);
+        assert_eq!(
+            c[1],
+            Check {
+                method: "POST".into(),
+                path: "/about".into(),
+                want: 405
+            }
+        );
+        assert_eq!(
+            parse_checks("").unwrap(),
+            [Check {
+                method: "GET".into(),
+                path: "/".into(),
+                want: 200
+            }]
+        );
         for bad in ["GET / abc", "FETCH / 200", "GET about 200", "GET /", "GET / 999"] {
             assert!(parse_checks(bad).is_err(), "{bad}");
         }
@@ -265,11 +351,13 @@ mod tests {
 
     #[test]
     fn responses_parse() {
-        let r = parse_response("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nX-Frame-Options: DENY\r\n\r\n<p>hi</p>").unwrap();
+        let r = parse_response("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nX-Frame-Options: DENY\r\n\r\n<p>hi</p>")
+            .unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(r.header("x-frame-options"), Some("DENY"));
         assert_eq!(r.body, "<p>hi</p>");
-        let r = parse_response("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\nno").unwrap();
+        let r = parse_response("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\nno")
+            .unwrap();
         assert_eq!((r.status, r.header("Allow"), r.body.as_str()), (405, Some("GET"), "no"));
         assert_eq!(parse_response("HTTP/2 204\r\n\r\n").unwrap().status, 204);
         assert!(parse_response("garbage").is_none());
@@ -277,11 +365,25 @@ mod tests {
 
     #[test]
     fn judge_names_what_is_wrong() {
-        let check = |m: &str, p: &str, w: u16| Check { method: m.into(), path: p.into(), want: w };
+        let check = |m: &str, p: &str, w: u16| Check {
+            method: m.into(),
+            path: p.into(),
+            want: w,
+        };
         let leaks = leak_patterns(&[PathBuf::from(r"C:\Users\someone")]);
         let answers = vec![
             (check("GET", "/", 200), Ok((answer(200, &secure(), "fine"), 5))),
-            (check("GET", "/about", 200), Ok((answer(200, &[("X-Frame-Options", "DENY")], r#"{"db":"C:\\Users\\someone\\x.db"}"#), 3))),
+            (
+                check("GET", "/about", 200),
+                Ok((
+                    answer(
+                        200,
+                        &[("X-Frame-Options", "DENY")],
+                        r#"{"db":"C:\\Users\\someone\\x.db"}"#,
+                    ),
+                    3,
+                )),
+            ),
             (check("GET", "/api/health", 404), Ok((answer(200, &secure(), ""), 2))),
             (check("POST", "/about", 405), Err("connection refused".into())),
         ];
@@ -291,7 +393,11 @@ mod tests {
         assert_eq!(row("GET /api/health").detail, "200 (want 404)");
         assert_eq!(row("POST /about").detail, "connection refused");
         let h = row("Security headers");
-        assert!(!h.ok && h.detail.contains("Content-Security-Policy on /about") && !h.detail.contains("X-Frame-Options"), "{}", h.detail);
+        assert!(
+            !h.ok && h.detail.contains("Content-Security-Policy on /about") && !h.detail.contains("X-Frame-Options"),
+            "{}",
+            h.detail
+        );
         let l = row("No local paths");
         assert!(!l.ok && l.detail.contains("/about"), "{}", l.detail);
     }
@@ -305,7 +411,10 @@ mod tests {
     #[test]
     fn host_port_fills_in_the_port() {
         assert_eq!(host_port("http://127.0.0.1:8722/x").as_deref(), Some("127.0.0.1:8722"));
-        assert_eq!(host_port("https://journal.example.com").as_deref(), Some("journal.example.com:443"));
+        assert_eq!(
+            host_port("https://journal.example.com").as_deref(),
+            Some("journal.example.com:443")
+        );
         assert_eq!(host_port("http://localhost").as_deref(), Some("localhost:80"));
         assert_eq!(host_port("http://[::1]:9000/").as_deref(), Some("[::1]:9000"));
         assert_eq!(host_port("ftp://x"), None);
@@ -334,7 +443,11 @@ mod tests {
     }
 
     fn curl_missing() -> bool {
-        Command::new("curl.exe").arg("--version").stdout(Stdio::null()).status().is_err()
+        Command::new("curl.exe")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .status()
+            .is_err()
     }
 
     #[test]
@@ -342,7 +455,10 @@ mod tests {
         if curl_missing() {
             return;
         }
-        let base = serve("HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno", 1);
+        let base = serve(
+            "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno",
+            1,
+        );
         let (r, _) = probe(&base, "POST", "/about", Duration::from_secs(5)).unwrap();
         assert_eq!((r.status, r.header("allow"), r.body.as_str()), (405, Some("GET"), "no"));
     }
@@ -367,11 +483,18 @@ mod tests {
         let j = programs.iter().find(|p| p.name == "Journal").unwrap();
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
-        let words: Vec<String> =
-            crate::registry::split_args(&j.production).into_iter().map(|w| if w.starts_with("127.0.0.1:") { addr.clone() } else { w }).collect();
+        let words: Vec<String> = crate::registry::split_args(&j.production)
+            .into_iter()
+            .map(|w| if w.starts_with("127.0.0.1:") { addr.clone() } else { w })
+            .collect();
         assert!(words.contains(&addr), "{words:?}");
         let (tx, rx) = std::sync::mpsc::channel();
-        jobs::spawn(0, crate::registry::Cmd::new(words, root.join(&j.dir)).unwrap(), tx, || {});
+        jobs::spawn(
+            0,
+            crate::registry::Cmd::new(words, root.join(&j.dir)).unwrap(),
+            tx,
+            || {},
+        );
         let pid = loop {
             match rx.recv().unwrap() {
                 Event::Started(0, pid) => break pid,
@@ -379,21 +502,38 @@ mod tests {
                 _ => {}
             }
         };
-        assert!(wait_for(&addr, Duration::from_secs(180), &AtomicBool::new(true)), "the Journal never answered on {addr}");
-        let leaks = leak_patterns(&[std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap(), root.clone()]);
-        let out = run(&format!("http://{addr}"), &parse_checks(&j.production_checks).unwrap(), &leaks, Duration::from_secs(10));
+        assert!(
+            wait_for(&addr, Duration::from_secs(180), &AtomicBool::new(true)),
+            "the Journal never answered on {addr}"
+        );
+        let leaks = leak_patterns(&[
+            std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap(),
+            root.clone(),
+        ]);
+        let out = run(
+            &format!("http://{addr}"),
+            &parse_checks(&j.production_checks).unwrap(),
+            &leaks,
+            Duration::from_secs(10),
+        );
         jobs::stop(pid).unwrap();
         let done = loop {
-            if let Event::Done(0, s) = rx.recv_timeout(Duration::from_secs(20)).expect("the job did not end after stop") {
+            if let Event::Done(0, s) = rx
+                .recv_timeout(Duration::from_secs(20))
+                .expect("the job did not end after stop")
+            {
                 break s;
             }
         };
         assert_ne!(done, Status::Running);
-        assert!(!answers(&addr, Duration::from_millis(500)), "something still answers on {addr} after stop");
+        assert!(
+            !answers(&addr, Duration::from_millis(500)),
+            "something still answers on {addr} after stop"
+        );
         let failed: Vec<&Outcome> = out.iter().filter(|o| !o.ok).collect();
         assert!(failed.is_empty(), "{failed:#?}");
         assert!(out.len() >= 7, "{out:#?}");
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=984454a32948ca0d58e07d8abe72b942207eec1e5e2aeaaa07869f3137e7708c ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=55a838ed616a59dfd4106bf341953a2dd0299d00783b1268d57c049016c46723 ====

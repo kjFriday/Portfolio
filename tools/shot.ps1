@@ -1,14 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/shot.ps1
-# About: ==== Generic Company Inc. portfolio ===============================================...
-# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
-# You may change this file under the AGPL-3.0. The stamp at the end marks
-# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
-# ========================================================================
-
-# ==== Generic Company Inc. portfolio ===============================================
-# Project: portfolio | File: tools/shot.ps1
-# About: Screenshot one Generic Company window for checking icons and titles by eye: tools\shot.ps1 -Title...
+# About: Screenshot one Generic Company window for checking icons and titles by eye...
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
@@ -45,4 +37,4 @@ $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.D
 "{0} '{1}' -> {2}" -f $win.ProcessName, $win.MainWindowTitle, $Out
 Stop-Process -Id $win.Id -ErrorAction SilentlyContinue; Stop-Process $p -ErrorAction SilentlyContinue
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=793cba249f96fe07cd159b36e405cb7b8096c2c2aa7257185a9850cb5095d4fc ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=50ee0ccd195f36ab70684df0bfc900182531c3587dbd410d6b3015628a13d724 ====

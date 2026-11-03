@@ -18,32 +18,59 @@ Written to be easy to port to another language:
 
 Records
   Result     {"ok": bool, "error": str, "value": any}
-  FileInfo   {"path": str, "size": int, "modified": float}
-  Walk       {"files": [FileInfo], "empty_dirs": [str], "errors": [str], "dir_count": int}
-  ScanReport {"root": str, "file_count": int, "dir_count": int, "total_bytes": int,
+  FileInfo   {"path": str, "size": int, "disk": int, "modified": float, "link": str or None}
+              size: the file's size; disk: the space it takes on disk (see disk_from_listing), 0 for a
+              second name of a hard-linked file counted under another name; link: "volume:file id" for
+              a file with more than one name (hard links), "" for a file with one, None when not known
+              (a Windows folder listing does not say; find_duplicates_in reads it where it matters)
+  Hashed     {"digest": str, "link": str or None}       link: as in FileInfo, None when not read
+  Walk       {"files": [FileInfo], "trash": [FileInfo], "empty_dirs": [str], "errors": [str],
+              "dir_count": int, "links_checked": bool}
+              trash: files in our trash folders; links_checked: the listing told which names are one file
+  ScanReport {"root": str, "file_count": int, "dir_count": int, "total_bytes": int, "file_bytes": int,
+              "saved": {"compressed": int, "no_data": int, "links": int}, "trash": [FileInfo],
+              "trash_bytes": int, "links_checked": bool,
               "drive_free": int, "drive_total": int, "by_type": {name: {"files": int, "bytes": int}},
               "largest": [FileInfo], "stale": [FileInfo], "empty_dirs": [str], "errors": [str],
               "files": [FileInfo]}
+              Bytes are space on disk (total_bytes, by_type, trash_bytes); file_bytes adds up the file
+              sizes, and saved says where the two differ (see disk_summary)
+  Duplicates {"groups": [[FileInfo]], "linked": [FileInfo]}
+              linked: names found to be hard links while comparing (a Windows listing does not say),
+              with their link; all but the first name of each file take no space (disk 0)
   Move       {"source": str, "target": str}             target "" removes an empty folder
   Copy       {"source": str, "target": str, "size": int}
   Share      {"name": str, "unc": str, "letter": str}
   ShareState {"reachable": bool, "total": int, "used": int, "free": int, "error": str}
-  Node       {"name": str, "path": str, "bytes": int, "files": int, "wasted": int, "children": {name: Node},
-              "file_list": [FileInfo], "folder_list": [Node], "item_files": int, "wasted_paths": {path: True}}
-              file_list: files directly in it that take space, folder_list: subfolders that take space,
-              both biggest first; item_files: files in those slices (empty files directly in it are not)
-  Arc        {"path": str, "name": str, "kind": "folder"|"file"|"rest", "depth": int, "start": float,
-              "extent": float, "bytes": int, "files": int, "wasted": int, "branch": int, "modified": float}
+  Node       {"name": str, "path": str, "kind": "folder"|"trash", "bytes": int, "files": int, "trash": int,
+              "wasted": int, "children": {name: Node}, "file_list": [FileInfo], "folder_list": [Node],
+              "item_files": int, "wasted_paths": {path: int}}
+              bytes: space on disk; trash: the part of it in trash folders; a "trash" Node is one of our
+              trash folders, shown as one slice (no children, no file_list); file_list: files directly in
+              it that take space, folder_list: subfolders that take space, both biggest first; item_files:
+              files in those slices (files taking no space directly in it are not); wasted_paths: the
+              extra duplicate copies directly in it and the bytes each would free
+  Arc        {"path": str, "name": str, "kind": "folder"|"file"|"trash"|"rest", "depth": int, "start": float,
+              "extent": float, "bytes": int, "size": int, "files": int, "wasted": int, "trash": int,
+              "branch": int, "modified": float}
+              bytes: space on disk; size: a file's size (0 for the other kinds)
 
 Progress
   Long functions take progress(text, done, total, unit), or None. unit is "files", "bytes" or
   "items"; total 0 means not known yet. It is called from the worker thread.
 
 Speed
-  * Folders are read once with os.scandir, which returns sizes and times with the listing
-    (on Windows without opening each file). Empty folders are found in the same pass.
+  * Folders are read once with os.scandir, which returns sizes, times and (on Windows) file
+    attributes with the listing, without opening each file. Empty folders are found in the same pass.
+  * Space on disk costs nothing more where the listing says it: cloud-only files take 0, and on
+    macOS and Linux the listing's stat has the allocated blocks and the link count. Only compressed
+    and sparse files on a local Windows drive cost one call each (GetCompressedFileSizeW, on
+    HASH_WORKERS threads); on a network share they count at their size, as a call per file would be
+    a round trip to the server.
   * Duplicates are narrowed step by step (size, then both ends of large files, then a full
-    SHA-256) and files are read on HASH_WORKERS threads at once.
+    SHA-256) and files are read on HASH_WORKERS threads at once. Which names are one file (hard links)
+    is read from the handle opened for the ends of a large file, and looked up only for files whose
+    whole contents matched: not for every file of the same size.
   * A backup lists source and target once and compares them in memory.
 
 Usage
@@ -57,6 +84,7 @@ Usage
 
 import colorsys
 import concurrent.futures
+import ctypes
 import hashlib
 import heapq
 import json
@@ -69,7 +97,7 @@ import tempfile
 import threading
 import time
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 APP_NAME = "Generic Company Storage Manager"
 APP_ID = "GenericCompany.Storage"
 ICON_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "app.ico")
@@ -87,6 +115,21 @@ MAX_ROWS = 2000               # rows a list shows; actions still apply to every 
 MAP_DEPTH = 6                 # rings the space map shows around its centre folder
 MAP_MIN_DEGREES = 0.6         # narrower slices are merged into one "smaller items" slice
 MAP_MIN_PIXELS = 4            # ... and so are slices narrower than this at the inner edge of their ring
+TRASH_COLOUR = "#8c8c8c"      # a trash folder's slice on the map, in both colour modes
+
+# Windows file attributes that change the space a file takes (the listing has them for free).
+FILE_ATTRIBUTE_SPARSE_FILE = 0x200
+FILE_ATTRIBUTE_COMPRESSED = 0x800
+FILE_ATTRIBUTE_OFFLINE = 0x1000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x40000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
+# The data is elsewhere: cloud-only placeholders (OneDrive Files On-Demand and the like), offline files.
+NOT_HERE_ATTRIBUTES = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+# The file may take less space than its size.
+SMALLER_ATTRIBUTES = FILE_ATTRIBUTE_SPARSE_FILE | FILE_ATTRIBUTE_COMPRESSED
+SPACE_ATTRIBUTES = NOT_HERE_ATTRIBUTES | SMALLER_ATTRIBUTES
+ASK_OS = -1                   # disk_from_listing: only a call per file can tell
+DRIVE_REMOTE = 4              # GetDriveTypeW: a mapped network drive
 
 # Folder name endings macOS shows as a single file (a package): opening one would launch an app or a
 # document, so such folders are shown selected in Finder instead.
@@ -191,23 +234,220 @@ def is_link_entry(entry):
     return False
 
 
+def in_trash_folder(path):
+    """True when one of the folders in path is one of our trash folders."""
+    for part in path_parts(path):
+        if is_own_folder(part):
+            return True
+    return False
+
+
+def trash_folder_of(root, path):
+    """The trash folder below root that path is in: root and its parts up to the first one named
+    TRASH_DIR_NAME (root's own trash folder when path has none)."""
+    folder = root
+    for part in path_parts(relative_path(root, path)):
+        folder = os.path.join(folder, part)
+        if is_own_folder(part):
+            return folder
+    return os.path.join(root, TRASH_DIR_NAME)
+
+
+# Windows calls: the only OS-specific pieces of the walk. Loaded on first use; None elsewhere.
+WINDOWS_API = {}
+
+
+def windows_api():
+    """kernel32 functions the core calls -> dict of ctypes functions, or None when not on Windows."""
+    if os.name != "nt":
+        return None
+    if len(WINDOWS_API) == 0:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # our own copy: argtypes stay ours
+        compressed = kernel32.GetCompressedFileSizeW
+        compressed.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong)]
+        compressed.restype = ctypes.c_ulong
+        drive_type = kernel32.GetDriveTypeW
+        drive_type.argtypes = [ctypes.c_wchar_p]
+        drive_type.restype = ctypes.c_uint
+        WINDOWS_API["drive_type"] = drive_type
+        WINDOWS_API["compressed_size"] = compressed
+    return WINDOWS_API
+
+
+def long_path(path):
+    """path in the \\\\?\\ form Windows calls take past 260 characters."""
+    if len(path) < 260 or path.startswith("\\\\?\\"):
+        return path
+    full = os.path.abspath(path)
+    if full.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + full[2:]
+    return "\\\\?\\" + full
+
+
+def is_network_path(path):
+    """True for a folder on a network share: a \\\\host\\share path or a mapped drive (Windows only;
+    elsewhere the listing already says what a file takes, so it does not matter)."""
+    api = windows_api()
+    if api is None:
+        return False
+    full = os.path.abspath(path)
+    if full.upper().startswith("\\\\?\\UNC\\"):
+        return True
+    if full.startswith("\\\\?\\"):
+        full = full[4:]
+    if full.startswith("\\\\"):
+        return True
+    drive = os.path.splitdrive(full)[0]
+    if drive == "":
+        return False
+    return api["drive_type"](drive + "\\") == DRIVE_REMOTE
+
+
+def allocated_size(path):
+    """Bytes a compressed or sparse file takes on disk -> Result(int). Windows only
+    (GetCompressedFileSizeW); it reads the file's attributes, not its data."""
+    api = windows_api()
+    if api is None:
+        return failure("not available")
+    high = ctypes.c_ulong(0)
+    low = api["compressed_size"](long_path(path), ctypes.byref(high))
+    if low == 0xFFFFFFFF:
+        code = ctypes.get_last_error()
+        if code != 0:
+            return failure("Windows error " + str(code))
+    return success(high.value * 4294967296 + low)
+
+
+def disk_from_listing(size, attributes, blocks, can_ask):
+    """Bytes a file takes on disk, from what its folder listing says -> int, or ASK_OS when only a
+    call per file can tell.
+
+    attributes are its Windows file attributes (0 elsewhere): a cloud-only or offline file has no data
+    here and takes 0; a compressed or sparse one may take less than its size (ASK_OS when can_ask, else
+    its size). blocks are the 512-byte blocks it has (macOS, Linux), or -1 where the listing does not
+    say (Windows). Never more than the file's size: the unused end of its last cluster is left out.
+    """
+    if (attributes & NOT_HERE_ATTRIBUTES) != 0:
+        return 0
+    if blocks >= 0:
+        if blocks * 512 < size:
+            return blocks * 512
+        return size
+    if (attributes & SMALLER_ATTRIBUTES) != 0 and can_ask:
+        return ASK_OS
+    return size
+
+
+def file_identity(info):
+    """A stat result's link (see FileInfo): "volume:file id" when the file has more than one name, ""
+    when it has one, None when the stat does not say (a Windows folder listing)."""
+    if info.st_nlink == 0 or info.st_ino == 0:
+        return None
+    if info.st_nlink > 1:
+        return str(info.st_dev) + ":" + str(info.st_ino)
+    return ""
+
+
+def run_on_workers(job, items, cancel_flag):
+    """job(item, cancel_flag) for every item on HASH_WORKERS threads -> list of Result, in item order.
+    Port with any thread pool or parallel-for."""
+    results = []
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=HASH_WORKERS)
+    try:
+        jobs = []
+        for item in items:
+            jobs.append(pool.submit(job, item, cancel_flag))
+        for running in jobs:
+            results.append(running.result())
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    return results
+
+
+def disk_job(record, cancel_flag):
+    if is_cancelled(cancel_flag):
+        return failure("cancelled")
+    return allocated_size(record["path"])
+
+
+def read_disk_sizes(records, cancel_flag):
+    """Ask the OS what each record (FileInfo) takes on disk and store it as its disk; a file the OS says
+    nothing about counts at its size."""
+    results = run_on_workers(disk_job, records, cancel_flag)
+    index = 0
+    while index < len(records):
+        record = records[index]
+        record["disk"] = record["size"]
+        if results[index]["ok"] and results[index]["value"] < record["size"]:
+            record["disk"] = results[index]["value"]
+        index = index + 1
+
+
+def name_order(info):
+    """Sort key: names outside our trash folders first, then by path."""
+    if in_trash_folder(info["path"]):
+        return "1" + info["path"]
+    return "0" + info["path"]
+
+
+def extra_names(records):
+    """For each file seen under several names (records with the same link), every name but the first in
+    name_order: the names whose space is already counted under that first one. -> dict path -> True"""
+    by_link = {}
+    for info in records:
+        link = info["link"]
+        if link is None or link == "":
+            continue
+        if link not in by_link:
+            by_link[link] = []
+        by_link[link].append(info)
+    extra = {}
+    for link in by_link:
+        names = by_link[link]
+        if len(names) < 2:
+            continue
+        names.sort(key=name_order)
+        index = 1
+        while index < len(names):
+            extra[names[index]["path"]] = True
+            index = index + 1
+    return extra
+
+
 def walk_tree(root, cancel_flag, progress):
     """Read every folder under root once -> Result(Walk).
 
-    Our trash folder and undo log are skipped. A folder is empty when it holds no files, links
-    or unreadable entries, and every folder inside it is empty too.
+    Files in our trash folders (any folder named TRASH_DIR_NAME) are listed apart, in trash: they still
+    take space, but are not offered for cleaning again. The undo log is skipped. A folder is empty when
+    it holds no files, links or unreadable entries, and every folder inside it is empty too.
+
+    Each file's space on disk comes from the listing (see disk_from_listing). Compressed and sparse files
+    on a local Windows drive are asked about once the folders are read, on HASH_WORKERS threads. Where
+    the listing tells which names are one file (macOS, Linux), a hard-linked file's space is counted
+    under one name; on Windows find_duplicates_in finds them.
     """
     files = []
+    trash = []
     errors = []
+    to_ask = []             # records whose space on disk the OS is asked for after the walk
+    linked = []             # records of files the listing says have more than one name
+    windows = os.name == "nt"
+    can_ask = windows and not is_network_path(root)
+    listed = 0
     dir_paths = [root]      # every folder seen; index 0 is root
     dir_parent = [-1]       # index of each folder's parent
     has_content = [False]   # folder holds something other than folders
+    in_trash = [False]      # folder is one of our trash folders or inside one
+    dir_count = 1           # folders outside the trash
     pending = [0]
     while len(pending) > 0:
         if is_cancelled(cancel_flag):
             return failure("cancelled")
         index = pending.pop()
         folder = dir_paths[index]
+        found = files
+        if in_trash[index]:
+            found = trash
         try:
             iterator = os.scandir(folder)
         except OSError as e:
@@ -221,12 +461,15 @@ def walk_tree(root, cancel_flag, progress):
                         has_content[index] = True
                         continue
                     if entry.is_dir(follow_symlinks=False):
-                        if is_own_folder(entry.name):
+                        trashed = in_trash[index] or is_own_folder(entry.name)
+                        if trashed:
                             has_content[index] = True
-                            continue
+                        else:
+                            dir_count = dir_count + 1
                         dir_paths.append(entry.path)
                         dir_parent.append(index)
                         has_content.append(False)
+                        in_trash.append(trashed)
                         pending.append(len(dir_paths) - 1)
                         continue
                     has_content[index] = True
@@ -237,26 +480,52 @@ def walk_tree(root, cancel_flag, progress):
                     errors.append(entry.path + ": " + error_text(e))
                     has_content[index] = True
                     continue
-                files.append({"path": entry.path, "size": info.st_size, "modified": info.st_mtime})
-                if len(files) % PROGRESS_EVERY == 0:
-                    report_progress(progress, "Reading folders", len(files), 0, "files")
+                size = info.st_size
+                record = {"path": entry.path, "size": size, "disk": size, "modified": info.st_mtime, "link": None}
+                if windows:
+                    attributes = info.st_file_attributes
+                    if (attributes & SPACE_ATTRIBUTES) != 0:
+                        record["disk"] = disk_from_listing(size, attributes, -1, can_ask)
+                        if record["disk"] == ASK_OS:
+                            to_ask.append(record)
+                else:
+                    record["disk"] = disk_from_listing(size, 0, info.st_blocks, False)
+                    record["link"] = file_identity(info)
+                    if record["link"] is not None and record["link"] != "":
+                        linked.append(record)
+                found.append(record)
+                listed = listed + 1
+                if listed % PROGRESS_EVERY == 0:
+                    report_progress(progress, "Reading folders", listed, 0, "files")
         except OSError as e:
             errors.append(folder + ": " + error_text(e))
             has_content[index] = True
         finally:
             iterator.close()
+    if len(to_ask) > 0:
+        report_progress(progress, "Reading the space compressed files take", 0, len(to_ask), "files")
+        read_disk_sizes(to_ask, cancel_flag)
+        if is_cancelled(cancel_flag):
+            return failure("cancelled")
+    extra = extra_names(linked)
+    for record in linked:
+        if record["path"] in extra:
+            record["disk"] = 0
     # Children always come after their parent, so walking backwards settles each folder
     # before its parent, and the list comes out deepest first (the order they can be removed in).
+    # Nothing in the trash is listed: the trash folder itself counts as content of its parent.
     nonempty = list(has_content)
     empty_dirs = []
     index = len(dir_paths) - 1
     while index > 0:
-        if nonempty[index]:
-            nonempty[dir_parent[index]] = True
-        else:
-            empty_dirs.append(dir_paths[index])
+        if not in_trash[index]:
+            if nonempty[index]:
+                nonempty[dir_parent[index]] = True
+            else:
+                empty_dirs.append(dir_paths[index])
         index = index - 1
-    return success({"files": files, "empty_dirs": empty_dirs, "errors": errors, "dir_count": len(dir_paths)})
+    return success({"files": files, "trash": trash, "empty_dirs": empty_dirs, "errors": errors,
+                    "dir_count": dir_count, "links_checked": not windows})
 
 
 def find_empty_dirs(root):
@@ -271,26 +540,59 @@ def file_size(info):
     return info["size"]
 
 
+def file_disk(info):
+    return info["disk"]
+
+
 def file_path(info):
     return info["path"]
 
 
-def sort_by_size_desc(files):
+def sort_by_disk_desc(files):
     result = list(files)
-    result.sort(key=file_size, reverse=True)
+    result.sort(key=file_disk, reverse=True)
     return result
 
 
-def total_size(files):
+def total_disk(files):
+    """Space the files take on disk."""
     total = 0
     for info in files:
-        total = total + info["size"]
+        total = total + info["disk"]
     return total
 
 
+def disk_summary(files):
+    """Space on disk and how it differs from the files' sizes, in one pass -> {"disk_bytes": space on
+    disk, "file_bytes": sizes added up, "compressed": bytes compressed and sparse files save, "no_data":
+    sizes of files with no data on this disk (cloud-only, or sparse or compressed down to nothing),
+    "links": sizes of second names of hard-linked files, counted once}."""
+    disk_bytes = 0
+    file_bytes = 0
+    compressed = 0
+    no_data = 0
+    links = 0
+    for info in files:
+        size = info["size"]
+        disk = info["disk"]
+        disk_bytes = disk_bytes + disk
+        file_bytes = file_bytes + size
+        if disk >= size:
+            continue
+        if disk > 0:
+            compressed = compressed + size - disk
+        elif info["link"] is not None and info["link"] != "":
+            links = links + size
+        else:
+            no_data = no_data + size
+    return {"disk_bytes": disk_bytes, "file_bytes": file_bytes, "compressed": compressed, "no_data": no_data,
+            "links": links}
+
+
 def largest_files(files, count):
-    """The count biggest files, biggest first (a partial sort: port as a top-N / priority queue)."""
-    return heapq.nlargest(count, files, key=file_size)
+    """The count files that take the most space, biggest first (a partial sort: port as a top-N /
+    priority queue)."""
+    return heapq.nlargest(count, files, key=file_disk)
 
 
 def stale_files(files, days, now):
@@ -300,19 +602,19 @@ def stale_files(files, days, now):
     for info in files:
         if info["modified"] < cutoff:
             stale.append(info)
-    stale.sort(key=file_size, reverse=True)
+    stale.sort(key=file_disk, reverse=True)
     return stale
 
 
 def summarize_types(files):
-    """File count and bytes per type folder (Images, Video, ... Other)."""
+    """File count and bytes on disk per type folder (Images, Video, ... Other)."""
     by_type = {}
     for info in files:
         kind = type_folder_for(info["path"])
         if kind not in by_type:
             by_type[kind] = {"files": 0, "bytes": 0}
         by_type[kind]["files"] = by_type[kind]["files"] + 1
-        by_type[kind]["bytes"] = by_type[kind]["bytes"] + info["size"]
+        by_type[kind]["bytes"] = by_type[kind]["bytes"] + info["disk"]
     return by_type
 
 
@@ -327,12 +629,18 @@ def drive_usage(path):
 
 # ---- scan ---------------------------------------------------------------------------------------
 
-def build_report(root, files, empty_dirs, errors, dir_count, largest_count, stale_days, now):
+def build_report(root, files, trash, empty_dirs, errors, dir_count, largest_count, stale_days, now):
+    summary = disk_summary(files)
     return {
         "root": root,
         "file_count": len(files),
         "dir_count": dir_count,
-        "total_bytes": total_size(files),
+        "total_bytes": summary["disk_bytes"],
+        "file_bytes": summary["file_bytes"],
+        "saved": {"compressed": summary["compressed"], "no_data": summary["no_data"], "links": summary["links"]},
+        "trash": trash,
+        "trash_bytes": total_disk(trash),
+        "links_checked": False,
         "drive_free": 0,
         "drive_total": 0,
         "by_type": summarize_types(files),
@@ -344,6 +652,16 @@ def build_report(root, files, empty_dirs, errors, dir_count, largest_count, stal
     }
 
 
+def rebuild_report(report, files, trash, empty_dirs, dir_count, largest_count, stale_days, now):
+    """A new report of the same folder from changed lists; what was read about the drive is kept."""
+    updated = build_report(report["root"], files, trash, empty_dirs, report["errors"], dir_count,
+                           largest_count, stale_days, now)
+    updated["drive_free"] = report["drive_free"]
+    updated["drive_total"] = report["drive_total"]
+    updated["links_checked"] = report["links_checked"]
+    return updated
+
+
 def scan(root, largest_count, stale_days, now, cancel_flag, progress):
     """Summarize a folder in one pass -> Result(ScanReport)."""
     if not os.path.isdir(root):
@@ -352,8 +670,9 @@ def scan(root, largest_count, stale_days, now, cancel_flag, progress):
     if not walked["ok"]:
         return walked
     found = walked["value"]
-    report = build_report(root, found["files"], found["empty_dirs"], found["errors"], found["dir_count"],
-                          largest_count, stale_days, now)
+    report = build_report(root, found["files"], found["trash"], found["empty_dirs"], found["errors"],
+                          found["dir_count"], largest_count, stale_days, now)
+    report["links_checked"] = found["links_checked"]
     usage = drive_usage(root)
     report["drive_free"] = usage[0]
     report["drive_total"] = usage[1]
@@ -361,27 +680,47 @@ def scan(root, largest_count, stale_days, now, cancel_flag, progress):
 
 
 def remove_from_report(report, gone, largest_count, stale_days, now):
-    """The report without the paths in gone (dict path -> True), e.g. after moving them to the trash."""
+    """The report without the paths in gone (dict path -> where it went: its path in a trash folder, or
+    "" when it was removed or moved elsewhere). Files moved to a trash folder are counted there: they
+    still take the same space."""
     files = []
+    trash = list(report["trash"])
     for info in report["files"]:
         if info["path"] not in gone:
             files.append(info)
+        elif gone[info["path"]] != "":
+            trash.append({"path": gone[info["path"]], "size": info["size"], "disk": info["disk"],
+                          "modified": info["modified"], "link": info["link"]})
     empty_dirs = []
     for folder in report["empty_dirs"]:
         if folder not in gone:
             empty_dirs.append(folder)
     dir_count = report["dir_count"] - (len(report["empty_dirs"]) - len(empty_dirs))
-    updated = build_report(report["root"], files, empty_dirs, report["errors"], dir_count,
-                           largest_count, stale_days, now)
-    updated["drive_free"] = report["drive_free"]
-    updated["drive_total"] = report["drive_total"]
+    return rebuild_report(report, files, trash, empty_dirs, dir_count, largest_count, stale_days, now)
+
+
+def count_links_once(report, linked, largest_count, stale_days, now):
+    """The report with the hard links found while comparing (Duplicates linked) in place of the records
+    of those names: each such file is counted once, under its first name."""
+    replace = {}
+    for info in linked:
+        replace[info["path"]] = info
+    files = []
+    for info in report["files"]:
+        if info["path"] in replace:
+            files.append(replace[info["path"]])
+        else:
+            files.append(info)
+    updated = rebuild_report(report, files, report["trash"], report["empty_dirs"], report["dir_count"],
+                             largest_count, stale_days, now)
+    updated["links_checked"] = True
     return updated
 
 
 # ---- duplicates ---------------------------------------------------------------------------------
 
 def hash_file(path, size):
-    """SHA-256 hex of a whole file -> Result(str).
+    """SHA-256 of a whole file -> Result(Hashed), its link not read (None).
 
     A small file is read in one go with a buffer of its own size: allocating a large buffer for
     each small file costs more than reading it. The loop still finishes a file that has grown.
@@ -404,17 +743,19 @@ def hash_file(path, size):
         return failure(error_text(e))
     finally:
         handle.close()
-    return success(digest.hexdigest())
+    return success({"digest": digest.hexdigest(), "link": None})
 
 
 def hash_sample(path, size):
-    """SHA-256 hex of the first and last SAMPLE_SIZE bytes of a file -> Result(str)."""
+    """SHA-256 of the first and last SAMPLE_SIZE bytes of a file, and its link read from the open
+    handle (no second open) -> Result(Hashed)."""
     digest = hashlib.sha256()
     try:
         handle = open(path, "rb")
     except OSError as e:
         return failure(error_text(e))
     try:
+        link = file_identity(os.fstat(handle.fileno()))
         digest.update(handle.read(SAMPLE_SIZE))
         handle.seek(size - SAMPLE_SIZE)
         digest.update(handle.read(SAMPLE_SIZE))
@@ -422,7 +763,7 @@ def hash_sample(path, size):
         return failure(error_text(e))
     finally:
         handle.close()
-    return success(digest.hexdigest())
+    return success({"digest": digest.hexdigest(), "link": link})
 
 
 def hash_job(info, mode, cancel_flag):
@@ -440,7 +781,7 @@ def bytes_to_read(info, mode):
 
 
 def hash_many(files, mode, cancel_flag, progress, text):
-    """Hash files on HASH_WORKERS threads -> Result(dict path -> hex). Unreadable files are left out.
+    """Hash files on HASH_WORKERS threads -> Result(dict path -> Hashed). Unreadable files are left out.
 
     mode is "sample" (both ends) or "full". Port with any thread pool or parallel-for.
     """
@@ -470,8 +811,28 @@ def hash_many(files, mode, cancel_flag, progress, text):
     return success(digests)
 
 
-def group_savings(group):
-    return group[0]["size"] * (len(group) - 1)
+def copy_frees(info):
+    """Bytes moving this one copy away (and emptying the trash) would free: its space on disk, or nothing
+    when the file has other names (hard links), which keep its data."""
+    if info["link"] is not None and info["link"] != "":
+        return 0
+    return info["disk"]
+
+
+def group_savings(group, keep):
+    """Bytes moving every copy but the kept one would free."""
+    keeper = keeper_index(group, keep)
+    total = 0
+    index = 0
+    while index < len(group):
+        if index != keeper:
+            total = total + copy_frees(group[index])
+        index = index + 1
+    return total
+
+
+def default_savings(group):
+    return group_savings(group, {})
 
 
 def first_path(group):
@@ -488,18 +849,75 @@ def find_duplicates(root, cancel_flag, progress):
     return find_duplicates_in(walked["value"]["files"], cancel_flag, progress)
 
 
+def link_job(info, cancel_flag):
+    if is_cancelled(cancel_flag):
+        return failure("cancelled")
+    try:
+        return success(file_identity(os.stat(info["path"], follow_symlinks=False)))
+    except OSError as e:
+        return failure(error_text(e))
+
+
+def read_links(files, cancel_flag):
+    """The link (see FileInfo) of each file, read with os.stat on HASH_WORKERS threads
+    -> Result(dict path -> link). Files that cannot be read are left out."""
+    results = run_on_workers(link_job, files, cancel_flag)
+    if is_cancelled(cancel_flag):
+        return failure("cancelled")
+    links = {}
+    index = 0
+    while index < len(files):
+        if results[index]["ok"] and results[index]["value"] is not None:
+            links[files[index]["path"]] = results[index]["value"]
+        index = index + 1
+    return success(links)
+
+
+def one_name_each(group, links, linked):
+    """The files of group (FileInfo) with one name each, sorted by path, as copies that carry their link
+    (from links, else their own; "" when not known). The first name of a file keeps its space; its other
+    names are left out and take none. Names found to be hard links only now (their own link was None)
+    are added to linked, as those copies."""
+    ordered = list(group)
+    ordered.sort(key=file_path)
+    seen = {}
+    kept = []
+    for info in ordered:
+        link = info["link"]
+        if info["path"] in links:
+            link = links[info["path"]]
+        if link is None:
+            link = ""
+        record = {"path": info["path"], "size": info["size"], "disk": info["disk"], "modified": info["modified"],
+                  "link": link}
+        first = link == "" or link not in seen
+        if first:
+            kept.append(record)
+        else:
+            record["disk"] = 0
+        if link != "":
+            seen[link] = True
+            if info["link"] is None:
+                linked.append(record)
+    return kept
+
+
 def find_duplicates_in(files, cancel_flag, progress):
-    """Groups of identical files (2+ each, empty files ignored), biggest savings first.
+    """Groups of identical files (2+ each, empty files ignored), biggest savings first, and never two
+    names of one file: a hard link is a second name of the same data, not a copy.
 
     Each step only looks at files that may still be equal:
-      1. same size (nothing read),
-      2. large files: same first and last SAMPLE_SIZE bytes,
-      3. same SHA-256 of the whole file.
-    -> Result(list of list of FileInfo)
+      1. same size (nothing read). Files with no data on this disk are left out: a cloud-only file
+         would be downloaded to read it, and moving it frees nothing here;
+      2. large files: same first and last SAMPLE_SIZE bytes. The handle opened for that tells which
+         names are one file, so only one of them is read whole;
+      3. same SHA-256 of the whole file. Where it is not known yet which of a group's names are one
+         file (a Windows listing does not say), those names are looked up: only files that matched.
+    -> Result(Duplicates)
     """
     by_size = {}
     for info in files:
-        if info["size"] == 0:
+        if info["size"] == 0 or info["disk"] == 0:
             continue
         if info["size"] not in by_size:
             by_size[info["size"]] = []
@@ -516,6 +934,8 @@ def find_duplicates_in(files, cancel_flag, progress):
             else:
                 large.append(info)
 
+    links = {}   # path -> link, where read while comparing
+    linked = []  # names found to be hard links (see Duplicates)
     sampled = hash_many(large, "sample", cancel_flag, progress, "Comparing file ends")
     if not sampled["ok"]:
         return sampled
@@ -523,14 +943,17 @@ def find_duplicates_in(files, cancel_flag, progress):
     for info in large:
         if info["path"] not in sampled["value"]:
             continue
-        key = str(info["size"]) + ":" + sampled["value"][info["path"]]
+        found = sampled["value"][info["path"]]
+        if found["link"] is not None:
+            links[info["path"]] = found["link"]
+        key = str(info["size"]) + ":" + found["digest"]
         if key not in by_sample:
             by_sample[key] = []
         by_sample[key].append(info)
     candidates = list(small)
     for key in by_sample:
         if len(by_sample[key]) > 1:
-            for info in by_sample[key]:
+            for info in one_name_each(by_sample[key], links, linked):
                 candidates.append(info)
 
     hashed = hash_many(candidates, "full", cancel_flag, progress, "Comparing files")
@@ -540,39 +963,60 @@ def find_duplicates_in(files, cancel_flag, progress):
     for info in candidates:
         if info["path"] not in hashed["value"]:
             continue
-        key = str(info["size"]) + ":" + hashed["value"][info["path"]]
+        key = str(info["size"]) + ":" + hashed["value"][info["path"]]["digest"]
         if key not in by_digest:
             by_digest[key] = []
         by_digest[key].append(info)
+    unknown = []
+    for key in by_digest:
+        if len(by_digest[key]) > 1:
+            for info in by_digest[key]:
+                if info["link"] is None and info["path"] not in links:
+                    unknown.append(info)
+    if len(unknown) > 0:
+        report_progress(progress, "Looking for hard links", 0, len(unknown), "files")
+        looked_up = read_links(unknown, cancel_flag)
+        if not looked_up["ok"]:
+            return looked_up
+        for path in looked_up["value"]:
+            links[path] = looked_up["value"][path]
     groups = []
     for key in by_digest:
-        group = by_digest[key]
-        if len(group) > 1:
-            group.sort(key=file_path)
-            groups.append(group)
+        if len(by_digest[key]) > 1:
+            group = one_name_each(by_digest[key], links, linked)
+            if len(group) > 1:
+                groups.append(group)
     groups.sort(key=first_path)
-    groups.sort(key=group_savings, reverse=True)
-    return success(groups)
+    groups.sort(key=default_savings, reverse=True)
+    return success({"groups": groups, "linked": linked})
 
 
-def duplicate_savings(groups):
-    """{"copies": extra copies, "bytes": space they take}."""
+def duplicate_savings(groups, keep):
+    """{"copies": extra copies, "bytes": space moving them away would free}."""
     copies = 0
     total = 0
     for group in groups:
         copies = copies + len(group) - 1
-        total = total + group_savings(group)
+        total = total + group_savings(group, keep)
     return {"copies": copies, "bytes": total}
 
 
 def keeper_index(group, keep):
-    """Index of the copy to keep: the first one listed in keep (dict path -> True), else the first."""
+    """Index of the copy to keep: the first one listed in keep (dict path -> True); else the one whose
+    removal would free the least (a hard link frees nothing, a compressed copy little), so removing
+    the others frees the most; ties go to the first."""
     index = 0
     while index < len(group):
         if group[index]["path"] in keep:
             return index
         index = index + 1
-    return 0
+    best = 0
+    index = 1
+    while index < len(group):
+        if copy_frees(group[index]) < copy_frees(group[best]):
+            best = index
+        index = index + 1
+    return best
 
 
 def plan_duplicate_removal(root, groups, keep):
@@ -643,8 +1087,8 @@ def select_empty_dirs(all_empty, chosen, root):
 # ---- space map (sunburst) -----------------------------------------------------------------------
 
 def new_node(name, path):
-    return {"name": name, "path": path, "bytes": 0, "files": 0, "wasted": 0, "children": {},
-            "file_list": [], "folder_list": [], "item_files": 0, "wasted_paths": {}}
+    return {"name": name, "path": path, "kind": "folder", "bytes": 0, "files": 0, "trash": 0, "wasted": 0,
+            "children": {}, "file_list": [], "folder_list": [], "item_files": 0, "wasted_paths": {}}
 
 
 def file_folder(root, path):
@@ -681,12 +1125,13 @@ def path_parts(relative):
     return parts
 
 
-def build_folder_tree(root, files):
-    """Folder tree of root with the bytes and file count of everything below each folder -> Node.
+def build_folder_tree(root, files, trash):
+    """Folder tree of root with the bytes on disk and file count of everything below each folder -> Node.
 
     Each Node lists its slices once, biggest first, so drawing never sorts: file_list holds the files
-    directly in it that take space (empty files are counted but not listed) and folder_list the
-    subfolders that take space. item_files counts the files those slices hold.
+    directly in it that take space (files taking none are counted but not listed) and folder_list the
+    subfolders that take space. item_files counts the files those slices hold. The trash files (a
+    Walk's trash) are added up per trash folder, each a Node of kind "trash" with no slices inside.
     """
     name = os.path.basename(root.rstrip("\\/"))
     if name == "":
@@ -698,23 +1143,36 @@ def build_folder_tree(root, files):
     for info in files:
         folder = file_folder(root, info["path"])
         if folder not in own:
-            own[folder] = {"bytes": 0, "files": 0, "list": []}
-        own[folder]["bytes"] = own[folder]["bytes"] + info["size"]
+            own[folder] = {"bytes": 0, "files": 0, "list": [], "trash": False}
+        own[folder]["bytes"] = own[folder]["bytes"] + info["disk"]
         own[folder]["files"] = own[folder]["files"] + 1
-        if info["size"] > 0:
+        if info["disk"] > 0:
             own[folder]["list"].append(info)
+    for info in trash:
+        folder = trash_folder_of(root, info["path"])
+        if folder not in own:
+            own[folder] = {"bytes": 0, "files": 0, "list": [], "trash": True}
+        own[folder]["bytes"] = own[folder]["bytes"] + info["disk"]
+        own[folder]["files"] = own[folder]["files"] + 1
     for folder in own:
         total = own[folder]
+        trash_bytes = 0
+        if total["trash"]:
+            trash_bytes = total["bytes"]
         node = tree
         node["bytes"] = node["bytes"] + total["bytes"]
         node["files"] = node["files"] + total["files"]
+        node["trash"] = node["trash"] + trash_bytes
         for part in path_parts(relative_path(root, folder)):
             if part not in node["children"]:
                 node["children"][part] = new_node(part, os.path.join(node["path"], part))
             node = node["children"][part]
             node["bytes"] = node["bytes"] + total["bytes"]
             node["files"] = node["files"] + total["files"]
-        for info in sort_by_size_desc(total["list"]):
+            node["trash"] = node["trash"] + trash_bytes
+        if total["trash"]:
+            node["kind"] = "trash"
+        for info in sort_by_disk_desc(total["list"]):
             node["file_list"].append(info)
     for node in folder_nodes(tree):
         item_files = len(node["file_list"])
@@ -751,8 +1209,9 @@ def find_node(tree, root, folder):
 
 
 def mark_wasted(tree, root, groups, keep):
-    """Set each Node's wasted bytes (the duplicate copies below it that are not the kept one) and its
-    wasted_paths (those copies directly in it). Copies outside the tree are left out.
+    """Set each Node's wasted bytes (what the duplicate copies below it that are not the kept one would
+    free) and its wasted_paths (those copies directly in it; a copy that frees nothing, such as a hard
+    link, is not marked). Copies outside the tree are left out.
 
     Each copy is added to the folder it is in, then every folder's total is added to its parent's,
     deepest first: one pass over the copies and one over the folders, however deep they are.
@@ -773,11 +1232,12 @@ def mark_wasted(tree, root, groups, keep):
         index = 0
         while index < len(group):
             info = group[index]
-            if index != keeper and info["path"].startswith(prefix):
+            frees = copy_frees(info)
+            if index != keeper and frees > 0 and info["path"].startswith(prefix):
                 folder = file_folder(root, info["path"])
                 if folder in by_path:
-                    by_path[folder]["wasted"] = by_path[folder]["wasted"] + info["size"]
-                    by_path[folder]["wasted_paths"][info["path"]] = True
+                    by_path[folder]["wasted"] = by_path[folder]["wasted"] + frees
+                    by_path[folder]["wasted_paths"][info["path"]] = frees
             index = index + 1
     index = len(nodes) - 1
     while index >= 0:
@@ -789,8 +1249,9 @@ def mark_wasted(tree, root, groups, keep):
 
 def change_wasted(tree, root, info, amount):
     """Add amount (negative to take away) to the wasted bytes of every folder holding info, and mark
-    or unmark info as an extra copy in its own folder. Copies outside the tree are left out."""
-    if not is_inside(root, info["path"]):
+    (amount > 0) or unmark (amount < 0) info as an extra copy in its own folder. Copies outside the
+    tree are left out."""
+    if amount == 0 or not is_inside(root, info["path"]):
         return
     parts = path_parts(relative_path(root, info["path"]))
     chain = folder_chain(tree, root, parts[0:len(parts) - 1])
@@ -800,7 +1261,7 @@ def change_wasted(tree, root, info, amount):
         node["wasted"] = node["wasted"] + amount
     last = chain[len(chain) - 1]
     if amount > 0:
-        last["wasted_paths"][info["path"]] = True
+        last["wasted_paths"][info["path"]] = amount
     elif info["path"] in last["wasted_paths"]:
         del last["wasted_paths"][info["path"]]
 
@@ -810,8 +1271,8 @@ def shift_kept_copy(tree, root, kept_before, kept_now):
     the new one stops being one. Costs the depth of two folders, not a pass over every copy."""
     if kept_before["path"] == kept_now["path"]:
         return
-    change_wasted(tree, root, kept_before, kept_before["size"])
-    change_wasted(tree, root, kept_now, 0 - kept_now["size"])
+    change_wasted(tree, root, kept_before, copy_frees(kept_before))
+    change_wasted(tree, root, kept_now, 0 - copy_frees(kept_now))
 
 
 def entry_bytes(entry):
@@ -824,8 +1285,9 @@ def map_item_count(node):
 
 
 def map_entries(node, limit):
-    """A folder's slices, biggest first, at most limit of them: its subfolders and the files directly
-    in it, as {"kind", "node", "name", "path", "bytes", "files", "wasted", "modified"}.
+    """A folder's slices, biggest first, at most limit of them: its subfolders (and trash folders) and
+    the files directly in it, as {"kind", "node", "name", "path", "bytes", "size", "files", "wasted",
+    "trash", "modified"} (see Arc).
 
     folder_list and file_list are already sorted, so this merges two sorted lists and stops at limit:
     a folder with a hundred thousand files or subfolders costs no more than one with a few.
@@ -838,21 +1300,21 @@ def map_entries(node, limit):
     while len(entries) < limit and (next_folder < len(folders) or next_file < len(files)):
         take_folder = next_file >= len(files)
         if next_folder < len(folders) and next_file < len(files):
-            take_folder = folders[next_folder]["bytes"] >= files[next_file]["size"]
+            take_folder = folders[next_folder]["bytes"] >= files[next_file]["disk"]
         if take_folder:
             child = folders[next_folder]
-            entries.append({"kind": "folder", "node": child, "name": child["name"], "path": child["path"],
-                            "bytes": child["bytes"], "files": child["files"], "wasted": child["wasted"],
-                            "modified": 0.0})
+            entries.append({"kind": child["kind"], "node": child, "name": child["name"], "path": child["path"],
+                            "bytes": child["bytes"], "size": 0, "files": child["files"], "wasted": child["wasted"],
+                            "trash": child["trash"], "modified": 0.0})
             next_folder = next_folder + 1
         else:
             info = files[next_file]
             wasted = 0
             if info["path"] in node["wasted_paths"]:
-                wasted = info["size"]
+                wasted = node["wasted_paths"][info["path"]]
             entries.append({"kind": "file", "node": None, "name": os.path.basename(info["path"]),
-                            "path": info["path"], "bytes": info["size"], "files": 1, "wasted": wasted,
-                            "modified": info["modified"]})
+                            "path": info["path"], "bytes": info["disk"], "size": info["size"], "files": 1,
+                            "wasted": wasted, "trash": 0, "modified": info["modified"]})
             next_file = next_file + 1
     return entries
 
@@ -882,7 +1344,7 @@ def layout_sunburst(node, max_depth, min_angles):
 
     Angles are degrees clockwise from 12 o'clock. Each folder's slices (subfolders and files) share
     its angle by bytes; slices narrower than min_angles[depth - 1] (see ring_min_angles) are merged
-    into one "rest" arc. Rings stop at max_depth.
+    into one "rest" arc. Rings stop at max_depth; a trash folder is one slice, never opened.
     """
     arcs = []
     if node["bytes"] <= 0:
@@ -902,7 +1364,7 @@ def layout_sunburst(node, max_depth, min_angles):
                 limit = count
         entries = map_entries(parent, limit)
         angle = item["start"]
-        drawn = {"count": 0, "bytes": 0, "files": 0, "wasted": 0}
+        drawn = {"count": 0, "bytes": 0, "files": 0, "wasted": 0, "trash": 0}
         index = 0
         while index < len(entries):
             entry = entries[index]
@@ -916,8 +1378,8 @@ def layout_sunburst(node, max_depth, min_angles):
                 branch = index
             arcs.append({"path": entry["path"], "name": entry["name"], "kind": entry["kind"],
                          "depth": item["depth"], "start": angle, "extent": extent, "bytes": entry["bytes"],
-                         "files": entry["files"], "wasted": entry["wasted"], "branch": branch,
-                         "modified": entry["modified"]})
+                         "size": entry["size"], "files": entry["files"], "wasted": entry["wasted"],
+                         "trash": entry["trash"], "branch": branch, "modified": entry["modified"]})
             if entry["kind"] == "folder" and item["depth"] < max_depth:
                 pending.append({"node": entry["node"], "start": angle, "extent": extent,
                                 "depth": item["depth"] + 1, "branch": branch})
@@ -925,6 +1387,7 @@ def layout_sunburst(node, max_depth, min_angles):
             drawn["bytes"] = drawn["bytes"] + entry["bytes"]
             drawn["files"] = drawn["files"] + entry["files"]
             drawn["wasted"] = drawn["wasted"] + entry["wasted"]
+            drawn["trash"] = drawn["trash"] + entry["trash"]
             angle = angle + extent
             index = index + 1
         if drawn["count"] < count:
@@ -934,7 +1397,8 @@ def layout_sunburst(node, max_depth, min_angles):
             arcs.append({"path": parent["path"], "name": plural(count - drawn["count"], "smaller item"),
                          "kind": "rest", "depth": item["depth"], "start": angle,
                          "extent": item["start"] + item["extent"] - angle, "bytes": parent["bytes"] - drawn["bytes"],
-                         "files": parent["item_files"] - drawn["files"], "wasted": parent["wasted"] - drawn["wasted"],
+                         "size": 0, "files": parent["item_files"] - drawn["files"],
+                         "wasted": parent["wasted"] - drawn["wasted"], "trash": parent["trash"] - drawn["trash"],
                          "branch": branch, "modified": 0.0})
     return arcs
 
@@ -970,7 +1434,10 @@ def hls_hex(hue, lightness, saturation):
 
 def arc_color(arc, mode, max_depth):
     """Fill colour of an Arc. mode "folders": one hue per top-level slice, lighter further out.
-    mode "duplicates": grey, turning red as the share of duplicate copies in the slice grows."""
+    mode "duplicates": grey, turning red as the share of duplicate copies in the slice grows.
+    A trash folder is a darker grey in both."""
+    if arc["kind"] == "trash":
+        return TRASH_COLOUR
     outward = 0.0
     if max_depth > 1:
         outward = (arc["depth"] - 1) / float(max_depth - 1)
@@ -1506,6 +1973,40 @@ def plural(count, word):
     return human_count(count) + " " + word + "s"
 
 
+def join_words(parts):
+    """["a"] -> "a", ["a", "b", "c"] -> "a, b and c"."""
+    text = ""
+    index = 0
+    while index < len(parts):
+        if index > 0 and index == len(parts) - 1:
+            text = text + " and "
+        elif index > 0:
+            text = text + ", "
+        text = text + parts[index]
+        index = index + 1
+    return text
+
+
+def disk_note(report, links_counted):
+    """What "on disk" means for a ScanReport, in one or two sentences. links_counted: hard links have
+    been counted once (always where the listing says which names are one file)."""
+    saved = report["saved"]
+    parts = []
+    if saved["compressed"] > 0:
+        parts.append(human_size(saved["compressed"]) + " saved by compressed and sparse files")
+    if saved["no_data"] > 0:
+        parts.append(human_size(saved["no_data"]) + " in files with no data on this disk (such as cloud-only files)")
+    if saved["links"] > 0:
+        parts.append(human_size(saved["links"]) + " in second names of hard-linked files")
+    text = "Sizes are space on disk, which here is what the files add up to."
+    if len(parts) > 0:
+        text = ("Sizes are space on disk: the files add up to " + human_size(report["file_bytes"]) + ", less "
+                + join_words(parts) + ".")
+    if not links_counted:
+        text = text + " Hard links are counted once when the duplicate comparison is done."
+    return text
+
+
 # =================================================================================================
 # SELF-TEST: exercises the core on a throwaway folder. `python storage_manager.py --selftest`
 # =================================================================================================
@@ -1537,6 +2038,138 @@ def check(condition, message, failures):
         failures.append(message)
 
 
+def fake_file(path, size, modified):
+    """A FileInfo for checks that need no real file: one name, as much on disk as its size."""
+    return {"path": path, "size": size, "disk": size, "modified": modified, "link": ""}
+
+
+def set_offline(path):
+    """Mark a file offline, as a file whose data is elsewhere (Windows) -> True when it worked."""
+    if os.name != "nt":
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_ulong]
+    return kernel32.SetFileAttributesW(path, FILE_ATTRIBUTE_OFFLINE | 0x20) != 0  # 0x20: archive
+
+
+def check_space_on_disk(work, now, failures):
+    """Space on disk, hard links and cloud-only files, with real files where this drive allows them."""
+    check(disk_from_listing(1000, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_SPARSE_FILE, -1, True) == 0
+          and disk_from_listing(1000, FILE_ATTRIBUTE_RECALL_ON_OPEN, -1, True) == 0
+          and disk_from_listing(1000, FILE_ATTRIBUTE_OFFLINE, -1, False) == 0,
+          "cloud-only placeholders and offline files take no space", failures)
+    check(disk_from_listing(1000, FILE_ATTRIBUTE_COMPRESSED, -1, True) == ASK_OS
+          and disk_from_listing(1000, FILE_ATTRIBUTE_SPARSE_FILE, -1, True) == ASK_OS
+          and disk_from_listing(1000, FILE_ATTRIBUTE_COMPRESSED, -1, False) == 1000
+          and disk_from_listing(1000, 0x20, -1, True) == 1000,
+          "compressed and sparse files are asked about, but not on a network share", failures)
+    check(disk_from_listing(100000, 0, 16, False) == 8192 and disk_from_listing(1000, 0, 8, False) == 1000
+          and disk_from_listing(5000, 0, 0, False) == 0, "allocated blocks, where the listing has them", failures)
+    check(file_identity(os.stat_result((0, 7, 3, 2, 0, 0, 10, 0, 0, 0))) == "3:7"
+          and file_identity(os.stat_result((0, 7, 3, 1, 0, 0, 10, 0, 0, 0))) == ""
+          and file_identity(os.stat_result((0, 0, 0, 0, 0, 0, 10, 0, 0, 0))) is None, "which names are one file", failures)
+    top = os.path.join(work, "sizes")
+    linked = {"path": os.path.join(top, "a.bin"), "size": 100, "disk": 100, "modified": now, "link": "1:5"}
+    plain = fake_file(os.path.join(top, "b.bin"), 100, now)
+    packed = {"path": os.path.join(top, "c.bin"), "size": 100, "disk": 40, "modified": now, "link": ""}
+    check(copy_frees(linked) == 0 and copy_frees(plain) == 100 and keeper_index([plain, linked], {}) == 1
+          and group_savings([plain, linked], {}) == 100 and group_savings([plain, linked], {plain["path"]: True}) == 0,
+          "a copy with other names is kept: moving it would free nothing", failures)
+    check(keeper_index([plain, packed], {}) == 1 and duplicate_savings([[plain, packed]], {})["bytes"] == 100
+          and keeper_index([plain, fake_file(plain["path"] + "2", 100, now)], {}) == 0,
+          "the copy that frees least is kept, else the first", failures)
+    pair_tree = build_folder_tree(top, [plain, linked], [])
+    mark_wasted(pair_tree, top, [[plain, linked]], {plain["path"]: True})
+    unmarked = pair_tree["wasted"] == 0 and len(pair_tree["wasted_paths"]) == 0
+    mark_wasted(pair_tree, top, [[plain, linked]], {})
+    check(unmarked and pair_tree["wasted"] == 100 and pair_tree["wasted_paths"] == {plain["path"]: 100},
+          "the map marks only copies whose removal frees space", failures)
+    mixed = [plain, packed, {"path": os.path.join(top, "cloud.bin"), "size": 50, "disk": 0, "modified": now, "link": ""},
+             {"path": os.path.join(top, "a2.bin"), "size": 30, "disk": 0, "modified": now, "link": "1:5"}]
+    summary = disk_summary(mixed)
+    mixed_report = build_report(top, mixed, [], [], [], 1, 10, 365, now)
+    note = disk_note(mixed_report, True)
+    check(summary["file_bytes"] == 280 and summary["compressed"] == 60 and summary["no_data"] == 50 and summary["links"] == 30
+          and mixed_report["total_bytes"] == 140 and note.find("no data on this disk") > 0 and note.find("hard-linked") > 0
+          and disk_note(mixed_report, False).endswith("comparison is done.")
+          and disk_note(build_report(top, [plain], [], [], [], 1, 10, 365, now), True).find("is what the files add up to") > 0,
+          "what on disk leaves out", failures)
+    check(join_words(["a"]) == "a" and join_words(["a", "b", "c"]) == "a, b and c", "lists in words", failures)
+
+    # Real hard links: a large and a small file with a second name and a real copy each, and one with
+    # a second name only. The second names sort after the first ones.
+    space = os.path.join(work, "links")
+    film = os.urandom(3 * SAMPLE_SIZE)
+    note_text = b"tiny but shared " * 10
+    solo = os.urandom(1000)
+    write_bytes(os.path.join(space, "film.bin"), film)
+    write_bytes(os.path.join(space, "copy", "film.bin"), film)
+    write_bytes(os.path.join(space, "note.txt"), note_text)
+    write_bytes(os.path.join(space, "copy", "note.txt"), note_text)
+    write_bytes(os.path.join(space, "solo.bin"), solo)
+    try:
+        os.link(os.path.join(space, "film.bin"), os.path.join(space, "film_link.bin"))
+        os.link(os.path.join(space, "note.txt"), os.path.join(space, "note_link.txt"))
+        os.link(os.path.join(space, "solo.bin"), os.path.join(space, "solo_link.bin"))
+        has_links = True
+    except (OSError, AttributeError, NotImplementedError) as e:
+        print("  skip hard links: " + str(e))
+        has_links = False
+    if has_links:
+        scanned = scan(space, 10, 365, now, None, None)["value"]
+        found = find_duplicates_in(scanned["files"], None, None)["value"]
+        separate = True
+        for group in found["groups"]:
+            files_seen = {}
+            for info in group:
+                stat = os.stat(info["path"])
+                files_seen[str(stat.st_dev) + ":" + str(stat.st_ino)] = True
+                separate = separate and info["path"].find("_link") < 0
+            separate = separate and len(files_seen) == len(group) == 2
+        check(len(found["groups"]) == 2 and separate, "hard links are never offered as duplicate copies", failures)
+        counted = scanned
+        if len(found["linked"]) > 0:
+            counted = count_links_once(scanned, found["linked"], 10, 365, now)
+        once = 2 * len(film) + 2 * len(note_text) + len(solo)
+        check(counted["file_count"] == 8 and counted["total_bytes"] == once
+              and counted["saved"]["links"] == len(film) + len(note_text) + len(solo),
+              "a hard-linked file is counted once", failures)
+        savings = duplicate_savings(found["groups"], {})
+        moves = plan_duplicate_removal(space, found["groups"], {})
+        check(savings["bytes"] == len(film) + len(note_text) and len(moves) == 2
+              and moves[0]["source"].find(os.sep + "copy" + os.sep) > 0
+              and moves[1]["source"].find(os.sep + "copy" + os.sep) > 0,
+              "the copy without other names goes, freeing its space", failures)
+
+    if os.name != "nt":
+        return
+    # Windows: an NTFS-compressed file and an offline one (the attribute cloud files carry too).
+    real = os.path.join(work, "real")
+    packed_path = os.path.join(real, "packed.txt")
+    write_bytes(packed_path, b"compressible text " * 60000)
+    compacted = run_command(["compact", "/c", "/q", packed_path], 60)
+    if compacted["ok"]:
+        listed = scan(real, 10, 365, now, None, None)["value"]["files"]
+        check(len(listed) == 1 and 0 < listed[0]["disk"] < listed[0]["size"] == 18 * 60000,
+              "a compressed file counts the space it takes", failures)
+    else:
+        print("  skip compressed file: " + compacted["error"])
+    offline_path = os.path.join(real, "offline.txt")
+    write_bytes(offline_path, b"elsewhere " * 500)
+    write_bytes(os.path.join(real, "here.txt"), b"elsewhere " * 500)
+    if set_offline(offline_path):
+        listed = scan(real, 10, 365, now, None, None)["value"]
+        offline_disk = -1
+        for info in listed["files"]:
+            if info["path"] == offline_path:
+                offline_disk = info["disk"]
+        compared = find_duplicates_in(listed["files"], None, None)["value"]
+        check(offline_disk == 0 and len(compared["groups"]) == 0 and listed["saved"]["no_data"] == 5000,
+              "an offline file takes no space and is not read to compare it", failures)
+    else:
+        print("  skip offline file: Windows did not set the attribute")
+
+
 def selftest():
     failures = []
     now = time.time()
@@ -1566,23 +2199,48 @@ def selftest():
         check(scan(os.path.join(work, "missing"), 10, 365, now, None, None)["ok"] == False, "missing folder fails", failures)
         cancelled = scan(root, 10, 365, now, [True], None)
         check(not cancelled["ok"] and cancelled["error"] == "cancelled", "scan can be cancelled", failures)
-        smaller = remove_from_report(report["value"], {os.path.join(root, "song.mp3"): True}, 10, 365, now)
-        check(smaller["file_count"] == 5 and "Audio" not in smaller["by_type"], "remove_from_report drops a file", failures)
+        check(report["value"]["total_bytes"] == 48 and report["value"]["file_bytes"] == 48
+              and report["value"]["trash_bytes"] == 0, "space on disk of plain files is their size", failures)
+        smaller = remove_from_report(report["value"], {os.path.join(root, "song.mp3"): ""}, 10, 365, now)
+        check(smaller["file_count"] == 5 and "Audio" not in smaller["by_type"] and len(smaller["trash"]) == 0,
+              "remove_from_report drops a file", failures)
+        song_trash = trash_target(root, os.path.join(root, "song.mp3"))
+        trashed = remove_from_report(report["value"], {os.path.join(root, "song.mp3"): song_trash}, 10, 365, now)
+        check(trashed["file_count"] == 5 and len(trashed["trash"]) == 1 and trashed["trash"][0]["path"] == song_trash
+              and trashed["trash_bytes"] == 5 and trashed["total_bytes"] == 43, "a file moved to the trash still counts there",
+              failures)
 
         print("duplicates")
         dupes = find_duplicates(root, None, None)
-        check(dupes["ok"] and len(dupes["value"]) == 1, "one duplicate group", failures)
-        moves = plan_duplicate_removal(root, dupes["value"], {})
+        check(dupes["ok"] and len(dupes["value"]["groups"]) == 1 and len(dupes["value"]["linked"]) == 0,
+              "one duplicate group", failures)
+        moves = plan_duplicate_removal(root, dupes["value"]["groups"], {})
         check(len(moves) == 1 and moves[0]["source"].endswith("b.txt"), "first copy is kept by default", failures)
-        chosen = plan_duplicate_removal(root, dupes["value"], {os.path.join(root, "sub", "b.txt"): True})
+        chosen = plan_duplicate_removal(root, dupes["value"]["groups"], {os.path.join(root, "sub", "b.txt"): True})
         check(chosen[0]["source"].endswith("a.txt"), "chosen copy is kept", failures)
         applied = apply_moves(root, moves, None, None)
         check(applied["value"]["done"] == 1 and len(applied["value"]["moved"]) == 1, "duplicate moved to trash", failures)
         check(os.path.isfile(os.path.join(root, TRASH_DIR_NAME, "sub", "b.txt")), "trash keeps relative path", failures)
-        check(scan(root, 10, 365, now, None, None)["value"]["file_count"] == 5, "trash folder is not scanned", failures)
+        after = scan(root, 10, 365, now, None, None)["value"]
+        check(after["file_count"] == 5 and len(after["trash"]) == 1 and after["trash_bytes"] == 12
+              and after["dir_count"] == report["value"]["dir_count"] and len(after["empty_dirs"]) == 4,
+              "the trash is counted apart, not offered again", failures)
+        trash_tree = build_folder_tree(root, after["files"], after["trash"])
+        trash_node = trash_tree["children"][TRASH_DIR_NAME]
+        check(trash_tree["bytes"] == after["total_bytes"] + 12 and trash_tree["trash"] == 12 and trash_node["kind"] == "trash"
+              and trash_node["bytes"] == 12 and len(trash_node["children"]) == 0 and len(trash_node["file_list"]) == 0,
+              "the trash folder is one slice of the map", failures)
+        check(find_duplicates(root, None, None)["value"]["groups"] == [], "trashed copies are not compared again", failures)
         undone = undo_last(root)
         check(undone["ok"] and os.path.isfile(os.path.join(root, "sub", "b.txt")), "undo restores duplicate", failures)
-        check(len(remove_from_groups(dupes["value"], {moves[0]["source"]: True})) == 0, "group of one is dropped", failures)
+        restored = scan(root, 10, 365, now, None, None)["value"]
+        check(len(restored["trash"]) == 0 and len(restored["empty_dirs"]) == 3,
+              "an emptied trash folder is not listed as empty", failures)
+        check(len(remove_from_groups(dupes["value"]["groups"], {moves[0]["source"]: True})) == 0, "group of one is dropped",
+              failures)
+        check(in_trash_folder(song_trash) and not in_trash_folder(os.path.join(root, "song.mp3"))
+              and trash_folder_of(root, os.path.join(root, "a", TRASH_DIR_NAME, "b", "c.txt"))
+              == os.path.join(root, "a", TRASH_DIR_NAME), "which trash folder a path is in", failures)
 
         print("large duplicates")
         big = os.path.join(work, "big")
@@ -1595,9 +2253,12 @@ def selftest():
         write_bytes(os.path.join(big, "end.bin"), changed_end)
         write_bytes(os.path.join(big, "middle.bin"), bytes(middle))
         big_dupes = find_duplicates(big, None, None)
-        check(big_dupes["ok"] and len(big_dupes["value"]) == 1 and len(big_dupes["value"][0]) == 2,
+        check(big_dupes["ok"] and len(big_dupes["value"]["groups"]) == 1 and len(big_dupes["value"]["groups"][0]) == 2,
               "only true copies match (ends and middle checked)", failures)
         check(hash_many([], "full", None, None, "")["ok"], "nothing to hash is fine", failures)
+
+        print("space on disk")
+        check_space_on_disk(work, now, failures)
 
         print("empty folders")
         all_empty = find_empty_dirs(root)
@@ -1647,18 +2308,18 @@ def selftest():
 
         print("space map")
         top = os.path.join(work, "m")
-        map_files = [{"path": os.path.join(top, "big", "a.bin"), "size": 600, "modified": now},
-                     {"path": os.path.join(top, "big", "deep", "b.bin"), "size": 210, "modified": now},
-                     {"path": os.path.join(top, "big", "c.bin"), "size": 90, "modified": now},
-                     {"path": os.path.join(top, "small", "c.bin"), "size": 90, "modified": now},
-                     {"path": os.path.join(top, "loose.bin"), "size": 10, "modified": now}]
+        map_files = [fake_file(os.path.join(top, "big", "a.bin"), 600, now),
+                     fake_file(os.path.join(top, "big", "deep", "b.bin"), 210, now),
+                     fake_file(os.path.join(top, "big", "c.bin"), 90, now),
+                     fake_file(os.path.join(top, "small", "c.bin"), 90, now),
+                     fake_file(os.path.join(top, "loose.bin"), 10, now)]
         # The tree is built from the files smallest first, so the checks below also prove both sorts.
         smallest_first = []
         index = len(map_files) - 1
         while index >= 0:
             smallest_first.append(map_files[index])
             index = index - 1
-        tree = build_folder_tree(top, smallest_first)
+        tree = build_folder_tree(top, smallest_first, [])
         no_merge = ring_min_angles(6, 0.0, 0.0, 0, 0.0)
         flat = ring_min_angles(6, 0.0, 0.0, 0, MAP_MIN_DEGREES)
         wide = ring_min_angles(6, 0.0, 0.0, 0, 50.0)
@@ -1673,12 +2334,12 @@ def selftest():
         check(abs(angles[0] - math.degrees(0.1)) < 1e-9 and angles[0] > angles[1] > angles[2] > MAP_MIN_DEGREES
               and ring_min_angles(2, 1000.0, 10.0, 4, MAP_MIN_DEGREES) == [MAP_MIN_DEGREES, MAP_MIN_DEGREES],
               "inner rings need wider slices", failures)
-        drive = build_folder_tree("D:" + os.sep, [{"path": "D:" + os.sep + "x.bin", "size": 5, "modified": now},
-                                                  {"path": os.path.join("D:" + os.sep, "a", "y.bin"), "size": 7, "modified": now}])
+        drive = build_folder_tree("D:" + os.sep, [fake_file("D:" + os.sep + "x.bin", 5, now),
+                                                  fake_file(os.path.join("D:" + os.sep, "a", "y.bin"), 7, now)], [])
         check(len(drive["file_list"]) == 1 and drive["file_list"][0]["size"] == 5 and drive["children"]["a"]["bytes"] == 7
               and drive["bytes"] == 12, "tree of a drive root", failures)
-        empty_tree = build_folder_tree(top, [{"path": os.path.join(top, "e.txt"), "size": 0, "modified": now},
-                                             {"path": os.path.join(top, "f.txt"), "size": 4, "modified": now}])
+        empty_tree = build_folder_tree(top, [fake_file(os.path.join(top, "e.txt"), 0, now),
+                                             fake_file(os.path.join(top, "f.txt"), 4, now)], [])
         empty_arcs = layout_sunburst(empty_tree, 6, flat)
         check(empty_tree["files"] == 2 and len(empty_tree["file_list"]) == 1 and len(empty_arcs) == 1
               and empty_arcs[0]["kind"] == "file" and abs(empty_arcs[0]["extent"] - 360.0) < 1e-9,
@@ -1707,9 +2368,9 @@ def selftest():
                 expected = arc["start"] + arc["extent"]
         three_top = os.path.join(work, "three")
         three = layout_sunburst(build_folder_tree(three_top, [
-            {"path": os.path.join(three_top, "c.mkv"), "size": 100, "modified": now},
-            {"path": os.path.join(three_top, "a.mkv"), "size": 600, "modified": now},
-            {"path": os.path.join(three_top, "b.mkv"), "size": 300, "modified": now}]), 6, no_merge)
+            fake_file(os.path.join(three_top, "c.mkv"), 100, now),
+            fake_file(os.path.join(three_top, "a.mkv"), 600, now),
+            fake_file(os.path.join(three_top, "b.mkv"), 300, now)], []), 6, no_merge)
         check(follow and abs(expected - big_arc["start"] - big_arc["extent"]) < 1e-9 and len(three) == 3
               and three[0]["start"] == 0.0 and abs(three[1]["start"] - 216.0) < 1e-9
               and abs(three[2]["start"] - 324.0) < 1e-9, "slices follow one another without overlapping", failures)
@@ -1726,15 +2387,15 @@ def selftest():
               and map_entries(big_node, 9)[1]["kind"] == "folder" and map_item_count(big_node) == 3,
               "slices merge folders and files biggest first, up to a limit", failures)
         many_top = os.path.join(work, "many")
-        many = [{"path": os.path.join(many_top, "big.bin"), "size": 10000, "modified": now}]
+        many = [fake_file(os.path.join(many_top, "big.bin"), 10000, now)]
         index = 0
         while index < 1000:
-            many.append({"path": os.path.join(many_top, "t" + str(index) + ".bin"), "size": 1, "modified": now})
+            many.append(fake_file(os.path.join(many_top, "t" + str(index) + ".bin"), 1, now))
             index = index + 1
-        many_tree = build_folder_tree(many_top, many)
+        many_tree = build_folder_tree(many_top, many, [])
         # big.bin is an extra copy of a file kept elsewhere, and so are two tiny files: the drawn slice
         # and the merged one both hold duplicate bytes, and each must keep only its own.
-        kept_big = {"path": os.path.join(work, "keep", "big.bin"), "size": 10000, "modified": now}
+        kept_big = fake_file(os.path.join(work, "keep", "big.bin"), 10000, now)
         mark_wasted(many_tree, many_top, [[kept_big, many[0]], [many[1], many[2]], [many[3], many[4]]], {})
         many_arcs = layout_sunburst(many_tree, 6, flat)
         check(len(many_arcs) == 2 and many_arcs[1]["kind"] == "rest" and many_arcs[1]["bytes"] == 1000
@@ -1743,7 +2404,7 @@ def selftest():
               "a thousand tiny files become one slice", failures)
         check(many_tree["wasted"] == 10002 and many_arcs[0]["wasted"] == 10000 and many_arcs[1]["wasted"] == 2,
               "the merged slice keeps its duplicate copies", failures)
-        pair_arcs = layout_sunburst(build_folder_tree(many_top, [many[0], many[1]]), 6, flat)
+        pair_arcs = layout_sunburst(build_folder_tree(many_top, [many[0], many[1]], []), 6, flat)
         check(len(pair_arcs) == 2 and pair_arcs[1]["kind"] == "file" and pair_arcs[1]["extent"] < MAP_MIN_DEGREES,
               "a lone narrow slice is drawn as itself", failures)
         # 500 slices of exactly the narrowest angle and 200 of half: only the look-ahead limit decides
@@ -1755,9 +2416,9 @@ def selftest():
             size = 1
             if index < 500:
                 size = 2
-            edge.append({"path": os.path.join(edge_top, "f" + str(index) + ".bin"), "size": size, "modified": now})
+            edge.append(fake_file(os.path.join(edge_top, "f" + str(index) + ".bin"), size, now))
             index = index + 1
-        edge_arcs = layout_sunburst(build_folder_tree(edge_top, edge), 6, flat)
+        edge_arcs = layout_sunburst(build_folder_tree(edge_top, edge, []), 6, flat)
         edge_total = 0.0
         for arc in edge_arcs:
             edge_total = edge_total + arc["extent"]
@@ -1766,24 +2427,24 @@ def selftest():
               "every slice wide enough is drawn", failures)
         holes_top = os.path.join(work, "holes")
         holes = layout_sunburst(build_folder_tree(holes_top, [
-            {"path": os.path.join(holes_top, "big.bin"), "size": 1000, "modified": now},
-            {"path": os.path.join(holes_top, "a.bin"), "size": 1, "modified": now},
-            {"path": os.path.join(holes_top, "b.bin"), "size": 1, "modified": now},
-            {"path": os.path.join(holes_top, "empty.txt"), "size": 0, "modified": now},
-            {"path": os.path.join(holes_top, "pkg", "__init__.py"), "size": 0, "modified": now}]), 6, flat)
+            fake_file(os.path.join(holes_top, "big.bin"), 1000, now),
+            fake_file(os.path.join(holes_top, "a.bin"), 1, now),
+            fake_file(os.path.join(holes_top, "b.bin"), 1, now),
+            fake_file(os.path.join(holes_top, "empty.txt"), 0, now),
+            fake_file(os.path.join(holes_top, "pkg", "__init__.py"), 0, now)], []), 6, flat)
         check(len(holes) == 2 and holes[1]["kind"] == "rest" and holes[1]["files"] == 2
               and holes[1]["name"] == "2 smaller items", "the merged slice counts only its own files", failures)
         # Every folder's ring of slices must tile exactly its angle, also for a folder that does not start
         # at 12 o'clock and whose ring ends in a merged slice (x\B here).
         x_top = os.path.join(work, "x")
-        x_files = [{"path": os.path.join(x_top, "A", "big.bin"), "size": 600, "modified": now},
-                   {"path": os.path.join(x_top, "B", "big.bin"), "size": 390, "modified": now}]
+        x_files = [fake_file(os.path.join(x_top, "A", "big.bin"), 600, now),
+                   fake_file(os.path.join(x_top, "B", "big.bin"), 390, now)]
         index = 0
         while index < 10:
-            x_files.append({"path": os.path.join(x_top, "B", "t" + str(index) + ".bin"), "size": 1, "modified": now})
+            x_files.append(fake_file(os.path.join(x_top, "B", "t" + str(index) + ".bin"), 1, now))
             index = index + 1
         tiled = True
-        for layout in (arcs, layout_sunburst(build_folder_tree(x_top, x_files), 6, flat)):
+        for layout in (arcs, layout_sunburst(build_folder_tree(x_top, x_files, []), 6, flat)):
             for parent_arc in layout:
                 if parent_arc["kind"] != "folder":
                     continue
@@ -1810,7 +2471,7 @@ def selftest():
                 ring_two_rests.append(arc)
         chain_top = os.path.join(work, "chain")
         chain_arcs = layout_sunburst(build_folder_tree(chain_top, [
-            {"path": os.path.join(chain_top, "a", "b", "c", "d", "e", "f", "x.bin"), "size": 5, "modified": now}]),
+            fake_file(os.path.join(chain_top, "a", "b", "c", "d", "e", "f", "x.bin"), 5, now)], []),
             6, ring_min_angles(6, 30.0, 20.0, MAP_MIN_PIXELS, MAP_MIN_DEGREES))
         check(ring_one == 3 and len(ring_two_rests) == 1 and ring_two_rests[0]["bytes"] == 300
               and len(chain_arcs) == 6 and chain_arcs[5]["depth"] == 6, "each ring has its own narrowest angle", failures)
@@ -1847,10 +2508,10 @@ def selftest():
               "changing the kept copy moves its marks", failures)
         # Siblings whose names start like the analyzed folder's (m.bin, msmall) are outside it, even where
         # the rest of the name matches a real subfolder.
-        outside = {"path": os.path.join(work, "msmall", "c.bin"), "size": 90, "modified": now}
-        beside = {"path": top + ".bin", "size": 90, "modified": now}
-        far = {"path": "Z:" + os.sep + "c.bin", "size": 90, "modified": now}
-        mark_wasted(tree, top, [[map_files[0], outside, beside, far]], {})
+        outside = fake_file(os.path.join(work, "msmall", "c.bin"), 90, now)
+        beside = fake_file(top + ".bin", 90, now)
+        far = fake_file("Z:" + os.sep + "c.bin", 90, now)
+        mark_wasted(tree, top, [[map_files[0], outside, beside, far]], {map_files[0]["path"]: True})
         check(tree["wasted"] == 0, "copies outside the folder are left out", failures)
         check(find_node(tree, top, os.path.join(top, "big", "deep"))["name"] == "deep"
               and find_node(tree, top, top) is tree and find_node(tree, top, os.path.join(top, "gone")) is None
@@ -1873,6 +2534,21 @@ def selftest():
         folder_colour = arc_color({"depth": 2, "bytes": 10, "wasted": 0, "kind": "folder", "branch": 1}, "folders", 6)
         file_colour = arc_color({"depth": 2, "bytes": 10, "wasted": 0, "kind": "file", "branch": 1}, "folders", 6)
         check(folder_colour != file_colour, "files look different from folders", failures)
+        bin_top = os.path.join(work, "t")
+        bin_tree = build_folder_tree(bin_top, [fake_file(os.path.join(bin_top, "a.bin"), 600, now)],
+                                     [fake_file(os.path.join(bin_top, TRASH_DIR_NAME, "x", "old.bin"), 300, now),
+                                      fake_file(os.path.join(bin_top, "sub", TRASH_DIR_NAME, "y.bin"), 100, now)])
+        bin_arcs = layout_sunburst(bin_tree, 6, no_merge)
+        trash_arcs = []
+        for arc in bin_arcs:
+            if arc["kind"] == "trash":
+                trash_arcs.append(arc)
+        check(bin_tree["bytes"] == 1000 and bin_tree["trash"] == 400 and bin_tree["children"]["sub"]["trash"] == 100
+              and len(bin_arcs) == 4 and len(trash_arcs) == 2 and trash_arcs[0]["bytes"] == 300
+              and trash_arcs[0]["depth"] == 1 and trash_arcs[1]["depth"] == 2 and trash_arcs[0]["trash"] == 300
+              and arc_color(trash_arcs[0], "folders", 6) == TRASH_COLOUR
+              and arc_color(trash_arcs[0], "duplicates", 6) == TRASH_COLOUR, "trash folders are slices of their own",
+              failures)
         check(command_line(["explorer", "/select,", "D:\\Q1,Q2\\a.xlsx"]) == 'explorer /select,"D:\\Q1,Q2\\a.xlsx"'
               and command_line(["explorer", "/select,", "D:\\Music\\E=mc2.mp3"]) == 'explorer /select,"D:\\Music\\E=mc2.mp3"'
               and command_line(["explorer", "D:\\x=y"]) == 'explorer "D:\\x=y"'
@@ -2278,7 +2954,8 @@ def run_gui(smoke_path, start_folder, start_view):
         if table["sorted_by"] == key:
             table["descending"] = not table["descending"]
         else:
-            table["descending"] = key == "size" or key == "modified" or key == "files" or key == "share"
+            table["descending"] = (key == "size" or key == "disk" or key == "modified" or key == "files"
+                                   or key == "share")
         table["sorted_by"] = key
         rows = list(table["rows"])
         rows.sort(key=table["sort_keys"][key], reverse=table["descending"])
@@ -2307,11 +2984,16 @@ def run_gui(smoke_path, start_folder, start_view):
         return row.lower()
 
     def file_values(row):
-        return (rel(row["path"]), human_size(row["size"]), human_date(row["modified"]))
+        name = rel(row["path"])
+        if row["link"] is not None and row["link"] != "":
+            name = name + "  (hard link)"  # one of several names: its space shows under the first one
+        return (name, human_size(row["disk"]), human_size(row["size"]), human_date(row["modified"]))
 
-    file_columns = [("path", "File", 340, "w", True), ("size", "Size", 100, "e", False),
-                    ("modified", "Changed", 110, "e", False)]
-    file_sorts = {"path": path_key, "size": file_size, "modified": lambda row: row["modified"]}
+    # "On disk" is what moving a file away (and emptying the trash) frees; "File size" is what Explorer
+    # shows as Size. They differ for compressed, sparse and cloud-only files and for hard links.
+    file_columns = [("path", "File", 320, "w", True), ("disk", "On disk", 90, "e", False),
+                    ("size", "File size", 90, "e", False), ("modified", "Changed", 100, "e", False)]
+    file_sorts = {"path": path_key, "disk": file_disk, "size": file_size, "modified": lambda row: row["modified"]}
 
     def reveal_first(table):
         rows = picked_rows(table)
@@ -2324,10 +3006,12 @@ def run_gui(smoke_path, start_folder, start_view):
     # Overview
     ov = make_view("overview", "Overview")
     ov_files = tk.StringVar(value="No folder analyzed yet.")
+    ov_sizes = tk.StringVar(value="Sizes are space on disk: what the files take on the drive.")
     ov_drive = tk.StringVar(value="Choose a folder or drive above and press Analyze. Nothing is changed without asking.")
     ov_reclaim = tk.StringVar(value="")
     ttk.Label(ov["frame"], textvariable=ov_files, style="Strong.TLabel").pack(anchor="w")
-    ttk.Label(ov["frame"], textvariable=ov_drive).pack(anchor="w", pady=(2, 0))
+    wrapping(ttk.Label(ov["frame"], textvariable=ov_sizes, style="Muted.TLabel")).pack(fill="x", pady=(2, 0))
+    wrapping(ttk.Label(ov["frame"], textvariable=ov_drive)).pack(fill="x", pady=(2, 0))
     ttk.Label(ov["frame"], textvariable=ov_reclaim).pack(anchor="w", pady=(2, 10))
     ov["actions"].pack_forget()
     ov["actions"].pack(fill="x", pady=(0, 8))
@@ -2335,7 +3019,7 @@ def run_gui(smoke_path, start_folder, start_view):
     type_table = make_table(
         ov["frame"],
         [("type", "Type", 200, "w", True), ("files", "Files", 110, "e", False),
-         ("size", "Size", 110, "e", False), ("share", "Share", 90, "e", False)],
+         ("size", "On disk", 110, "e", False), ("share", "Share", 90, "e", False)],
         lambda row: (row["type"], human_count(row["files"]), human_size(row["bytes"]), row["share"]),
         {"type": lambda row: row["type"].lower(), "files": lambda row: row["files"], "size": lambda row: row["bytes"]})
     type_table["frame"].pack(fill="both", expand=True)
@@ -2374,8 +3058,8 @@ def run_gui(smoke_path, start_folder, start_view):
     map_body.pack(fill="both", expand=True)
     map_table = make_table(
         map_body,
-        [("name", "Biggest here", 190, "w", True), ("size", "Size", 85, "e", False), ("share", "Share", 65, "e", False)],
-        lambda row: (row["name"], human_size(row["bytes"]), row["share"]),
+        [("name", "Biggest here", 190, "w", True), ("size", "On disk", 85, "e", False), ("share", "Share", 65, "e", False)],
+        lambda row: (row["label"], human_size(row["bytes"]), row["share"]),
         {"name": lambda row: row["name"].lower(), "size": lambda row: row["bytes"],
          "share": lambda row: row["bytes"]})
     # The table is packed first so that a narrow window shrinks the map, not the list.
@@ -2425,13 +3109,14 @@ def run_gui(smoke_path, start_folder, start_view):
             return
         root = state["root"]
         files = state["report"]["files"]
+        trash = state["report"]["trash"]
         groups = state["groups"]
         keep = state["keep"]  # not changed while a job runs: "Keep selected copy" waits for it
         before = status_var.get()
         state["map_pending"] = True
 
         def work(post):
-            tree = build_folder_tree(root, files)
+            tree = build_folder_tree(root, files, trash)
             if groups is not None:
                 mark_wasted(tree, root, groups, keep)
             return success(tree)
@@ -2499,6 +3184,8 @@ def run_gui(smoke_path, start_folder, start_view):
         name = arc["name"]
         if arc["kind"] == "folder" or arc["kind"] == "file":
             name = map_name(arc["path"])
+        elif arc["kind"] == "trash":
+            name = "Trash folder: " + map_name(arc["path"])
         elif arc["kind"] == "rest":
             name = name + " in " + map_name(arc["path"])
         room = 0
@@ -2512,11 +3199,18 @@ def run_gui(smoke_path, start_folder, start_view):
         share = 0.0
         if node["bytes"] > 0:
             share = 100.0 * arc["bytes"] / node["bytes"]
-        details = human_size(arc["bytes"]) + "  ·  %.1f %%" % share
+        details = human_size(arc["bytes"]) + " on disk  ·  %.1f %%" % share
         if arc["kind"] == "file":
+            if arc["size"] != arc["bytes"]:
+                details = details + "  ·  file size " + human_size(arc["size"])
             details = details + "  ·  changed " + human_date(arc["modified"])
+        elif arc["kind"] == "trash":
+            # Moved here by this program: still on the drive, and never compared again.
+            return name + "\n" + details + "  ·  " + plural(arc["files"], "file") + "  ·  freed when the folder is deleted"
         else:
             details = details + "  ·  " + plural(arc["files"], "file")
+            if arc["trash"] > 0:
+                details = details + "  ·  " + human_size(arc["trash"]) + " in the trash"
         if map_mode_var.get() == "duplicates":
             status = duplicates_state()
             if status == "reading" or status == "comparing":
@@ -2577,7 +3271,10 @@ def run_gui(smoke_path, start_folder, start_view):
             return
         node = map_center_node()
         mode = map_mode_var.get()
-        mp["subtitle"].set(node["path"] + "  ·  " + human_size(node["bytes"]) + " in " + plural(node["files"], "file"))
+        subtitle = node["path"] + "  ·  " + human_size(node["bytes"]) + " on disk in " + plural(node["files"], "file")
+        if node["trash"] > 0:
+            subtitle = subtitle + ", " + human_size(node["trash"]) + " of it in the trash folder"
+        mp["subtitle"].set(subtitle)
         map_info.set(map_default_text(node))
         map_fill_table(node)
         refresh_buttons()
@@ -2643,7 +3340,10 @@ def run_gui(smoke_path, start_folder, start_view):
                 share = 0.0
                 if node["bytes"] > 0:
                     share = 100.0 * entry["bytes"] / node["bytes"]
-                rows.append({"kind": entry["kind"], "name": entry["name"], "path": entry["path"],
+                label = entry["name"]
+                if entry["kind"] == "trash":
+                    label = "Trash folder"
+                rows.append({"kind": entry["kind"], "name": entry["name"], "label": label, "path": entry["path"],
                              "bytes": entry["bytes"], "share": "%.1f %%" % share})
             count = map_item_count(node)
             if count > len(rows):
@@ -2864,12 +3564,12 @@ def run_gui(smoke_path, start_folder, start_view):
                             selectmode="extended")
     dup_tree.heading("#0", text="File", anchor="w")
     dup_tree.column("#0", width=340, stretch=True)
-    dup_tree.heading("size", text="Size", anchor="e")
-    dup_tree.column("size", width=100, anchor="e", stretch=False)
+    dup_tree.heading("size", text="On disk", anchor="e")
+    dup_tree.column("size", width=90, anchor="e", stretch=False)
     dup_tree.heading("modified", text="Changed", anchor="e")
-    dup_tree.column("modified", width=110, anchor="e", stretch=False)
+    dup_tree.column("modified", width=100, anchor="e", stretch=False)
     dup_tree.heading("action", text="")
-    dup_tree.column("action", width=90, anchor="w", stretch=False)
+    dup_tree.column("action", width=150, anchor="w", stretch=False)
     dup_tree.tag_configure("group", font=strong_font)
     dup_tree.tag_configure("keep", foreground="#2e7d32")
     dup_tree.tag_configure("trash", foreground="#a33a1a")
@@ -2923,10 +3623,11 @@ def run_gui(smoke_path, start_folder, start_view):
                 chosen.append(groups[index])
             index = index + 1
         moves = plan_duplicate_removal(state["root"], chosen, state["keep"])
-        savings = duplicate_savings(chosen)
+        savings = duplicate_savings(chosen, state["keep"])
         scope = "selected groups" if len(numbers) > 0 else "all groups"
-        if not ask("Move " + plural(len(moves), "extra copy") + " (" + human_size(savings["bytes"]) + ") from "
-                   + scope + " to the trash folder?\n\nOne copy of each file stays. Undo is available."):
+        if not ask("Move " + plural(len(moves), "extra copy") + " from " + scope + " to the trash folder?\n\n"
+                   "One copy of each file stays. Deleting the trash folder then frees " + human_size(savings["bytes"])
+                   + " on disk. Undo is available."):
             return
         apply_and_forget("Moving duplicates to the trash", moves, "Moved")
 
@@ -3230,28 +3931,33 @@ def run_gui(smoke_path, start_folder, start_view):
                 map_draw()
             refresh_buttons()
             return
-        stale_total = total_size(report["stale"])
+        stale_total = total_disk(report["stale"])
         set_side("overview", human_size(report["total_bytes"]))
-        set_side("largest", human_size(report["largest"][0]["size"]) if len(report["largest"]) > 0 else "")
+        set_side("largest", human_size(report["largest"][0]["disk"]) if len(report["largest"]) > 0 else "")
         set_side("old", human_count(len(report["stale"])) + " \u00b7 " + human_size(stale_total))
         set_side("empty", human_count(len(report["empty_dirs"])))
         set_side("errors", human_count(len(report["errors"])))
         if state["groups"] is None:
             set_side("duplicates", state["dup_note"])
         else:
-            savings = duplicate_savings(state["groups"])
+            savings = duplicate_savings(state["groups"], state["keep"])
             set_side("duplicates", human_count(savings["copies"]) + " \u00b7 " + human_size(savings["bytes"]))
 
         # Overview
         ov_files.set(plural(report["file_count"], "file") + " \u00b7 " + human_size(report["total_bytes"])
-                     + " in " + plural(report["dir_count"], "folder"))
+                     + " on disk in " + plural(report["dir_count"], "folder"))
+        ov_sizes.set(disk_note(report, report["links_checked"] or state["groups"] is not None))
+        drive = ""
         if report["drive_total"] > 0:
-            ov_drive.set("Drive: " + human_size(report["drive_free"]) + " free of " + human_size(report["drive_total"]))
-        else:
-            ov_drive.set("")
+            drive = "Drive: " + human_size(report["drive_free"]) + " free of " + human_size(report["drive_total"]) + "."
+        if len(report["trash"]) > 0:
+            # Moving to the trash frees nothing yet: say where that space still is.
+            drive = (drive + " The trash folder holds " + human_size(report["trash_bytes"]) + " in "
+                     + plural(len(report["trash"]), "file") + " moved there; delete it to free that space.").strip()
+        ov_drive.set(drive)
         parts = []
         if state["groups"] is not None:
-            savings = duplicate_savings(state["groups"])
+            savings = duplicate_savings(state["groups"], state["keep"])
             if savings["copies"] > 0:
                 parts.append(human_size(savings["bytes"]) + " in " + plural(savings["copies"], "duplicate copy"))
         if len(report["stale"]) > 0:
@@ -3275,10 +3981,11 @@ def run_gui(smoke_path, start_folder, start_view):
 
         # Lists
         fill_table(lg_table, list(report["largest"]))
-        lg["subtitle"].set("The " + plural(len(report["largest"]), "biggest file") + ". Select some, or act on all.")
+        lg["subtitle"].set("The " + plural(len(report["largest"]), "file") + " that take the most space on disk. "
+                           "Select some, or act on all.")
         fill_table(old_table, list(report["stale"]))
         od["subtitle"].set(plural(len(report["stale"]), "file") + " (" + human_size(stale_total)
-                           + ") not changed for " + plural(state["old_days"], "day") + ".")
+                           + " on disk) not changed for " + plural(state["old_days"], "day") + ".")
         empty_rows = list(report["empty_dirs"])
         empty_rows.sort(key=text_key)
         fill_table(empty_table, empty_rows)
@@ -3300,34 +4007,42 @@ def run_gui(smoke_path, start_folder, start_view):
             dup_note.set("")
             refresh_buttons()
             return
-        savings = duplicate_savings(groups)
-        dp["subtitle"].set(plural(len(groups), "file") + " stored more than once; " + human_size(savings["bytes"])
-                           + " in extra copies. Green is kept, red goes to the trash.")
+        savings = duplicate_savings(groups, state["keep"])
+        dp["subtitle"].set(plural(len(groups), "file") + " stored more than once. Moving the extra copies to the trash "
+                           "folder and deleting it frees " + human_size(savings["bytes"]) + " on disk. "
+                           "Green is kept, red goes to the trash.")
         rows = 0
         number = 0
+        linked = False
         while number < len(groups) and rows < MAX_ROWS:
             group = groups[number]
             keeper = keeper_index(group, state["keep"])
             parent = "g" + str(number)
             dup_tree.insert("", "end", iid=parent, open=True, tags=("group",),
                             text=os.path.basename(group[0]["path"]) + "  \u00b7  " + plural(len(group), "copy")
-                            + "  \u00b7  " + human_size(group_savings(group)) + " in extra copies",
-                            values=(human_size(group[0]["size"]), "", ""))
+                            + "  \u00b7  " + human_size(group_savings(group, state["keep"])) + " to free",
+                            values=("", "", ""))
             index = 0
             while index < len(group):
                 info = group[index]
                 tag = "keep" if index == keeper else "trash"
+                action = "keep" if index == keeper else "to trash"
+                if info["link"] is not None and info["link"] != "":
+                    action = action + " (hard link)"  # other names keep its data: moving it frees nothing
+                    linked = True
                 dup_tree.insert(parent, "end", iid=parent + ":" + str(index), text=rel(info["path"]), tags=(tag,),
-                                values=(human_size(info["size"]), human_date(info["modified"]),
-                                        "keep" if index == keeper else "to trash"))
+                                values=(human_size(info["disk"]), human_date(info["modified"]), action))
                 index = index + 1
             rows = rows + len(group) + 1
             number = number + 1
         if number < len(groups):
-            dup_note.set("Showing the " + human_count(number) + " groups that save the most, of " + human_count(len(groups))
-                         + ". With nothing selected, actions apply to all of them.")
+            note = ("Showing the " + human_count(number) + " groups that save the most, of " + human_count(len(groups))
+                    + ". With nothing selected, actions apply to all of them.")
         else:
-            dup_note.set("Select rows to act on some groups only. \u201cKeep selected copy\u201d changes which one stays.")
+            note = "Select rows to act on some groups only. \u201cKeep selected copy\u201d changes which one stays."
+        if linked:
+            note = note + " A hard link is a file with other names as well: moving one name frees nothing."
+        dup_note.set(note)
         refresh_buttons()
 
     def show_view(key):
@@ -3404,9 +4119,20 @@ def run_gui(smoke_path, start_folder, start_view):
             scanned = scan(root, LARGEST_COUNT, days, time.time(), cancel_flag, send)
             if not scanned["ok"]:
                 return scanned
-            post("scan", scanned["value"])
-            post("tree", build_folder_tree(root, scanned["value"]["files"]))
-            return find_duplicates_in(scanned["value"]["files"], cancel_flag, send)
+            report = scanned["value"]
+            post("scan", report)
+            post("tree", build_folder_tree(root, report["files"], report["trash"]))
+            compared = find_duplicates_in(report["files"], cancel_flag, send)
+            if not compared["ok"]:
+                return compared
+            found = {"groups": compared["value"]["groups"], "report": None, "tree": None}
+            if len(compared["value"]["linked"]) > 0:
+                # Hard links the listing did not show (Windows): count each such file once. Done here, on
+                # the worker, so the window never waits for the new report and map.
+                fixed = count_links_once(report, compared["value"]["linked"], LARGEST_COUNT, days, time.time())
+                found["report"] = fixed
+                found["tree"] = build_folder_tree(root, fixed["files"], fixed["trash"])
+            return success(found)
 
         def on_message(kind, value):
             if kind == "tree":
@@ -3425,17 +4151,28 @@ def run_gui(smoke_path, start_folder, start_view):
                 state["map_center"] = root
                 state["dup_note"] = "comparing\u2026"
                 refresh_all()
-                log("  " + plural(value["file_count"], "file") + ", " + human_size(value["total_bytes"]))
+                log("  " + plural(value["file_count"], "file") + ", " + human_size(value["total_bytes"]) + " on disk")
+                if len(value["trash"]) > 0:
+                    log("  trash folder: " + plural(len(value["trash"]), "file") + ", " + human_size(value["trash_bytes"]))
                 if state["view"] in ("network", "organize", "activity"):
                     show_view("overview")
 
         def finish(result):
-            state["groups"] = result["value"]
+            found = result["value"]
+            if found["report"] is not None:
+                counted_once = found["report"]["saved"]["links"] - state["report"]["saved"]["links"]
+                state["report"] = found["report"]
+                if state["old_days"] != days:  # changed while the files were compared
+                    state["report"]["stale"] = stale_files(state["report"]["files"], state["old_days"], time.time())
+                set_map_tree(found["tree"])
+                state["map_pending"] = False
+                log("  hard links counted once: " + human_size(counted_once) + " less on disk")
+            state["groups"] = found["groups"]
             state["dup_note"] = ""
             state["map_wasted_ok"] = False
             refresh_all()
-            savings = duplicate_savings(result["value"])
-            log("  " + plural(savings["copies"], "duplicate copy") + ", " + human_size(savings["bytes"]))
+            savings = duplicate_savings(found["groups"], state["keep"])
+            log("  " + plural(savings["copies"], "duplicate copy") + ", " + human_size(savings["bytes"]) + " to free")
             status_var.set("Analyzed " + root + " \u2014 " + plural(state["report"]["file_count"], "file") + ", "
                            + human_size(savings["bytes"]) + " in duplicate copies")
 
@@ -3464,7 +4201,10 @@ def run_gui(smoke_path, start_folder, start_view):
             report_apply(result, verb)
             gone = {}
             for move in result["value"]["moved"]:
-                gone[move["source"]] = True
+                target = ""
+                if move["target"] != "" and in_trash_folder(move["target"]):
+                    target = move["target"]  # still on the drive: counted in the trash from now on
+                gone[move["source"]] = target
             files_before = state["report"]["file_count"]
             state["report"] = remove_from_report(state["report"], gone, LARGEST_COUNT, state["old_days"], time.time())
             if state["groups"] is not None:
@@ -3482,8 +4222,9 @@ def run_gui(smoke_path, start_folder, start_view):
         if len(rows) == 0:
             return
         scope = "selected " if has_selection(table) else ""
-        if not ask("Move " + plural(len(rows), scope + "file") + " (" + human_size(total_size(rows))
-                   + ") to the trash folder in " + state["root"] + "?\n\nUndo is available."):
+        if not ask("Move " + plural(len(rows), scope + "file") + " (" + human_size(total_disk(rows))
+                   + " on disk) to the trash folder in " + state["root"] + "?\n\n"
+                   "They stay on the drive until you delete the trash folder. Undo is available."):
             return
         apply_and_forget("Moving files to the trash", plan_trash(state["root"], rows), "Moved")
 
@@ -3596,4 +4337,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ff227301e9041f3ee909ec78ea68d8f35b52ac307d383831f80d9e26133b58e9 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=9e02899091b274fcac2219ae2d1b02b49470f3e5d5d7db44c85b98a126d33b44 ====

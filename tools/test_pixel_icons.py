@@ -3,7 +3,7 @@
 # About: Tests for pixel_icons.py.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
-# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
 import os
@@ -226,4 +226,4 @@ class ProjectTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=21913a1134f0ba6fc07ebb33d90872bb3d8e2e45ba8e7bfa61edf81c7d6e1b94 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ee51e570b230f220217c17da5f27da871f0990c3b1641c5dc4a75f4834d76591 ====

@@ -3,13 +3,13 @@
 # About: Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
-# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
 """Turn a 16x16 Silk icon into a project's pixelated icon set (standard library only).
 
     python tools/pixel_icons.py            # write icon/ into all nine projects
-    python tools/pixel_icons.py data_dash  # just one
+    python tools/pixel_icons.py company/data_dash  # just one (a project folder, relative to the portfolio root)
 
 Every size is the original enlarged by whole pixels (nearest-neighbour), so the icons stay pixelated.
 Each project gets icon/ with the unedited original, app-32/48/256.png, app.ico (16/32/48 as 32-bit BMP,
@@ -30,17 +30,17 @@ SILK = os.path.join(ROOT, "icons", "silk")
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
 SIZES = (16, 32, 48, 256)
 
-# project folder -> (Silk file, app id, display name, extras)
+# project folder, relative to the portfolio root -> (Silk file, app id, display name, extras)
 PROJECTS = {
-    "create_read_update_delete_simple_io_data_base": ("database.png", "GenericCompany.Hub", "Generic Company CRUD Hub", ()),
-    "document_mover_and_changer": ("folder_go.png", "GenericCompany.DocPipe", "Generic Company Doc Pipeline", ()),
-    "content_management_system": ("newspaper.png", "GenericCompany.CMS", "Generic Company Journal", ()),
-    "notification_and_message_hub": ("bell.png", "GenericCompany.Notify", "Generic Company Notify Hub", ()),
-    "simple_ticket_tracker": ("note.png", "GenericCompany.Tickets", "Generic Company Ticket Tracker", ("rgba", "favicon")),
-    "data_dash": ("chart_bar.png", "GenericCompany.Dash", "Generic Company Data Dash", ("rgba", "favicon")),
-    "install_wizard_maker": ("wand.png", "GenericCompany.Wizard", "Generic Company Wizard Maker", ("controls",)),
-    "dev_console": ("application_xp_terminal.png", "GenericCompany.DevConsole", "Generic Company Dev Console", ("rgba",)),
-    "drive_and_network_storage_manager": ("drive_network.png", "GenericCompany.Storage", "Generic Company Storage Manager", ()),
+    "company/crud_hub": ("database.png", "GenericCompany.Hub", "Generic Company CRUD Hub", ()),
+    "company/doc_pipeline": ("folder_go.png", "GenericCompany.DocPipe", "Generic Company Doc Pipeline", ()),
+    "company/journal": ("newspaper.png", "GenericCompany.CMS", "Generic Company Journal", ()),
+    "company/notify_hub": ("bell.png", "GenericCompany.Notify", "Generic Company Notify Hub", ()),
+    "company/ticket_tracker": ("note.png", "GenericCompany.Tickets", "Generic Company Ticket Tracker", ("rgba", "favicon")),
+    "company/data_dash": ("chart_bar.png", "GenericCompany.Dash", "Generic Company Data Dash", ("rgba", "favicon")),
+    "company/wizard_maker": ("wand.png", "GenericCompany.Wizard", "Generic Company Wizard Maker", ("controls",)),
+    "tools/dev_console": ("application_xp_terminal.png", "GenericCompany.DevConsole", "Generic Company Dev Console", ("rgba",)),
+    "utilities/storage_manager": ("drive_network.png", "GenericCompany.Storage", "Generic Company Storage Manager", ()),
 }
 
 CREDIT = ("Icon: Silk by Mark James (famfamfam.com/lab/icons/silk), CC BY 2.5 "
@@ -408,4 +408,4 @@ def main(argv):
 if __name__ == "__main__":
     main(sys.argv[1:])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4d82ed356b71d1b15f6dc094e255cdd71c519c1aac22895c1de74abbd2486a3d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=142172ad7b3db75d3de63ad3097c10f422a64f2277219cef652a09c0cd0605c6 ====

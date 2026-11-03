@@ -1,4 +1,6 @@
 # Private staging of reused originals; kept locally, never published (RULES 7 and 16)
 _extracted/
-# The private key for stamp.py; kept outside the repo, never published
+# The private key for tools/stamp.py; kept outside the repo, never published
 *stamp_key*
+# Python byte-code caches made by running the tests and tools
+__pycache__/

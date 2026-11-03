@@ -1,21 +1,21 @@
 [submodule "content_management_system"]
-	path = content_management_system
+	path = company/journal
 	url = https://github.com/kjFriday/content_management_system.git
 [submodule "create_read_update_delete_simple_io_data_base"]
-	path = create_read_update_delete_simple_io_data_base
+	path = company/crud_hub
 	url = https://github.com/kjFriday/create_read_update_delete_simple_io_data_base.git
 [submodule "data_dash"]
-	path = data_dash
+	path = company/data_dash
 	url = https://github.com/kjFriday/data_dash.git
 [submodule "document_mover_and_changer"]
-	path = document_mover_and_changer
+	path = company/doc_pipeline
 	url = https://github.com/kjFriday/document_mover_and_changer.git
 [submodule "notification_and_message_hub"]
-	path = notification_and_message_hub
+	path = company/notify_hub
 	url = https://github.com/kjFriday/notification_and_message_hub.git
 [submodule "simple_ticket_tracker"]
-	path = simple_ticket_tracker
+	path = company/ticket_tracker
 	url = https://github.com/kjFriday/simple_ticket_tracker.git
 [submodule "install_wizard_maker"]
-	path = install_wizard_maker
+	path = company/wizard_maker
 	url = https://github.com/kjFriday/install_wizard_maker.git

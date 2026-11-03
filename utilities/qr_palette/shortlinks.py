@@ -1,0 +1,713 @@
+# ==== Generic Company Inc. portfolio ====================================
+# Project: qr_palette | File: shortlinks.py
+# About: QR Palette short links: a short address printed in a QR code, pointing at a destination...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
+# Reused code, if any, is mapped in PROVENANCE.md.
+# ========================================================================
+
+"""QR Palette short links: a short address printed in a QR code, pointing at a destination that can
+change later without reprinting the code.
+
+A short link is the base address plus an ID, for example HTTPS://GO.EXAMPLE.COM/73491205:
+  * The ID is random digits, two tag digits and one Damm check digit, so a mistyped ID is caught.
+    Digits cannot be misread as letters, and they have no case: static web hosts treat /ABC and /abc as
+    different pages, so a typed fallback with letters breaks when someone types it in lower case.
+  * The tag is cut from a keyed hash of the random digits (localkey.py), so the Read tab can tell your
+    printed codes from a sticker put over them. Two digits are right by chance 1 time in 100: this
+    catches casual swaps, and is no cryptographic guarantee. IDs without a tag stay valid.
+  * The base is in capitals, so the whole address fits QR's alphanumeric mode: a smaller code, or
+    more error correction at the same size.
+  * The registry keeps ID -> destination. export_pages() writes one small redirect page per ID into
+    a folder that any static web host can serve; changing a destination means exporting again.
+  * Tracking tags are added to the destination when the pages are exported, never printed in a code.
+links.json has two sections of short links, each with its own base and export folder:
+  local     works on this computer or your own network, for trying codes before you have a domain
+            (serve the exported folder from this computer)
+  nonlocal  an internet address on a domain of your own, for codes you print for everyone
+The window switches between them; which one is in use is remembered in settings.json (links.use).
+links.json also holds the ID length, the tags and the link templates, shared by both sections.
+
+Records
+  Result     {"ok": bool, "error": str, "value": any}
+  Links      {"about", "local": Section, "nonlocal": Section, "id_digits", "tag_ids", "short_by_default",
+              "tags": {name: value}, "templates": {name: pattern}}           links.json, checked
+  Section    {"about", "base", "export_folder"}; nonlocal also has "publish": {"kind": "" | "git" | "folder",
+             "folder"}, where File > Publish nonlocal pages... writes them (publish.py)
+  ShortLink  {"code", "url", "target", "hex", ...}               one short link from the registry
+  Server     {"server", "thread", "address", "port", "folder", "base"}    the local pages, served
+
+start_server() serves exported local pages from this computer, so local short links can be tried at
+once; it binds to this computer alone unless the local base is a network address and the person allows
+that.
+"""
+
+import html
+import http.server
+import ipaddress
+import json
+import os
+import re
+import secrets
+import threading
+import urllib.parse
+
+import localkey
+import textsafe
+
+# The Damm algorithm's table (H. Michael Damm, 2004): a check digit that catches every single
+# mistyped digit and every swap of two neighbouring digits.
+DAMM = ("0317598642", "7092154863", "4206871359", "1750983426", "6123045978",
+        "3674209581", "5869720134", "8945362017", "9438617205", "2581436790")
+DIGITS = "0123456789"
+BASE_RE = re.compile(r"^HTTPS?://[A-Z0-9-]+(\.[A-Z0-9-]+)*(:[0-9]{1,5})?/([A-Z0-9-]+/)*$")
+SECTIONS = ("local", "nonlocal")
+LOCAL_SUFFIXES = (".LOCAL", ".LAN", ".HOME", ".HOME.ARPA", ".INTERNAL", ".LOCALHOST")
+SEGMENT_RE = re.compile(r"^[A-Z0-9-]+$")
+FIELD_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+TAG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+PLACEHOLDER_HOSTS = ("EXAMPLE.COM", "EXAMPLE.NET", "EXAMPLE.ORG")
+MAX_TARGET = 2048
+UNSAFE = {'"': "%22", "'": "%27", "<": "%3C", ">": "%3E", "`": "%60"}
+
+DEFAULT_LINKS = {
+    "about": "Short links: what QR Palette prints in a code when Short link is ticked, and how the redirect "
+             "pages are made. There are two sections, local and nonlocal, each with its own base (the address "
+             "printed before the ID, in capitals and ending in /) and export_folder (where Export starts; empty "
+             "means your home folder). The Make tab switches between them, and settings.json remembers which "
+             "one is in use. id_digits: random digits per ID; one check digit is added. tag_ids: add two digits "
+             "cut from a hash under this computer's key, so the Read tab can tell your codes from others. "
+             "short_by_default: tick Short link when the window opens. tags: query parameters added to every "
+             "destination when the "
+             "pages are exported; {id} becomes the ID and {hex} the code's color without #. templates: links "
+             "you build from fields with From template; {name} is a field you fill in. Edit, save and restart.",
+    "local": {
+        "about": "Short links that work on this computer or your own network, for trying codes before you have "
+                 "a domain. Export the local pages and serve that folder from this computer (README.md shows "
+                 "the command). LOCALHOST works in this computer's own browser; for phones on the same Wi-Fi, "
+                 "put this computer's network address instead, such as HTTP://192.168.1.20:8000/.",
+        "base": "HTTP://LOCALHOST:8000/",
+        "export_folder": "",
+    },
+    "nonlocal": {
+        "about": "Short links for codes you print for everyone: an internet address on a domain or subdomain "
+                 "of your own, which will serve the exported nonlocal pages. GO.EXAMPLE.COM is only a "
+                 "placeholder. Pick a domain you will keep: every printed code depends on it. publish: where File > "
+                 "Publish nonlocal pages writes them, after showing what would change and asking. kind git: folder "
+                 "is in a Git repository (GitHub Pages, say); the pages, CNAME and .nojekyll are committed and "
+                 "pushed, never forced. kind folder: a folder something else syncs. Empty kind: not set up.",
+        "base": "HTTPS://GO.EXAMPLE.COM/",
+        "export_folder": "",
+        "publish": {"kind": "", "folder": ""},
+    },
+    "id_digits": 7,
+    "tag_ids": True,
+    "short_by_default": False,
+    "tags": {"utm_source": "qr", "utm_medium": "print", "utm_content": "{id}-{hex}"},
+    "templates": {
+        "page": "https://www.example.com/{page}",
+        "product": "https://shop.example.com/p/{item}",
+        "event": "https://www.example.com/events/{event}",
+    },
+}
+
+HOME_PAGE = ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+             "<meta name=\"robots\" content=\"noindex\">\n<title>QR codes</title>\n</head>\n<body>\n"
+             "<p>These addresses forward QR codes to their pages.</p>\n</body>\n</html>\n")
+MISSING_PAGE = ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+                "<meta name=\"robots\" content=\"noindex\">\n<title>Unknown code</title>\n</head>\n<body>\n"
+                "<p>This code is not known. If you typed it, check the digits under the QR code.</p>\n"
+                "</body>\n</html>\n")
+ROBOTS = "User-agent: *\nDisallow: /\n"
+
+
+def ok_result(value):
+    return {"ok": True, "error": "", "value": value}
+
+
+def fail(error):
+    return {"ok": False, "error": error, "value": None}
+
+
+# --- IDs -------------------------------------------------------------------------------------------
+
+def damm_interim(digits):
+    interim = 0
+    for character in digits:
+        interim = int(DAMM[interim][DIGITS.index(character)])
+    return interim
+
+
+def check_digit(digits):
+    """The Damm check digit for a string of digits: "572" -> "4"."""
+    return str(damm_interim(digits))
+
+
+def is_valid_code(code):
+    """True for an ID of digits whose last digit is its Damm check digit."""
+    if not isinstance(code, str) or len(code) < 2:
+        return False
+    for character in code:
+        if character not in DIGITS:
+            return False
+    return damm_interim(code) == 0
+
+
+def id_tag(key, body):
+    """The two tag digits of an ID's random digits, under the local key."""
+    return "%02d" % (int(localkey.tag(key, "id", body), 16) % 100)
+
+
+def new_code(id_digits, key=None):
+    """A fresh random ID: `id_digits` random digits, with a key their two tag digits, and the check digit."""
+    body = ""
+    for index in range(id_digits):
+        body = body + str(secrets.randbelow(10))
+    if key is not None:
+        body = body + id_tag(key, body)
+    return body + check_digit(body)
+
+
+def has_valid_tag(code, key):
+    """True when an ID's two digits before its check digit are the tag of the digits before them. One
+    ID in 100 that was never tagged passes by chance."""
+    if key is None or not is_valid_code(code) or len(code) < 4:
+        return False
+    return id_tag(key, code[:len(code) - 3]) == code[len(code) - 3:len(code) - 1]
+
+
+def code_standing(code, key, known):
+    """How an ID on one of your addresses stands -> "tagged" (made with your key), "untagged" (a short
+    link in your registry without a tag: made before tags, or with another key), "unverified" (in your
+    registry, with no key here to check it), "unknown" (not in this registry, with no key here to check
+    it), or "foreign" (not in this registry, and its tag or its check digit is wrong). `known`: it is in
+    this registry. Losing the key makes a tag unverifiable, never invalid."""
+    if not is_valid_code(code):
+        return "foreign"
+    if has_valid_tag(code, key):
+        return "tagged"
+    if known:
+        if key is None:
+            return "unverified"
+        return "untagged"
+    if key is None:
+        return "unknown"
+    return "foreign"
+
+
+# --- Addresses that only look like yours --------------------------------------------------------------
+
+# Letters of other alphabets that look like Latin capitals, and digits that look like letters. Written as
+# code points: such characters are never written literally in this source.
+LOOKS_LIKE = {0x0410: "A", 0x0430: "A", 0x0412: "B", 0x0421: "C", 0x0441: "C", 0x0415: "E", 0x0435: "E", 0x041D: "H",
+              0x0406: "I", 0x0456: "I", 0x0408: "J", 0x0458: "J", 0x041A: "K", 0x041C: "M", 0x041E: "O", 0x043E: "O",
+              0x0420: "P", 0x0440: "P", 0x0405: "S", 0x0455: "S", 0x0422: "T", 0x0423: "Y", 0x0443: "Y", 0x0425: "X",
+              0x0445: "X", 0x0391: "A", 0x0392: "B", 0x0395: "E", 0x0397: "H", 0x0399: "I", 0x039A: "K", 0x039C: "M",
+              0x039D: "N", 0x039F: "O", 0x03BF: "O", 0x03A1: "P", 0x03A4: "T", 0x03A5: "Y", 0x03A7: "X",
+              ord("0"): "O", ord("1"): "I", ord("L"): "I", ord("5"): "S"}
+MIN_LOOKALIKE_HOST = 5
+
+
+def plain_host(host):
+    """A host in capitals, its xn-- labels (internationalized names) read back into their letters."""
+    if "xn--" in host.lower():
+        try:
+            host = host.lower().encode("ascii").decode("idna")
+        except UnicodeError:
+            pass
+    return host.upper()
+
+
+def skeleton(host):
+    """A host with every character that looks like another replaced by that one."""
+    kept = []
+    for character in host:
+        kept.append(LOOKS_LIKE.get(ord(character), character))
+    return "".join(kept)
+
+
+def letters_apart(first, second):
+    """How many letters apart two texts are: changed, added, removed, or two neighbours swapped."""
+    previous = None
+    row = list(range(len(second) + 1))
+    for i in range(1, len(first) + 1):
+        before = previous
+        previous = row
+        row = [i] + [0] * len(second)
+        for j in range(1, len(second) + 1):
+            cost = 0 if first[i - 1] == second[j - 1] else 1
+            row[j] = min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + cost)
+            if i > 1 and j > 1 and first[i - 1] == second[j - 2] and first[i - 2] == second[j - 1]:
+                row[j] = min(row[j], before[j - 2] + 1)
+    return row[len(second)]
+
+
+def lookalike(url, bases):
+    """The base host a link's host imitates, without being it -> that host, or "". Imitating is one or two
+    letters off, letters from another alphabet or digits that look the same, your host as the start of
+    a longer one (GO.EXAMPLE.COM.EXAMPLE.NET), or your host put before an @, where it means nothing."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = plain_host(parts.hostname or "").rstrip(".")
+        user = (parts.username or "").upper().rstrip(".")
+    except ValueError:
+        return ""
+    if host == "":
+        return ""
+    for base in bases:
+        theirs = host_of(base).split(":")[0]
+        if host == theirs or len(theirs) < MIN_LOOKALIKE_HOST or is_ip_address(theirs):
+            continue
+        if user == theirs or host.startswith(theirs + "."):
+            return theirs
+        if letters_apart(host, theirs) <= 2 or skeleton(host) == skeleton(theirs):
+            return theirs
+    return ""
+
+
+def is_ip_address(host):
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def short_url(base, code):
+    return base + code
+
+
+def host_of(url):
+    """The host (and port) of an address, in capitals: "HTTPS://GO.EXAMPLE.COM/1" -> "GO.EXAMPLE.COM"."""
+    try:
+        return urllib.parse.urlsplit(url).netloc.upper()
+    except ValueError:
+        return ""
+
+
+def caption(url):
+    """The text printed under a code, for typing when a camera cannot scan it: the address without
+    its scheme, "GO.EXAMPLE.COM/73491205"."""
+    for scheme in ("HTTPS://", "HTTP://"):
+        if url.upper().startswith(scheme):
+            return url[len(scheme):]
+    return url
+
+
+def is_local_host(host):
+    """True for a host that only this computer or its own network can reach: LOCALHOST, a name with
+    no dot or a local-network ending (.LOCAL, .LAN, .HOME.ARPA, ...), or a loopback, private or
+    link-local IP address. `host` may carry a port; IPv6 addresses are not used in a base."""
+    name = host.upper().split(":")[0]
+    if name == "LOCALHOST" or "." not in name:
+        return True
+    for suffix in LOCAL_SUFFIXES:
+        if name.endswith(suffix):
+            return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
+def check_base(base, section):
+    """"" when `base` can start a short link of `section` ("local" or "nonlocal"), else what is wrong:
+    a nonlocal base must be an internet address, so that printed codes work for everyone."""
+    if not isinstance(base, str) or BASE_RE.match(base) is None:
+        return ("the base must look like HTTPS://GO.EXAMPLE.COM/ : http or https, then a host and an optional "
+                "path in capitals, digits, dots and dashes, ending in /")
+    if section == "nonlocal" and is_local_host(host_of(base)):
+        return ("the nonlocal base must be an internet address that phones anywhere can reach; this computer's "
+                "or your network's address belongs in local")
+    return ""
+
+
+def is_placeholder(base):
+    """True while the base is still an example address that nobody can serve."""
+    host = host_of(base).split(":")[0]
+    for name in PLACEHOLDER_HOSTS:
+        if host == name or host.endswith("." + name):
+            return True
+    return False
+
+
+# --- Destinations, templates and tags ----------------------------------------------------------------
+
+def check_target(text):
+    """A destination as it may be stored and exported -> Result str: http or https with a host, no
+    spaces or control characters, at most 2048 characters. Quotes and angle brackets are
+    percent-encoded, so the address can never close the attribute it is written into."""
+    value = textsafe.clean(text, None).strip()
+    if value == "":
+        return fail("type the link the code should open")
+    if not value.lower().startswith("http://") and not value.lower().startswith("https://"):
+        return fail("a short link can only open an http:// or https:// link")
+    if len(value) > MAX_TARGET:
+        return fail("a link may be at most " + str(MAX_TARGET) + " characters")
+    for character in value:
+        if character.isspace():
+            return fail("a link has no spaces")
+    try:
+        parts = urllib.parse.urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        return fail("not a valid link: " + value[:80])
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return fail("a short link can only open an http:// or https:// link")
+    encoded = []
+    for character in value:
+        encoded.append(UNSAFE.get(character, character))
+    return ok_result("".join(encoded))
+
+
+def template_fields(pattern):
+    """The fields a template asks for, in order: "https://x.example/{a}/{b}" -> ["a", "b"]."""
+    found = []
+    for name in FIELD_RE.findall(pattern):
+        if name not in found:
+            found.append(name)
+    return found
+
+
+def fill_template(pattern, values):
+    """A link from a template and the values of its fields -> Result link. Each value is one part of
+    the link, so characters such as / and ? in it are percent-encoded."""
+    link = pattern
+    for name in template_fields(pattern):
+        value = textsafe.clean(values.get(name, ""), None).strip()
+        if value == "":
+            return fail("fill in " + name)
+        link = link.replace("{" + name + "}", urllib.parse.quote(value, safe=""))
+    return check_target(link)
+
+
+def tagged(target, tags, code, color):
+    """The destination with the tracking tags added (a tag the link already has is left as it is):
+    {id} becomes the ID and {hex} the color without its #. The link's own query is kept as written."""
+    try:
+        parts = urllib.parse.urlsplit(target)
+    except ValueError:
+        return target
+    present = []
+    for pair in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
+        present.append(pair[0])
+    added = []
+    for name in tags:
+        value = tags[name].replace("{id}", code).replace("{hex}", color.lstrip("#"))
+        if value == "" or name in present:
+            continue
+        added.append((name, value))
+    if len(added) == 0:
+        return target
+    query = parts.query
+    if query != "":
+        query = query + "&"
+    query = query + urllib.parse.urlencode(added)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
+# --- links.json ------------------------------------------------------------------------------------
+
+def read_text(path):
+    handle = open(path, "r", encoding="utf-8-sig")
+    try:
+        return handle.read()
+    finally:
+        handle.close()
+
+
+def expand(path):
+    if path == "":
+        return ""
+    return os.path.normpath(os.path.expandvars(os.path.expanduser(path)))
+
+
+def copy_links(links):
+    """A copy of a Links record that can be changed without touching the original (two levels deep)."""
+    copied = {}
+    for key in links:
+        value = links[key]
+        if isinstance(value, dict):
+            inner = {}
+            for name in value:
+                inner[name] = value[name]
+                if isinstance(value[name], dict):
+                    inner[name] = dict(value[name])
+            value = inner
+        copied[key] = value
+    return copied
+
+
+def read_section(links, data, section, warnings):
+    """One section of links.json into `links`: its base (checked for the section) and export folder."""
+    if section not in data:
+        return
+    found = data[section]
+    if not isinstance(found, dict):
+        warnings.append("links: " + section + " must be an object with a base and an export_folder")
+        return
+    if "base" in found:
+        problem = check_base(found["base"], section)
+        if problem == "":
+            links[section]["base"] = found["base"]
+        else:
+            warnings.append("links: " + section + ".base: " + problem)
+    if "export_folder" in found:
+        if isinstance(found["export_folder"], str):
+            links[section]["export_folder"] = expand(found["export_folder"])
+        else:
+            warnings.append("links: " + section + ".export_folder must be text")
+    if section == "nonlocal" and "publish" in found:
+        publish = found["publish"]
+        if (isinstance(publish, dict) and publish.get("kind", "") in ("", "git", "folder") and
+                isinstance(publish.get("folder", ""), str)):
+            links[section]["publish"] = {"kind": publish.get("kind", ""), "folder": expand(publish.get("folder", ""))}
+        else:
+            warnings.append('links: nonlocal.publish must be {"kind": "git" or "folder", "folder": a folder}')
+
+
+def load_links(path):
+    """links.json -> {"links": Links, "warnings": [str]}. Parts that are missing or not valid keep
+    their defaults, and say so; a file that is not valid JSON means the defaults."""
+    links = copy_links(DEFAULT_LINKS)
+    try:
+        data = json.loads(read_text(path))
+    except (OSError, ValueError) as error:
+        return {"links": links, "warnings": ["cannot use " + path + " (" + str(error) + "); using the built-in "
+                                             "short-link settings"]}
+    if not isinstance(data, dict):
+        return {"links": links, "warnings": [path + " must hold one JSON object; using the built-in short-link "
+                                             "settings"]}
+    warnings = []
+    for section in SECTIONS:
+        read_section(links, data, section, warnings)
+    if "id_digits" in data:
+        digits = data["id_digits"]
+        if not isinstance(digits, bool) and isinstance(digits, int) and 4 <= digits <= 12:
+            links["id_digits"] = digits
+        else:
+            warnings.append("links: id_digits must be a whole number from 4 to 12")
+    if "tag_ids" in data:
+        if isinstance(data["tag_ids"], bool):
+            links["tag_ids"] = data["tag_ids"]
+        else:
+            warnings.append("links: tag_ids must be true or false")
+    if "short_by_default" in data:
+        if isinstance(data["short_by_default"], bool):
+            links["short_by_default"] = data["short_by_default"]
+        else:
+            warnings.append("links: short_by_default must be true or false")
+    if "tags" in data:
+        tags = {}
+        if isinstance(data["tags"], dict):
+            for name in data["tags"]:
+                value = data["tags"][name]
+                if TAG_NAME_RE.match(name) is not None and isinstance(value, str) and len(value) <= 200:
+                    tags[name] = value
+                else:
+                    warnings.append("links: tags: " + json.dumps(name) + " must be a short name with a text value")
+            links["tags"] = tags
+        else:
+            warnings.append("links: tags must be an object of names and values")
+    if "templates" in data:
+        templates = {}
+        if isinstance(data["templates"], dict):
+            for name in data["templates"]:
+                pattern = data["templates"][name]
+                sample = {}
+                rest = "{"
+                if isinstance(pattern, str):
+                    for field in template_fields(pattern):
+                        sample[field] = "x"
+                    rest = FIELD_RE.sub("", pattern)
+                if (isinstance(pattern, str) and name.strip() != "" and "{" not in rest and "}" not in rest and
+                        fill_template(pattern, sample)["ok"]):
+                    templates[name.strip()] = pattern
+                else:
+                    warnings.append("links: templates: " + json.dumps(name) + " must be an http(s) link whose "
+                                    "fields are written {name}")
+            links["templates"] = templates
+        else:
+            warnings.append("links: templates must be an object of names and links")
+    return {"links": links, "warnings": warnings}
+
+
+def section_of(links, url):
+    """Which section a printed address belongs to ("local" or "nonlocal"), by the base it starts
+    with; "" when neither (made before a base was changed)."""
+    for section in SECTIONS:
+        if url.startswith(links[section]["base"]):
+            return section
+    return ""
+
+
+def links_text(links):
+    """links.json as people read it: indented, one setting per line."""
+    return json.dumps(links, indent=2, ensure_ascii=False) + "\n"
+
+
+# --- Redirect pages ----------------------------------------------------------------------------------
+
+def redirect_page(target):
+    """One redirect page: it sends the browser straight on, and shows the link for any browser that
+    does not follow it. Search engines are asked to leave it out."""
+    shown = html.escape(target, quote=True)
+    return ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+            "<meta name=\"robots\" content=\"noindex\">\n"
+            "<meta http-equiv=\"refresh\" content=\"0; url=" + shown + "\">\n"
+            "<link rel=\"canonical\" href=\"" + shown + "\">\n"
+            "<title>Opening the link</title>\n</head>\n<body>\n"
+            "<p><a href=\"" + shown + "\">Open " + shown + "</a></p>\n</body>\n</html>\n")
+
+
+def page_parts(url):
+    """Where a short link's page goes inside the export folder: "HTTPS://GO.EXAMPLE.COM/Q/12" ->
+    ["Q", "12", "index.html"], or None when its path is not plain capitals, digits and dashes."""
+    try:
+        path = urllib.parse.urlsplit(url).path
+    except ValueError:
+        return None
+    segments = path.strip("/").split("/")
+    for segment in segments:
+        if SEGMENT_RE.match(segment) is None:
+            return None
+    return segments + ["index.html"]
+
+
+def write_text(path, text):
+    """Write a file next to its place first, then move it in, so a page is never half written."""
+    folder = os.path.dirname(path)
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    temporary = path + ".part"
+    handle = open(temporary, "w", encoding="utf-8", newline="\n")
+    try:
+        handle.write(text)
+    finally:
+        handle.close()
+    os.replace(temporary, path)
+
+
+def export_pages(folder, rows, base, tags):
+    """Write a redirect page for every short link on `base`'s host (one section's), plus index.html,
+    404.html and robots.txt -> Result {"folder", "written", "skipped": [ID]}. Short links on another
+    host (the other section's, or made before a base changed) and destinations that are no longer
+    valid are skipped."""
+    if folder == "":
+        return fail("choose a folder for the redirect pages")
+    host = host_of(base)
+    pages = []
+    skipped = []
+    for row in rows:
+        parts = page_parts(row["url"])
+        target = check_target(row["target"])
+        if host_of(row["url"]) != host or parts is None or not target["ok"]:
+            skipped.append(row["code"])
+            continue
+        pages.append((parts, redirect_page(tagged(target["value"], tags, row["code"], row["hex"]))))
+    pages.append((["index.html"], HOME_PAGE))
+    pages.append((["404.html"], MISSING_PAGE))
+    pages.append((["robots.txt"], ROBOTS))
+    try:
+        for parts, text in pages:
+            write_text(os.path.join(folder, *parts), text)
+    except OSError as error:
+        return fail("cannot write the redirect pages: " + str(error))
+    return ok_result({"folder": folder, "written": len(pages) - 3, "skipped": skipped})
+
+
+# --- Serving the local pages from this computer -------------------------------------------------------
+
+def serve_address(base, network):
+    """Where the local pages are served -> Result (address, port), from the local section's base. Only
+    http (there is no certificate here). LOCALHOST and loopback addresses bind to this computer alone;
+    any other address reaches your network, so it needs `network` (the person said yes to that)."""
+    try:
+        parts = urllib.parse.urlsplit(base)
+        port = parts.port or 80
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return fail("the local base is not a valid address")
+    if parts.scheme.lower() != "http":
+        return fail("only an http:// local base can be served from this computer")
+    if host == "localhost":
+        return ok_result(("127.0.0.1", port))
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and address.is_loopback:
+        return ok_result((str(address), port))
+    if not network:
+        return fail("the local base " + base + " is on your network: allow phones on your network first")
+    if address is not None:
+        return ok_result((str(address), port))
+    return ok_result(("0.0.0.0", port))
+
+
+def page_handler(folder):
+    """A request handler for the exported pages: GET and HEAD of files in `folder` only, never a list
+    of files, the folder's own 404.html for anything missing, and nothing logged."""
+    missing = os.path.join(folder, "404.html")
+
+    class PageHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *arguments, **options):
+            super().__init__(*arguments, directory=folder, **options)
+
+        def log_message(self, *arguments):
+            pass
+
+        def list_directory(self, path):
+            self.send_error(404)
+            return None
+
+        def send_error(self, code, message=None, explain=None):
+            if code != 404 or not os.path.isfile(missing):
+                super().send_error(code, message, explain)
+                return
+            handle = open(missing, "rb")
+            try:
+                body = handle.read()
+            finally:
+                handle.close()
+            self.send_response(404)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+    return PageHandler
+
+
+class PageServer(http.server.ThreadingHTTPServer):
+    # On Windows, SO_REUSEADDR lets a second server take a port that is already in use; never ask for it there.
+    allow_reuse_address = os.name != "nt"
+
+
+def start_server(folder, base, network):
+    """Serve the exported local pages in `folder` at the local base -> Result Server {"server",
+    "thread", "address", "port", "folder", "base"}. Stop it with stop_server()."""
+    where = serve_address(base, network)
+    if not where["ok"]:
+        return where
+    if not os.path.isfile(os.path.join(folder, "index.html")):
+        return fail("export the local pages into " + folder + " first")
+    try:
+        server = PageServer(where["value"], page_handler(folder))
+    except OSError as error:
+        return fail("cannot serve on " + where["value"][0] + " port " + str(where["value"][1]) + ": " + str(error))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return ok_result({"server": server, "thread": thread, "address": where["value"][0], "port": where["value"][1],
+                      "folder": folder, "base": base})
+
+
+def stop_server(running):
+    running["server"].shutdown()
+    running["server"].server_close()
+    running["thread"].join(5)
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=35924417f2cacc0ca557957b76495f363430f892138a5b75751c80fcb04692eb ====

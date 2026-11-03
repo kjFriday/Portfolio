@@ -3,7 +3,7 @@
 # About: End-to-end check of the six Generic Company programs against one sandbox database...
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
-# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
 # End-to-end check of the six Generic Company programs against one sandbox database (nothing outside $Sandbox is
@@ -15,7 +15,7 @@ $root = Split-Path $PSScriptRoot -Parent
 Remove-Item -Recurse -Force $Sandbox -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $Sandbox | Out-Null
 $db = Join-Path $Sandbox "generic_company.db"
-$hub = Join-Path $root "create_read_update_delete_simple_io_data_base"
+$hub = Join-Path $root "company\crud_hub"
 $failed = 0
 function Check($what, $ok) {
   if ($ok) { Write-Host "  ok    $what" } else { Write-Host "  FAIL  $what"; $script:failed++ }
@@ -34,8 +34,8 @@ function Smoke($name, $exe, [string[]]$extra) {
 "Building the Go programs"
 $bin = Join-Path $Sandbox "bin"
 $env:GOTOOLCHAIN = "local"; $env:CGO_ENABLED = "0"
-go -C (Join-Path $root "content_management_system") build -ldflags "-H windowsgui" -o (Join-Path $bin "generic-company-cms.exe") .
-go -C (Join-Path $root "notification_and_message_hub") build -ldflags "-H windowsgui" -o (Join-Path $bin "generic-company-notify.exe") ./cmd/notify
+go -C (Join-Path $root "company\journal") build -ldflags "-H windowsgui" -o (Join-Path $bin "generic-company-cms.exe") .
+go -C (Join-Path $root "company\notify_hub") build -ldflags "-H windowsgui" -o (Join-Path $bin "generic-company-notify.exe") ./cmd/notify
 
 "Seeding $db"
 python (Join-Path $hub "seed.py") --fresh --db $db | Out-Null
@@ -44,22 +44,22 @@ $docs0, $events0, $pending0 = (Rows documents), (Rows events), (Rows events "sta
 "Windows"
 $h = Smoke "hub" "python" @("`"$(Join-Path $hub 'main.py')`"")
 Check "hub counts match the file" ($h.counts.orders -eq (Rows orders) -and $h.counts.tickets -eq (Rows tickets))
-$d = Smoke "docpipe" "python" @("`"$(Join-Path $root 'document_mover_and_changer\docpipe_app.py')`"", "--out", "`"$(Join-Path $Sandbox 'docs')`"")
+$d = Smoke "docpipe" "python" @("`"$(Join-Path $root 'company\doc_pipeline\docpipe_app.py')`"", "--out", "`"$(Join-Path $Sandbox 'docs')`"")
 Check "doc pipeline read 400 orders" ($d.counts.orders -eq 400)
 $c = Smoke "cms" (Join-Path $bin "generic-company-cms.exe") @()
 Check "CMS authors from the database" ($c.counts.authors -eq (Rows employees))
 $n = Smoke "notify" (Join-Path $bin "generic-company-notify.exe") @()
-$t = Smoke "tickets" (Join-Path $root "simple_ticket_tracker\target\release\generic-company-tickets.exe") @()
+$t = Smoke "tickets" (Join-Path $root "company\ticket_tracker\target\release\generic-company-tickets.exe") @()
 Check "tracker shows every ticket" ($t.counts.shown -eq (Rows tickets))
-$s = Smoke "dash" (Join-Path $root "data_dash\target\release\generic-company-dash.exe") @()
+$s = Smoke "dash" (Join-Path $root "company\data_dash\target\release\generic-company-dash.exe") @()
 
 "Programs talking through the file"
-Push-Location (Join-Path $root "document_mover_and_changer")
+Push-Location (Join-Path $root "company\doc_pipeline")
 python -m docpipe --cli --db $db --out (Join-Path $Sandbox "docs") --register | Out-Null
 Pop-Location
 Check "docpipe registered a documents.generated event" ((Rows events "kind = 'documents.generated'") -eq 1)
 Check "hub sees it: events $events0 -> $(Rows events)" ((Rows events) -eq $events0 + 1)
-Push-Location (Join-Path $root "notification_and_message_hub")
+Push-Location (Join-Path $root "company\notify_hub")
 go run ./cmd/dispatch -db $db -out (Join-Path $Sandbox "outbox") | Out-Null
 $after1 = Rows events "status = 'pending'"
 go run ./cmd/dispatch -db $db -out (Join-Path $Sandbox "outbox") | Out-Null
@@ -73,4 +73,4 @@ Check "generic_company.db can be renamed with every program closed" $true
 
 if ($failed) { "$failed check(s) failed"; exit 1 } else { "All checks passed." }
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=7a7e4b4d516b3f4a45091d4b2a297628f5e30820b6e4e5c525e98f88b00038d4 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=99b87999d9b7a6c55e319d2744e8010415de56b0560d0eb5e09063e70753d8a2 ====

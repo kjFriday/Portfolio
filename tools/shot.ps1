@@ -3,7 +3,7 @@
 # About: Screenshot one Generic Company window for checking icons and titles by eye...
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
-# the version kjFriday wrote. Verify with the portfolio's stamp.py --check.
+# the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
 # Screenshot one Generic Company window for checking icons and titles by eye:
@@ -37,4 +37,4 @@ $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.D
 "{0} '{1}' -> {2}" -f $win.ProcessName, $win.MainWindowTitle, $Out
 Stop-Process -Id $win.Id -ErrorAction SilentlyContinue; Stop-Process $p -ErrorAction SilentlyContinue
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=50ee0ccd195f36ab70684df0bfc900182531c3587dbd410d6b3015628a13d724 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=62068a5b4b330c2e4fa7798185f4e626c42ad59577095c36181cc3ddc7edd106 ====

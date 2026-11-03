@@ -2,7 +2,7 @@
 
 **Generic Company** stands for **American Company Management Engine**: seven programs that each run on their own
 and share only data (a SQLite file and JSON), with no code shared between them at run time. The rules
-they share are in [ENGINE.md](create_read_update_delete_simple_io_data_base/ENGINE.md).
+they share are in [ENGINE.md](company/crud_hub/ENGINE.md).
 
 Six small desktop programs that run a fictional company, **Generic Company Inc.**, from one shared mock database,
 and a seventh that makes install wizards for them (or for any Windows program). Generic Company Inc., its staff,
@@ -24,22 +24,22 @@ them is the **path to the shared SQLite file**.
 
 | Program | Folder | Icon (Silk) | Reads | Writes |
 |---|---|---|---|---|
-| Generic Company CRUD Hub | `create_read_update_delete_simple_io_data_base` | database | every table | every table; owns the schema and the seed |
-| Generic Company Doc Pipeline | `document_mover_and_changer` | folder_go | orders, documents, customers, products | documents rows, a `documents.generated` event |
-| Generic Company Journal (CMS) | `content_management_system` | newspaper | employees (post authors) | nothing |
-| Generic Company Notify Hub | `notification_and_message_hub` | bell | events, customers | `events.status` |
-| Generic Company Ticket Tracker | `simple_ticket_tracker` | note | tickets, customers, employees | tickets |
-| Generic Company Data Dash | `data_dash` | chart_bar | orders, products, customers, tickets | nothing |
+| Generic Company CRUD Hub | `company/crud_hub` | database | every table | every table; owns the schema and the seed |
+| Generic Company Doc Pipeline | `company/doc_pipeline` | folder_go | orders, documents, customers, products | documents rows, a `documents.generated` event |
+| Generic Company Journal (CMS) | `company/journal` | newspaper | employees (post authors) | nothing |
+| Generic Company Notify Hub | `company/notify_hub` | bell | events, customers | `events.status` |
+| Generic Company Ticket Tracker | `company/ticket_tracker` | note | tickets, customers, employees | tickets |
+| Generic Company Data Dash | `company/data_dash` | chart_bar | orders, products, customers, tickets | nothing |
 
-**Dev Console** (`dev_console`, Rust/egui) is a tool for working on the portfolio rather than part of the company: one window that builds, tests, runs and smoke-checks all seven programs, with live re-testing on save and rebindable controls. See [dev_console/README.md](dev_console/README.md).
+**Dev Console** (`tools/dev_console`, Rust/egui) is a tool for working on the portfolio rather than part of the company: one window that builds, tests, runs and smoke-checks all seven programs, with live re-testing on save and rebindable controls. See [dev_console/README.md](tools/dev_console/README.md).
 
-**Storage Manager** (`drive_and_network_storage_manager`, Python/tkinter) is a stand-alone utility that doesn't use the database. It organizes and cleans folders on local drives (scan, duplicates, sort by type or date, with preview and undo) and handles network shares (check, map, back up to a share). It is one standard-library file, written so it ports easily to other languages. Run it with `python storage_manager.py`. See [its README](drive_and_network_storage_manager/README.md).
+**Storage Manager** (`utilities/storage_manager`, Python/tkinter) is a stand-alone utility that doesn't use the database. It organizes and cleans folders on local drives (scan, duplicates, sort by type or date, with preview and undo) and handles network shares (check, map, back up to a share). It is one standard-library file, written so it ports easily to other languages. Run it with `python storage_manager.py`. See [its README](utilities/storage_manager/README.md).
 
-**QR Studio** (`qr_code_studio`, Python/tkinter) is a stand-alone utility that reads QR codes from pictures (open or paste; turned, tilted, noisy or mirrored pictures are fine) and makes new ones (PNG, SVG or clipboard). The QR codec is written from scratch in one standard-library file. Run it with `python qr_studio.py`. See [its README](qr_code_studio/README.md).
+**QR Studio** (`utilities/qr_studio`, Python/tkinter) is a stand-alone utility that reads QR codes from pictures (open or paste; turned, tilted, noisy or mirrored pictures are fine) and makes new ones (PNG, SVG or clipboard). The QR codec is written from scratch in one standard-library file. Run it with `python qr_studio.py`. See [its README](utilities/qr_studio/README.md).
 
-**Color Voats** (`color_tile_recommender`, Python/tkinter) is a stand-alone utility: a social feed where every post is a color. It starts with the 216 colors of the 6×6×6 cube, and you can post your own. Each post has Good and Bad buttons, Save (for a Saved tab) and a comment section. The For you feed is ranked by your votes ("voats") through an algo aggregation factory. Each algo (net voats, Wilson score, color similarity, exploration, and a mixer that hands on down a chain of algos when one stalls) has a TOML or JSON weights file. A named preset picks the algo and what it uses, and `factory.py` generates a standalone Python ranker for each preset. Run it with `python color_voats.py`. See [its README](color_tile_recommender/README.md).
+**Color Voats** (`utilities/color_voats`, Python/tkinter) is a stand-alone utility: a social feed where every post is a color. It starts with the 216 colors of the 6×6×6 cube, and you can post your own. Each post has Good and Bad buttons, Save (for a Saved tab) and a comment section. The For you feed is ranked by your votes ("voats") through an algo aggregation factory. Each algo (net voats, Wilson score, color similarity, exploration, and a mixer that hands on down a chain of algos when one stalls) has a TOML or JSON weights file. A named preset picks the algo and what it uses, and `factory.py` generates a standalone Python ranker for each preset. Run it with `python color_voats.py`. See [its README](utilities/color_voats/README.md).
 
-**QR Palette** (`qr_color_registry`, Python/tkinter) combines the two. It draws QR codes in the colors Color Voats' rankers recommend: the 118 of the 216 cube colors that are dark enough to scan on white. Every saved code is read back before it is kept. Each code's link, color and file path go into a relational SQLite registry of its own. You find codes again by QR code (a link, a path or a picture) or by color, and every answer gives the color, the link and where the picture is. Other programs can ask through the **Environment Context Protocol (ECP)**, an MCP server with three tools, specified in [ECP.md](qr_color_registry/ECP.md) after the ECP research spec. A client picks a local model, which only turns plain-English questions into query plans that are checked against the question and run on a hardened read-only connection; inference stays on this computer (Ollama on loopback; cloud and remote models are refused), and every call goes into a hash-chained audit log. Everything a user may change is plain, indented JSON: `settings.json`, the ranking presets and weights, and `planner.json`. Run it with `python qr_palette.py`. See [its README](qr_color_registry/README.md).
+**QR Palette** (`utilities/qr_palette`, Python/tkinter) combines the two. It draws QR codes in the colors Color Voats' rankers recommend: the 118 of the 216 cube colors that are dark enough to scan on white. Every saved code is read back before it is kept. Each code's link, color and file path go into a relational SQLite registry of its own. You find codes again by QR code (a link, a path or a picture) or by color, and every answer gives the color, the link and where the picture is. Other programs can ask through the **Environment Context Protocol (ECP)**, an MCP server with three tools, specified in [ECP.md](utilities/qr_palette/ECP.md) after the ECP research spec. A client picks a local model, which only turns plain-English questions into query plans that are checked against the question and run on a hardened read-only connection; inference stays on this computer (Ollama on loopback; cloud and remote models are refused), and every call goes into a hash-chained audit log. Everything a user may change is plain, indented JSON: `settings.json`, the ranking presets and weights, and `planner.json`. Run it with `python qr_palette.py`. See [its README](utilities/qr_palette/README.md).
 
 ## Desktop apps
 
@@ -82,7 +82,7 @@ Each project's README has the details and explains its dependencies.
 
 ## Install wizards
 
-`install_wizard_maker` is the seventh program, **Generic Company Wizard Maker** (Go, standard library only, a native
+`company/wizard_maker` is the seventh program, **Generic Company Wizard Maker** (Go, standard library only, a native
 Win32 window; Silk icon "wand"). It turns a `setup.json` into one self-contained `setup.exe` for any
 Windows program: a classic wizard (license, folder, shortcuts) that installs per user with no admin
 rights, lists the program in Apps & features, upgrades it in place by app id, and leaves an uninstaller
@@ -133,22 +133,21 @@ python seed.py
 python export_mock.py
 ```
 
-(run in `create_read_update_delete_simple_io_data_base`)
+(run in `company/crud_hub`)
 
 ## Tests
 
 | Project folder | Command |
 |---|---|
-| `create_read_update_delete_simple_io_data_base` | `python -m unittest discover` |
-| `document_mover_and_changer` | `python -m unittest discover -s tests` |
-| `content_management_system`, `notification_and_message_hub`, `install_wizard_maker` | `go test ./...` |
-| `simple_ticket_tracker`, `data_dash` | `cargo test`, then `cargo test --features desktop` |
-| `drive_and_network_storage_manager` | `python storage_manager.py --selftest` |
-| `qr_code_studio` | `python -m unittest test_qr_studio` |
-| `color_tile_recommender` | `python -m unittest discover -p "test_*.py"` |
-| `qr_color_registry` | `python -m unittest discover -p "test_*.py"` |
-| the portfolio folder (icon tool) | `python -m unittest discover -s tools` |
-| the portfolio folder (stamps) | `python -m unittest test_stamp` |
+| `company/crud_hub` | `python -m unittest discover` |
+| `company/doc_pipeline` | `python -m unittest discover -s tests` |
+| `company/journal`, `company/notify_hub`, `company/wizard_maker` | `go test ./...` |
+| `company/ticket_tracker`, `company/data_dash` | `cargo test`, then `cargo test --features desktop` |
+| `utilities/storage_manager` | `python storage_manager.py --selftest` |
+| `utilities/qr_studio` | `python -m unittest test_qr_studio` |
+| `utilities/color_voats` | `python -m unittest discover -p "test_*.py"` |
+| `utilities/qr_palette` | `python -m unittest discover -p "test_*.py"` |
+| the portfolio folder (icon tool and stamps) | `python -m unittest discover -s tools` |
 
 `tools/verify.ps1` runs all six programs against one sandbox database. It checks:
 
@@ -159,9 +158,16 @@ python export_mock.py
 
 ## Layout
 
+```
+company/     the seven Generic Company programs (each a git submodule with its own repository)
+utilities/   the stand-alone programs: Storage Manager, QR Studio, Color Voats, QR Palette
+tools/       the Dev Console, the stamp tool, the icon tool, the end-to-end check, a screenshot helper
+icons/silk/  the icon originals
+docs/        research and market notes
+```
+
 - `LOG.md`: dated work log.
 - `RULES.md`: rules for working in this repo.
-- `icons/silk/`: the icon originals; `tools/`: the icon tool, the end-to-end check and a window-screenshot helper.
 - Reused code: each project's `PROVENANCE.md` maps adapted files to their originals by SHA-256. The
   originals are kept privately by the owner and are not published.
 
@@ -172,13 +178,13 @@ Copyright (C) 2026 kjFriday.
 Every source file begins with a short header (project, file, what it does, the license) and ends with a
 stamp: an HMAC-SHA256 of the author's name, the file's path and the rest of the file, made with a key only
 the author holds. You may change any file under the license. The stamp shows whether a file still
-matches the version the author wrote. `stamp.py` (standard library only) adds and checks the stamps:
+matches the version the author wrote. `tools/stamp.py` (standard library only) adds and checks the stamps:
 
 ```bash
-python stamp.py --check
+python tools/stamp.py --check
 ```
 
-`python stamp.py` stamps new files, and `python stamp.py --restamp PATH` re-stamps a file the author has
+`python tools/stamp.py` stamps new files, and `python tools/stamp.py --restamp PATH` re-stamps a file the author has
 changed. Generated files, third-party excerpts (`reference/`) and test fixtures (`testdata/`) are not
 stamped.
 

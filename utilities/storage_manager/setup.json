@@ -23,6 +23,7 @@
     {"from": "formatting.py"},
     {"from": "selftest.py"},
     {"from": "gui.py"},
+    {"from": "gui_views.py"},
     {"from": "icon", "to": "icon"},
     {"from": "README.md"}
   ],

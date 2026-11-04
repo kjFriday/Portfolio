@@ -37,20 +37,21 @@ This file starts the program: its name, id, icon and version, where it keeps its
 for a run, and the command line. The modules beside it do the work:
 
   the core: plain functions over plain records, which never touch the GUI
-    app_settings.py    the settings in force: apply_settings puts settings.json's values in place
-    common.py          the Result record and with_registry, which the core shares
-    making.py          making a code, drawing it again, registering a picture; previews, robustness
-    short_link_ops.py  short links: the one a code prints, changes and history, scans, pages, publishing
-    batch.py           a whole print run from a list, with a report
-    export.py          the registry as CSV or JSON
-    votes.py           votes, and the ranked board of colors
-    finding.py         finding codes again, by QR code or by color
-    print_advice.py    how big to print a code
+    app_settings.py     the settings in force: apply_settings puts settings.json's values in place
+    common.py           the Result record and with_registry, which the core shares
+    making.py           making a code, drawing it again, registering a picture; previews, robustness
+    short_link_ops.py   short links: the one a code prints, changes and history, scans, pages, publishing
+    batches.py          a whole print run from a list, with a report
+    registry_export.py  the registry as CSV or JSON
+    votes.py            votes, and the ranked board of colors
+    finding.py          finding codes again, by QR code or by color
+    print_advice.py     how big to print a code
   what the core builds on: qr_codec/ (the codec), swatch.py, ranking.py and algos.py (colors), registry.py,
     shortlinks.py, payloads.py, sheets.py, scans.py, publish.py, localkey.py, settings.py and textsafe.py
   ECP: ecp.py, mcp_server.py, local_inference.py and audit.py (see ECP.md)
-  selftest.py          the built-in checks (--selftest)
-  gui.py               the window (tkinter); it only calls the core
+  selftest.py           the built-in checks (--selftest)
+  gui/                  the window (tkinter); it only calls the core: window.py (PaletteWindow, with its
+                        state, jobs and menus), make_tab.py, read_tab.py, find_tab.py and dialogs.py
 
 Standard library only, written to port easily like QR Studio and Color Voats: plain functions and
 records, explicit loops, failures as Result records, and a core that never touches the GUI.
@@ -193,7 +194,7 @@ def option_value(arguments, name):
 
 
 def main(arguments):
-    # selftest.py and gui.py import from this module, so each is imported where it is needed, once this
+    # selftest.py and gui/ import from this module, so each is imported where it is needed, once this
     # module has finished loading, rather than at the top.
     if "--version" in arguments:
         print(APP_NAME + " " + __version__)
@@ -279,9 +280,9 @@ def main(arguments):
 
 
 if __name__ == "__main__":
-    # gui.py, selftest.py and export.py import from qr_palette: let them find this copy rather than load
-    # the file a second time under that name.
+    # gui/, selftest.py and registry_export.py import from qr_palette: let them find this copy rather
+    # than load the file a second time under that name.
     sys.modules["qr_palette"] = sys.modules[__name__]
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f8bf3ab391d52c743f3144c47e74e29708a3cc4f711aadf3d554b4f607709c5f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a56603c0d7e4e2e0e348519ed07a9e3ef99ebf35f94247c5014395138f3196e8 ====

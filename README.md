@@ -33,9 +33,9 @@ them is the **path to the shared SQLite file**.
 
 **Dev Console** (`tools/dev_console`, Rust/egui) is a tool for working on the portfolio rather than part of the company: one window that builds, tests, runs and smoke-checks all seven programs, with live re-testing on save and rebindable controls. See [dev_console/README.md](tools/dev_console/README.md).
 
-**Storage Manager** (`utilities/storage_manager`, Python/tkinter) is a stand-alone utility that doesn't use the database. It organizes and cleans folders on local drives (scan, duplicates, sort by type or date, with preview and undo) and handles network shares (check, map, back up to a share). It is one standard-library file, written so it ports easily to other languages. Run it with `python storage_manager.py`. See [its README](utilities/storage_manager/README.md).
+**Storage Manager** (`utilities/storage_manager`, Python/tkinter) is a stand-alone utility that doesn't use the database. It organizes and cleans folders on local drives (scan, duplicates, sort by type or date, with preview and undo) and handles network shares (check, map, back up to a share). It is plain standard-library Python, an entry script with one small module per topic, written so it ports easily to other languages. Run it with `python storage_manager.py`. See [its README](utilities/storage_manager/README.md).
 
-**QR Studio** (`utilities/qr_studio`, Python/tkinter) is a stand-alone utility that reads QR codes from pictures (open or paste; turned, tilted, noisy or mirrored pictures are fine) and makes new ones (PNG, SVG or clipboard). The QR codec is written from scratch in one standard-library file. Run it with `python qr_studio.py`. See [its README](utilities/qr_studio/README.md).
+**QR Studio** (`utilities/qr_studio`, Python/tkinter) is a stand-alone utility that reads QR codes from pictures (open or paste; turned, tilted, noisy or mirrored pictures are fine) and makes new ones (PNG, SVG or clipboard). The QR codec is written from scratch in standard-library Python (the `qr_codec` package). Run it with `python qr_studio.py`. See [its README](utilities/qr_studio/README.md).
 
 **Color Voats** (`utilities/color_voats`, Python/tkinter) is a stand-alone utility: a social feed where every post is a color. It starts with the 216 colors of the 6×6×6 cube, and you can post your own. Each post has Good and Bad buttons, Save (for a Saved tab) and a comment section. The For you feed is ranked by your votes ("voats") through an algo aggregation factory. Each algo (net voats, Wilson score, color similarity, exploration, and a mixer that hands on down a chain of algos when one stalls) has a TOML or JSON weights file. A named preset picks the algo and what it uses, and `factory.py` generates a standalone Python ranker for each preset. Run it with `python color_voats.py`. See [its README](utilities/color_voats/README.md).
 
@@ -144,9 +144,9 @@ python export_mock.py
 | `company/journal`, `company/notify_hub`, `company/wizard_maker` | `go test ./...` |
 | `company/ticket_tracker`, `company/data_dash` | `cargo test`, then `cargo test --features desktop` |
 | `utilities/storage_manager` | `python storage_manager.py --selftest` |
-| `utilities/qr_studio` | `python -m unittest test_qr_studio` |
+| `utilities/qr_studio` | `python -m unittest discover -s tests` |
 | `utilities/color_voats` | `python -m unittest discover -s tests` |
-| `utilities/qr_palette` | `python -m unittest discover -p "test_*.py"` |
+| `utilities/qr_palette` | `python -m unittest discover -s tests` |
 | the portfolio folder (icon tool and stamps) | `python -m unittest discover -s tools` |
 
 `tools/verify.ps1` runs all six programs against one sandbox database. It checks:

@@ -562,7 +562,7 @@ Authentication (stdio inherits the user), multiple users, and writes: nothing in
 
 ## 14. Conformance
 
-The reference implementation's tests (`python -m unittest discover -p "test_*.py"`) are the conformance suite.
+The reference implementation's tests (in `tests/`: `python -m unittest discover -s tests`) are the conformance suite.
 They run against a stand-in Ollama server on 127.0.0.1, which can also answer with errors, redirects, invalid
 JSON, delays, cut-off plans, a server with its cloud features on, and answers stamped by another host.
 

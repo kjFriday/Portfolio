@@ -1,0 +1,242 @@
+# ==== Generic Company Inc. portfolio ====================================
+# Project: qr_palette | File: batches.py
+# About: Batch make: a whole print run of codes from a list (a CSV file), with a report beside the...
+# Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
+# You may change this file under the AGPL-3.0. The stamp at the end marks
+# the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
+# Reused code, if any, is mapped in PROVENANCE.md.
+# ========================================================================
+
+"""Batch make: a whole print run of codes from a list (a CSV file), with a report beside the pictures.
+
+read_batch_csv reads the list: UTF-8 (with or without a byte-order mark) or a spreadsheet's Windows-1252,
+separated by commas, semicolons or tabs, and marks each row that cannot be made. make_batch makes the rest
+one at a time through making.make_qr, never over a file that is already there, and write_batch_report
+writes made-<time>.csv beside the pictures with what happened to every row. A Wi-Fi password never reaches
+the report.
+
+Records
+  BatchRow {"row": its row in the file, "link", "color", "label", "file", "problem": "" when it can be made}
+  BatchReport {"made": int, "skipped": int, "report": path of its CSV, "stopped": bool, "rows": one dict per
+            row, the columns of BATCH_COLUMNS}
+"""
+
+import csv
+import io
+import os
+import time
+
+import payloads
+import swatch
+import textsafe
+from common import fail, ok_result, safe_cell
+from making import make_qr, slug, suggested_name
+from short_link_ops import short_request
+
+MAX_BATCH_BYTES = 20 * 1024 * 1024  # a list of codes bigger than this is refused
+MAX_BATCH_ROWS = 10000
+BATCH_COLUMNS = ("row", "status", "reason", "link", "color", "label", "path", "short_id", "note")
+WINDOWS_DEVICES = ("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                   "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
+
+
+def read_batch_csv(path):
+    """A print run from a CSV file with a header row -> Result [BatchRow]. The headers link and color
+    are needed, label and file are optional, in any order and either case. The file may be UTF-8 (with
+    or without a byte-order mark) or a spreadsheet's Windows-1252, separated by commas, semicolons or
+    tabs. Every row comes back in order, those that cannot be made with their "problem" filled in."""
+    try:
+        if os.path.getsize(path) > MAX_BATCH_BYTES:
+            return fail(os.path.basename(path) + " is too big for a list of codes")
+        handle = open(path, "rb")
+        try:
+            data = handle.read()
+        finally:
+            handle.close()
+    except OSError as error:
+        return fail("cannot read " + path + ": " + str(error))
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = data.decode("cp1252")
+        except UnicodeDecodeError:
+            return fail(os.path.basename(path) + " is not UTF-8 or Windows-1252 text")
+    first = text.split("\n", 1)[0]
+    separator = ","
+    for candidate in (";", "\t"):
+        if candidate in first and "," not in first:
+            separator = candidate
+    rows = []
+    try:
+        lines = csv.reader(io.StringIO(text, newline=""), delimiter=separator)
+        headers = None
+        for cells in lines:
+            if headers is None:
+                if len(cells) == 0 or "".join(cells).strip() == "":
+                    continue
+                headers = []
+                for cell in cells:
+                    headers.append(cell.strip().lower())
+                if "link" not in headers or "color" not in headers:
+                    return fail("the first row must name the columns: link, color, and optionally label and file")
+                continue
+            if "".join(cells).strip() == "":
+                continue
+            if len(rows) >= MAX_BATCH_ROWS:
+                return fail("a list may hold at most " + str(MAX_BATCH_ROWS) + " codes")
+            found = {"link": "", "color": "", "label": "", "file": ""}
+            for index in range(min(len(headers), len(cells))):
+                if headers[index] in found:
+                    found[headers[index]] = textsafe.clean(cells[index], None).strip()
+            found["row"] = lines.line_num
+            found["problem"] = ""
+            given = found["color"]
+            found["color"] = swatch.normalize_hex(given)
+            if found["link"] == "":
+                found["problem"] = "no link"
+            elif given == "":
+                found["problem"] = "no color"
+            elif found["color"] == "":
+                found["problem"] = textsafe.clean(given, 40) + " is not a #rrggbb color"
+            rows.append(found)
+    except csv.Error as error:
+        return fail("cannot read " + os.path.basename(path) + " as CSV: " + str(error))
+    if len(rows) == 0:
+        return fail(os.path.basename(path) + " holds no rows of codes")
+    return ok_result(rows)
+
+
+def batch_file_problem(name):
+    """"" when a list's file column is a plain file name for this computer, else what is wrong: it
+    may not lead outside the chosen folder or be a name Windows keeps for itself."""
+    if name in (".", "..") or name != os.path.basename(name) or "/" in name or "\\" in name:
+        return "the file column must be a file name, not a path"
+    stem = name.split(".", 1)[0].strip().upper()
+    if stem == "" or stem in WINDOWS_DEVICES or name.endswith((".", " ")):
+        return "the file column's name cannot be used on Windows"
+    for character in name:
+        if character in '<>:"|?*':
+            return "the file column's name cannot be used on Windows"
+    return ""
+
+
+def batch_path(row, color, kind, folder, taken):
+    """Where a row's picture goes -> (path, problem). From its file column, else its label (if any)
+    and suggested_name; a name that is in the folder or already used by this run gets -2, -3, ...,
+    because make_qr replaces a file that is already there."""
+    name = row["file"]
+    if name != "":
+        problem = batch_file_problem(name)
+        if problem != "":
+            return "", problem
+        if not name.lower().endswith((".png", ".svg")):
+            name = name + "." + kind
+    else:
+        name = suggested_name(row["link"], color, kind)
+        if row["label"] != "":
+            name = slug(row["label"]) + "-" + name
+    stem, extension = os.path.splitext(name)
+    candidate = name
+    number = 1
+    while os.path.exists(os.path.join(folder, candidate)) or candidate.casefold() in taken:
+        number = number + 1
+        candidate = stem + "-" + str(number) + extension
+    taken.add(candidate.casefold())
+    return os.path.join(folder, candidate), ""
+
+
+def make_batch(db_path, rows, folder, kind, level, scale, section, snap=False, watch=None, when=""):
+    """Make a code for every BatchRow, with a report beside the pictures -> Result BatchReport. `kind`
+    is "png" or "svg" (a row's file column may say otherwise). `section` is the short-link section
+    to print ("" for none); the same destination in the same color shares its short link, as ever. A
+    color too light to scan is skipped with the reason, or with `snap` replaced by the nearest that
+    scans. A row the same as an earlier one is skipped. `watch(done, total)`, called before each row,
+    may return True to stop: the rest are reported as not made. `when` names the report (the time)."""
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as error:
+        return fail("cannot use the folder " + folder + ": " + str(error))
+    report = []
+    seen = {}
+    taken = set()
+    made_count = 0
+    stopped = False
+    for index in range(len(rows)):
+        row = rows[index]
+        line = {"row": row["row"], "status": "skipped", "reason": row["problem"], "link": row["link"],
+                "color": row["color"], "label": row["label"], "path": "", "short_id": "", "note": ""}
+        line["link"] = payloads.stored_form(row["link"])[0]  # a report never holds a Wi-Fi password
+        report.append(line)
+        if not stopped and watch is not None and watch(index, len(rows)):
+            stopped = True
+        if stopped:
+            line["reason"] = "stopped before this row"
+            continue
+        if line["reason"] != "":
+            continue
+        same = (row["link"], row["color"], row["label"], row["file"])
+        if same in seen:
+            line["reason"] = "the same as row " + str(seen[same])
+            continue
+        seen[same] = row["row"]
+        color = row["color"]
+        if not swatch.usable(color):
+            if not snap:
+                line["reason"] = color + " is too light to scan on white"
+                continue
+            color = swatch.nearest_usable(color)
+            line["note"] = "color " + row["color"] + " was too light to scan: used " + color
+            line["color"] = color
+        path, problem = batch_path(row, color, kind, folder, taken)
+        if problem != "":
+            line["reason"] = problem
+            continue
+        short = None
+        if section != "":
+            short = short_request("", section)
+        made = make_qr(db_path, row["link"], color, level, path, scale, short)
+        if not made["ok"]:
+            line["reason"] = made["error"]
+            continue
+        line["status"] = "made"
+        line["path"] = made["value"]["path"]
+        line["short_id"] = made["value"]["short_code"]
+        made_count = made_count + 1
+    written = write_batch_report(folder, report, when or time.strftime("%Y%m%d-%H%M%S"))
+    if not written["ok"]:
+        return written
+    return ok_result({"made": made_count, "skipped": len(report) - made_count, "report": written["value"],
+                      "rows": report, "stopped": stopped})
+
+
+def write_batch_report(folder, report, when):
+    """The batch's report as a CSV beside its pictures, never over an earlier one -> Result path."""
+    path = os.path.join(folder, "made-" + when + ".csv")
+    number = 1
+    while os.path.exists(path):
+        number = number + 1
+        path = os.path.join(folder, "made-" + when + "-" + str(number) + ".csv")
+    temporary = path + ".part"
+    try:
+        handle = open(temporary, "w", encoding="utf-8-sig", newline="")
+        try:
+            writer = csv.writer(handle)
+            writer.writerow(BATCH_COLUMNS)
+            for line in report:
+                cells = []
+                for key in BATCH_COLUMNS:
+                    cells.append(safe_cell(line[key]))
+                writer.writerow(cells)
+        finally:
+            handle.close()
+        os.replace(temporary, path)
+    except OSError as error:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        return fail("cannot write the report " + path + ": " + str(error))
+    return ok_result(path)
+
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a97af04483d7bbb0f88e96c4a20c658a30949c1dd05efe4c603954f38c19a2da ====

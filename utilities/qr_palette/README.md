@@ -20,8 +20,10 @@ python qr_palette.py
 ```
 
 ```bash
-python -m unittest discover -p "test_*.py"
+python -m unittest discover -s tests
 ```
+
+The tests are in `tests/`; run them from this folder (one file: `python -m unittest discover -s tests -p test_ecp.py`).
 
 `--selftest` runs a quick built-in check, `--version` prints the version, and `--smoke FILE` opens the window on a
 scratch registry, makes and finds a code, writes a JSON report and closes. `--export-redirects DIR` writes the
@@ -424,14 +426,45 @@ Local inference means Ollama on this computer:
 Answers do leave this program: whatever an MCP client receives (links, paths, colors) goes to the model that client
 runs, which may be remote. ECP keeps its own inference local; it cannot decide where its answers go next.
 
+## The code
+
+`qr_palette.py` starts the program: it holds the program's name, id, icon and version, where it keeps its files, the
+ECP engine for a run, and the command line. The modules beside it:
+
+| Module | What it holds |
+|---|---|
+| `app_settings.py` | The settings in force: `apply_settings` puts `settings.json`'s values in place, in this module and in the others |
+| `common.py` | The Result record, and `with_registry`, which opens the registry for one piece of work |
+| `making.py` | Making a code (read back before it is registered), drawing one again, registering a picture made elsewhere, previews and robustness scores |
+| `short_link_ops.py` | Short links in the registry: the one a new code prints, where each goes now and later, scans, redirect pages, publishing, and whether a scanned address is yours |
+| `batches.py` | A whole print run from a list, with its report |
+| `registry_export.py` | The registry as CSV or JSON |
+| `votes.py` | Good and Bad votes, Color Voats' votes, and the ranked board |
+| `finding.py` | Finding codes again by QR code or by color |
+| `print_advice.py` | How big to print a code |
+| `qr_codec/` | The QR codec (from QR Studio), with colored PNG and SVG pictures |
+| `swatch.py`, `ranking.py`, `algos.py` | Colors: names, families, contrast, ranking (`presets/`, `weights/`) |
+| `registry.py` | The SQLite registry and its read-only rail |
+| `shortlinks.py`, `payloads.py`, `sheets.py`, `scans.py`, `publish.py`, `localkey.py` | Short-link IDs and pages, kinds of code, print sheets, scan reports, publishing, the local key |
+| `ecp.py`, `mcp_server.py`, `local_inference.py`, `audit.py` | ECP: the engine, the MCP server, the Ollama client, the audit log |
+| `settings.py`, `textsafe.py` | `settings.json`, and cleaning typed text |
+| `selftest.py` | The checks `--selftest` runs |
+| `gui.py` | The window (tkinter); it only calls the modules above |
+| `tests/` | The tests: `test_<module>.py` for the modules they are named after (`test_swatch.py` covers `ranking.py` too), and `test_qr_palette.py` for the program's own modules and its command line |
+
 ## Porting to another language
 
 Same layout as QR Studio and Color Voats:
 - **Plain code:** plain functions and records, explicit loops, and failures as Result records.
 - **Separate parts:** each module is its own part: codec, colors, registry, short links, local inference, ECP,
-  MCP server, audit log.
-- **The window:** it only calls those.
-- **Order:** port `qr_codec.py` first, then `swatch.py` and `registry.py`, each with its tests.
+  MCP server, audit log, and the program's own modules on top of them.
+- **The window:** `gui.py` only calls those.
+- **Order:** port `qr_codec/` first, then `swatch.py` and `registry.py`, each with its tests. Then the parts the
+  program's modules use (`shortlinks.py`, `payloads.py`, `localkey.py`, `scans.py`, `publish.py`, `sheets.py`,
+  `settings.py`, `textsafe.py` and ECP's modules), then those modules in the order they import each other:
+  `app_settings.py`, `common.py`, `short_link_ops.py`, `making.py`, then `batches.py`, `registry_export.py` (it
+  takes the program's name and version from `qr_palette.py`), `votes.py`, `finding.py` and `print_advice.py`.
+  `qr_palette.py`, `selftest.py` and `gui.py` come last.
 
 ## Icon
 

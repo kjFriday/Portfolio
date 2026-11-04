@@ -15,8 +15,11 @@ the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the L
 |---|---|
 | `README.md` | What the program does, every setting, short links (local and nonlocal) |
 | `ECP.md` | The Environment Context Protocol: the MCP server, planning, the read-only rail, the audit log |
-| `qr_palette.py` | Identity, CORE (make, register, find, short links), SELF-TEST, GUI (`run_gui`), CLI (`main`) |
-| `qr_codec.py` | QR encoder and decoder, PNG/SVG writers and readers, the caption font (`GLYPHS`) |
+| `qr_palette.py` | Identity (name, id, icon, version), where the files live, the ECP engine for a run (`make_engine`), CLI (`main`) |
+| `app_settings.py` | `apply_settings` and the values it puts in place (`LINKS`, `LINK_SECTION`, `DEFAULT_SCALE`, ...), read as `app_settings.NAME` |
+| `common.py`, `making.py`, `short_link_ops.py`, `batches.py`, `registry_export.py`, `votes.py`, `finding.py`, `print_advice.py` | The core: make, redraw, register, short links, lists, export, votes, find, print advice |
+| `selftest.py`, `gui.py` | `--selftest`; the window (`run_gui`) |
+| `qr_codec/` | QR encoder and decoder, PNG/SVG writers and readers, the caption font (`GLYPHS`) |
 | `registry.py` | SQLite schema (version 2: `colors`, `links`, `qr_codes`, `short_links`, `votes`), the read-only rail |
 | `shortlinks.py` | Short-link IDs (digits + Damm check digit), `links.json` (sections `local` and `nonlocal`), redirect pages |
 | `ecp.py`, `mcp_server.py`, `local_inference.py`, `audit.py` | ECP's engine, MCP server, Ollama client, hash-chained audit log |
@@ -26,7 +29,8 @@ the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the L
 ## Rules that hold for every feature
 
 - **Python 3.10+, standard library only.** No packages. Plain functions and dict records, `Result` records
-  `{"ok", "error", "value"}`, explicit loops, no argparse (`option_value`). Keep CORE free of tkinter.
+  `{"ok", "error", "value"}`, explicit loops, no argparse (`option_value`). Keep the core free of tkinter: only
+  `gui.py` loads it.
 - **The window runs slow work as jobs** (`start_job(label, work, done)`): one at a time, queued first come,
   first served. Never block the window's thread on disk, network or decoding.
 - **Settings are human-readable JSON** with an `about` text per section. New settings go into `settings.py`
@@ -49,7 +53,7 @@ the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the L
 
 ## Definition of done (every feature)
 
-1. Tests in the matching `test_*.py` (or a new one), passing with `python -m unittest discover -p "test_*.py"`
+1. Tests in the matching `tests/test_*.py` (or a new one), passing with `python -m unittest discover -s tests`
    twice on Python 3.14 and once on 3.11.
 2. `python qr_palette.py --selftest` and `--smoke FILE` pass; window changes checked by driving the window and
    looking at a screenshot.

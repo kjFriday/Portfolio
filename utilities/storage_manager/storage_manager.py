@@ -27,6 +27,7 @@ and version, where its settings live, and the command line. The modules beside i
   windows_calls.py    the two Windows calls the walk makes (the only ones that need ctypes)
   selftest.py         the built-in checks (--selftest)
   gui.py              the window (tkinter); it only calls the core
+  gui_views.py        the window's views, one build function each
 
 Written to be easy to port to another language:
   * Plain functions and plain records (dicts with fixed keys, listed in records.py).
@@ -116,4 +117,4 @@ if __name__ == "__main__":
     sys.modules["storage_manager"] = sys.modules[__name__]
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=651ee43072c14aa5407078259054aae683af73ec03ef400eb2998594a4aceaa7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=e67a936220bf700e869680fb4ff29f82a21d64c706e2a13ba51154b014918064 ====

@@ -2,14 +2,16 @@
 
 A desktop program that reads QR codes from pictures and makes new ones.
 
-Self-contained: one file, `qr_studio.py`, Python 3.10+ standard library only (tkinter for the window). The whole QR codec is written from scratch in that file: Reed-Solomon error correction, the encoder (numeric, alphanumeric and byte modes, versions 1–40, levels L/M/Q/H, mask scoring), and the reader (thresholding, finder-pattern search, alignment-pattern search, perspective sampling, format/version recovery and error correction). No imaging or barcode library is used.
+Self-contained: Python 3.10+ standard library only (tkinter for the window). The whole QR codec is written from scratch in the `qr_codec` package beside `qr_studio.py`: Reed-Solomon error correction, the encoder (numeric, alphanumeric and byte modes, versions 1–40, levels L/M/Q/H, mask scoring), and the reader (thresholding, finder-pattern search, alignment-pattern search, perspective sampling, format/version recovery and error correction). No imaging or barcode library is used.
 
 ```bash
 python qr_studio.py
 ```
 
+Tests, run in this folder:
+
 ```bash
-python -m unittest test_qr_studio
+python -m unittest discover -s tests
 ```
 
 Command line, without the window:
@@ -34,15 +36,28 @@ Also `--selftest` (quick checks), `--version` and `--smoke FILE`.
 
 History is kept on this computer only, in `%LOCALAPPDATA%\Generic Company Inc\GenericCompany.QRStudio\history.json`. JPEG pictures can't be opened without an imaging library; paste them through the clipboard instead, or save them as PNG.
 
+## Files
+
+| File | What it holds |
+|---|---|
+| `qr_studio.py` | The entry point: the version and the command line |
+| `qr_codec/` | The QR codec, one module per chapter of the standard (see its `__init__.py`) |
+| `studio_history.py` | The history of codes read and made; links, saving a code, describing a reading |
+| `studio_clipboard.py` | Pictures to and from the Windows clipboard, through PowerShell |
+| `studio_options.py` | `option_value`, which reads the command line (the self-test checks it too) |
+| `studio_selftest.py` | The checks `--selftest` runs |
+| `studio_gui.py` | The tkinter window, `StudioWindow`; loaded only when a window opens |
+| `tests/` | `test_qr_codec.py` for the codec, `test_qr_studio.py` for the history and links |
+
 ## Porting to another language
 
-The file is written to translate line by line:
+The code is written to translate line by line:
 
-- **CORE** section: plain functions over plain records (dicts with fixed keys, listed in the file's docstring). Explicit loops, no decorators or generators. Errors are returned as `{"ok", "value", "error"}` records.
-- **SELF-TEST** section and `test_qr_studio.py`: the checks to port alongside the core, including the ISO/IEC 18004 annex example.
-- **GUI** section: tkinter only, and it only calls core functions. Rewrite it in any toolkit.
+- **Core**: `qr_codec/` and the `studio_history`, `studio_clipboard` and `studio_options` modules are plain functions over plain records (dicts with fixed keys, listed in the module docstrings). Explicit loops, no decorators or generators. Errors are returned as `{"ok", "value", "error"}` records. Port the codec first.
+- **Self-test**: `studio_selftest.py` and `tests/` hold the checks to port alongside the core, including the ISO/IEC 18004 annex example.
+- **Window**: `studio_gui.py` is tkinter only, and it only calls core functions. Rewrite it in any toolkit.
 
-The clipboard uses PowerShell (`System.Windows.Forms.Clipboard`), isolated in `clipboard_image_to_png` and `png_to_clipboard`.
+The clipboard uses PowerShell (`System.Windows.Forms.Clipboard`), isolated in `clipboard_image_to_png` and `png_to_clipboard` in `studio_clipboard.py`.
 
 ## Icon
 

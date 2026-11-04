@@ -23,7 +23,8 @@ This file is the entry point: the version and the command line. The rest of the 
 
 Written to be easy to port to another language:
   * Plain functions and plain records (dicts with fixed keys: Result, Image, Matrix and Reading are
-    listed in qr_codec/__init__.py, Entry in studio_history.py). The window is the one class.
+    listed in qr_codec/__init__.py, Entry in studio_history.py). The only classes are the window,
+    StudioWindow, and the codec's BitReader.
   * Explicit loops; no decorators, generators, comprehension chains or dynamic attributes.
   * The codec and the modules under the window never touch the GUI. Port them first, then rewrite
     studio_gui.py in any toolkit.
@@ -37,8 +38,8 @@ Usage
   python qr_studio.py --read IMAGE        print the text of the QR code in a PNG, PGM or PPM file
   python qr_studio.py --make TEXT OUT     write TEXT as a QR code to OUT (.png or .svg)
 
-Exit codes: 0 done (or every check passed), 1 nothing read, or the code could not be made or saved (or a
-check failed), 2 --read, --smoke or --make without its values. Flags it does not know open the window.
+Exit codes: 0 done, 1 a failed read, make or self-test check, 2 --read, --smoke or --make without its
+values. Flags it does not know open the window.
 """
 
 import sys
@@ -122,4 +123,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=8118d7ed24d2e822899bf9543ef1f9db859064e6b40758925e6c43170f2c287d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a35c0d2c89d7f771b8a07400c5a6dbef2478ec51b3ab1ee4deaf18fa405907cf ====

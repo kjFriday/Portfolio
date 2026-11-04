@@ -521,4 +521,4 @@ def count_links_once(report, linked, largest_count, stale_days, now):
     updated["links_checked"] = True
     return updated
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=dce802adad607a2d1cad27cd5eb148caa06bdb69dea30a61d99ac8e5faacc4a8 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=fadc9ff27b93de930748d0ff1c2d97d84e9a11a8c1e26ef9b9f1143f2e2dc75c ====

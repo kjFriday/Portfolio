@@ -58,4 +58,4 @@ from .images import load_image_file, make_image, matrix_to_image, matrix_to_svg,
 from .locate import decode_image
 from .distort import add_noise, rotate_image, scale_image, warp_image
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=82ebc28c3eff9068f451baaafbc59a917fe5cbfa26b30a0a80272ae3e7f43b70 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=caafb95c5681608809de9bc0f2fd93b1b5e11cb5c3610a4b6c1e76d49c620ac1 ====

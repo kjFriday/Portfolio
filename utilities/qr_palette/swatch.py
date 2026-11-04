@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: swatch.py
-# About: QR Palette colors: the 216-color cube, color names and families, contrast against white...
+# About: QR Palette colors: the 216-color cube, names and families, contrast on white, and ranking.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -330,4 +330,4 @@ def usable_board(order):
             board.append(color)
     return board
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=710fbe3b0b8c6d27650f6dc22c0c8b7068c7162755f7f305dbbcb0188dc98f5a ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=375f580595583a856e39950a7d69a9ed722f3d90f7af9f997fb9ac6e5092cc05 ====

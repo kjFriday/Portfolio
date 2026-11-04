@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/production.rs
-// About: Checks for the live-production view: ask a running site what it answers (through...
+// About: Live-production checks: probe a running site with curl.exe and judge what it answers.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -655,4 +655,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=c7c18639057777a41739cdbaf8150b88077ec0a829acb205b6ca0b35596d54af ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=048580687b24ca222397dd817a533cad8b63e0ade4c49472161e5a9c0c6609c9 ====

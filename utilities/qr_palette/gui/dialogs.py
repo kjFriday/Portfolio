@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: gui/dialogs.py
-# About: The window's larger dialogs: the audit log, print size, make from a list and link from a...
+# About: The window's four larger dialogs: audit log, print size, make from a list, templates.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -484,4 +484,4 @@ class Dialogs:
         choose()
         dialog.grab_set()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=bc2204f3aaab83d03fbd72fd50d2c73cad4b4c395facdbb3d23147103d0bcc5f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a5dae841501f580f71a8f6c606672d5aa66067653973fda4597421a983cdf719 ====

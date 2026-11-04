@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_studio | File: tests/test_qr_studio.py
-# About: Tests for QR Studio's own code around the codec: the history and links...
+# About: Tests for QR Studio's code around the codec: the history and links in studio_history.py.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -51,4 +51,4 @@ class HistoryTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ada94b1822f02000de81ca20350d415b30d3324a4be539afd84db3b9179d7eea ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=2bc476597f3a1ae1e59672ef543b20fea2eb83b4776fc5ace0a986eeaed3f805 ====

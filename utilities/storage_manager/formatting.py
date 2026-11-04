@@ -103,4 +103,4 @@ def disk_note(report, links_counted):
         text = text + " Hard links are counted once when the duplicate comparison is done."
     return text
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=3dd5f97ec2a34c8ca257ab2211e4459ec1bc7676df2d5974fa10838b600143e2 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=5bac14ca1dc5e576f3231030e2581aab34ca21186552c8834b3c225cdd3b8a72 ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: textsafe.py
-# About: Input guard for text that arrives from outside: drop invisible control characters, cap...
+# About: Input guard for outside text: drop invisible control characters, cap the length.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -44,4 +44,4 @@ def clean(text, limit=LIMIT):
         limit = max(limit, 0)  # a negative slice would count from the end
     return "".join(ch for ch in text if not refused(ch))[:limit]
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=b7e51f67583d9fca4f32d97a3d49ebdf7f9e19af09fea44969dfc16a1e5bff0f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=00958c4023bfe7c50d2dd80046914c178287902fa8b92c1629b8521a2713e624 ====

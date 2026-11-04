@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: finding.py
-# About: Finding codes again: the Find tab's lookup by QR code or by color, and the codes the Read...
+# About: Finding codes again: the Find tab's lookup by code or color, and the Read tab's matches.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -153,4 +153,4 @@ def reveal_command_line(path):
     holds the file with the file highlighted."""
     return 'explorer /select,"' + path + '"'
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=b347d786755522993b2d5f43bbfc78c39ee9ad48d7c7a26a19f5542beb6ab4c9 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=5e9f8a4e00a3409997af204247dc936cb80091bee05fbabba9479f16798a051b ====

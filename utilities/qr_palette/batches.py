@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: batches.py
-# About: Batch make: a whole print run of codes from a list (a CSV file), with a report beside the...
+# About: Batch make: a print run of codes from a CSV list, with a report beside the pictures.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -300,4 +300,4 @@ def write_batch_report(folder, report, when):
         return fail("cannot write the report " + path + ": " + str(error))
     return ok_result(path)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a97af04483d7bbb0f88e96c4a20c658a30949c1dd05efe4c603954f38c19a2da ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=3593f065372bfc949c346a54724a15e2a30094793f6101c95f307bd4908b657e ====

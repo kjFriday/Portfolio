@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_scans.py
-# About: Tests for scan counts: analytics CSVs with the utm_content tag, server access logs in...
+# About: Tests for scan counts: analytics CSVs, access logs, imports twice, and only counts kept.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -330,4 +330,4 @@ class EcpTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=07ee7b01961bb6df33e87a06507555fc6f3be2eee3c249f2b9e4844e450ad5e0 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=543d88aec37470fb12a4188ba55354b6f34f2ab96f87e7b81f30d8c774fac4eb ====

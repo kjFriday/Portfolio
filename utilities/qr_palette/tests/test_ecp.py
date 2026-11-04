@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_ecp.py
-# About: Tests for ECP's engine: choosing and pinning a local model, planning and grounding, the...
+# About: Tests for ECP's engine: model choice, planning, grounding, refusals, audit and framing.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -797,4 +797,4 @@ class LiveModelTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5fbc5f425c9e64754e51f3110cfbc204af381853f63e9878155288f823053193 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=0923918055891a64a08458d3b07bdd35933358efd75cc951901a23e48abdaee8 ====

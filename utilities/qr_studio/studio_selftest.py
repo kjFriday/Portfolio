@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_studio | File: studio_selftest.py
-# About: QR Studio's self-test: a quick pass over the codec, the history and the command-line...
+# About: QR Studio's self-test: quick checks of the codec, the history and the command line.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -91,4 +91,4 @@ def selftest():
     print(str(len(failures)) + " check(s) failed")
     return 1
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=12cfda630176cc26023dbad3967a4666e14f1a9fe78153917dfad1fe5125ad47 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ab843446f2e38f3dc5782d06ee834fc0bc28ec253709130bee64450b9d5f72f0 ====

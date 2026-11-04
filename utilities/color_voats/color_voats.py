@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: color_voats | File: color_voats.py
-# About: Generic Company Color Voats: a social feed of colors, ranked for you by your Good and Bad...
+# About: Generic Company Color Voats: a feed of colors ranked by your Good and Bad votes.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -92,4 +92,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=167f64d31fa218f908c76d438d8740f4a35279465a81b3dcd36dc1f8e6360301 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=8f0e15978cf403a13fc20ea484022631d7f64b895ad273e8db64a84d80dbf729 ====

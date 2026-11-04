@@ -115,4 +115,4 @@ def allocated_size(path):
     # 4294967296 is 2 ** 32: the high half shifted above the low one
     return success(high.value * 4294967296 + low)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a08d1d0030f93b58100f31c963b5732d5a1e2f85ce7ab35aa1bffbed903eb6bf ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=63e0f2dde7632467ba39b6cc096c3de159f597377508ec8f19443cfc41394a7a ====

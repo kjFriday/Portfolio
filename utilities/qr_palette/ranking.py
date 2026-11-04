@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: ranking.py
-# About: QR Palette ranking: Color Voats' presets and weights, read from JSON files, ranked with...
+# About: QR Palette ranking: Color Voats' JSON presets and weights, ranked with its algos.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -285,4 +285,4 @@ def rank(preset, voats, colors, scans=None):
         return algos.mixer(colors, voats, preset["uses"], mixer["tie"], mixer["streak"], mixer["budget"], score)
     return algos.order_by(colors, [score(preset["algo"], colors, voats)])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=65e9bdf92a7d982e76e306e42cb0469e5d38400f4ceb23be1b599c7d277f5eaa ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d6194558d3644eb6095203ae0e6632b5cee2bcb43bc6854a9252a86edebee59b ====

@@ -152,4 +152,4 @@ def describe(reading):
     return ("version " + str(reading["version"]) + ", level " + reading["level"] + ", mask " +
             str(reading["mask"]) + ", " + str(reading["corrected"]) + " codeword(s) corrected")
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=0603e4be01dd87abd9386bae2a76101b75f9168b2121c9b2817166e9899d7795 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=6a34bf2742775370cd19fa20e2bf1f065ccd35b53123a0c200e6761e13a46a8b ====

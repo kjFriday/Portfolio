@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: mcp_server.py
-# About: QR Palette's MCP server: the Environment Context Protocol's three tools on stdin and...
+# About: QR Palette's MCP server: the Environment Context Protocol's three tools over stdio.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -374,4 +374,4 @@ def serve_stdio(server):
     sys.stderr.write("QR Palette ECP (MCP server) on stdin/stdout\n")
     return ecp.serve(handle, server, sys.stdin.buffer, sys.stdout.buffer)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=20109c7c89493bd3c5abe6621ea6e9ce32719967ddf80b0c40f61d5b444ac5b4 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a755e1024950ab65e837f74084e55e0d69c446982e2dbdbcc494f236bc6b01bc ====

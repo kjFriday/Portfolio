@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/versions.rs
-// About: Program versions: find the version in each of a program's version files and change them...
+// About: Program versions: find a program's version in each version file and change them together.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -213,4 +213,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=30fda3bcb7dc5b15513c2580c10ca7dd51d62001057c78234e79b206c03b0904 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=d97244892d8b36bfc3ccc816135e25d4c67f7fd1284be2dd52b1141c2f5c6e15 ====

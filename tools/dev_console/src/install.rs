@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/install.rs
-// About: Per-user install and uninstall: copy the program and its config/ folder, add a Start menu...
+// About: Per-user install and uninstall: program folder, Start menu shortcut and uninstall entry.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -288,4 +288,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=985b546d382821e34d9b6c1504a12196f0d6e4047aefda2b3c004334b526382c ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=7f5a258a75aecde34d27e94d776fa6010e8f36d4e2f7d563af84b44dc72ae8e8 ====

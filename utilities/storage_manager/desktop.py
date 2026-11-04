@@ -176,4 +176,4 @@ def add_recent(recent, folder, limit):
             result.append(item)
     return result
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a6f0fce5051964b02aa789f3fec22b2b779eeddc63a174a15767ac0590428b19 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c39470758a68c965a47e4ed137675182a50bf3051fd597e261f3e69972d721d1 ====

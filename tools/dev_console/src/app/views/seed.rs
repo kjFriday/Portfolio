@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/app/views/seed.rs
-// About: The Seed data view: the CRUD Hub's shared database file, its rows per table and dated...
+// About: The Seed data view: the shared database, its row counts, backups and seed buttons.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -183,4 +183,4 @@ impl App {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=3e11878c7085ab5a205faf884ca1d045081e0aafb3a32e59a7efea9277eef744 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=1af276ea77a61f43edceab7d1e23f20ee0d74e70d70c70b436b1cee168a79d4c ====

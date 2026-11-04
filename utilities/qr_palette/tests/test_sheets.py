@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_sheets.py
-# About: Tests for print sheets: sheets.json, where codes go on a page, the SVG drawings, the...
+# About: Tests for print sheets: sheets.json, placement, SVG, the hand-written PDF, registry codes.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -375,4 +375,4 @@ class RegistryTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4045707c959e10ed2b6f0a06462191cd746c18f7ca5217ca7f523758eee186ca ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=29e6dafd3d584f96521680c449ad875c94305160b973d07f8de290c8e1d5b902 ====

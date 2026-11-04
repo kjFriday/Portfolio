@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: votes.py
-# About: Votes and the board: Good and Bad votes on colors, votes brought in from Color Voats, and...
+# About: Votes and the board: Good and Bad votes on colors, Color Voats imports, the ranked board.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -121,4 +121,4 @@ def board(db_path, preset):
     return ok_result({"order": swatch.usable_board(ranked["value"]), "votes": read_votes["value"]["votes"],
                       "places": swatch.rank_places(ranked["value"])})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=8a27fc032dd3f09e5418f4f41914f2646bd82c6916a9324b76c45a41a3fa4b02 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=81670d4df93b5bcf241dedb29ea3dd48f709b46b37f435cba9bce6134fc2a489 ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: local_inference.py
-# About: QR Palette local inference: a client for an Ollama server on this computer, and nothing...
+# About: QR Palette local inference: a client for an Ollama server on this computer only.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -442,4 +442,4 @@ def generate_json(endpoint, model, system, prompt, schema, timeout, answer_token
             spent[key] = answer[source]
     return ok_result({"text": answer["response"], "done_reason": reason, "inference_ns": spent})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5a7c32213dd159ea0f8df111486187e39d03e26c8f899708e64bd8a87a3974a3 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=fc2a6a3919107ef9c7564a9c5004ad920446827ee08a2b8d9491ea4836a202aa ====

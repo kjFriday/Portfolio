@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: print_advice.py
-# About: Print advice: how big to print a code so that it scans from a given distance (the Print...
+# About: Print advice: how big to print a code so that it scans from a given distance.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -81,4 +81,4 @@ def print_advice(text, width_cm, distance_m, caption, logo_version=0):
         return fail("this text is too long for a QR code")
     return ok_result({"need_mm": round(need, 2), "levels": levels})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e86ce1f901e8e7a20214872f7f9f07fa26c84a98f8aaa137ada12ecf459a86f6 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=85f3a1810d6bf8f54a8e24503a62202a3e1cd1aa248ca49fef302b46265e5ebb ====

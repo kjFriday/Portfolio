@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: audit.py
-# About: QR Palette audit log: one JSON line per ECP tool call, each holding the SHA-256 of the...
+# About: The audit log: one JSON line per ECP call, each holding the SHA-256 of the line before.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -345,4 +345,4 @@ def read_records(path, limit):
         found.append(record)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=19702b700bc6092432a0d302d7cb0f343ebafca2ccefac4a28ce1ca95b5ad1e7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=71b214f257689fd15205158333698e2a150f075f62a75aba8cb540388c9dfc56 ====

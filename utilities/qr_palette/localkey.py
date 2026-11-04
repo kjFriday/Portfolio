@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: localkey.py
-# About: QR Palette's local key: a secret in a file of its own beside the registry, never in...
+# About: QR Palette's local key: a secret kept in a file of its own beside the registry.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -129,4 +129,4 @@ def tag(key, purpose, text):
     message = purpose.encode("utf-8") + b"\x00" + text.encode("utf-8")
     return hmac.new(key, message, hashlib.sha256).hexdigest()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a30334d36e209afe755eddce32ceb33995e995e0e67a2106213accf6090ba8c8 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1cb6420498e49a4370288b9faead2ced40fa60d68bae3888a2baab92dc123407 ====

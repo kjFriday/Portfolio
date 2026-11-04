@@ -93,4 +93,4 @@ def png_to_clipboard(path):
               "[Windows.Forms.Clipboard]::SetImage([Drawing.Image]::FromFile(" + quote_for_powershell(path) + "))")
     return run_powershell(script, 20)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=64efd1398a350a7052f17d976da7b94ca7605e4227d76f423ca3e9597769ffd0 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b3fb1da0ed12ab386dfd719e5616646257dfc93274bf398cc89d4555ef31b5e3 ====

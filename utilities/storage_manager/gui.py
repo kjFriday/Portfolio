@@ -1947,4 +1947,4 @@ class StorageWindow:
         handle.close()
         self.window.destroy()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4f103ee45ca877cd9c2e2720c1c3b7993ed6f0671be1ac7a9bdaa0e48014f51d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b00b61d323b3b76261b56314dbc057daa60f9ee20392136bbbec385c1b4c2113 ====

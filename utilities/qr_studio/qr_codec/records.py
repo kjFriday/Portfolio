@@ -31,4 +31,4 @@ def fail(error):
     """A failed Result with the short reason `error` (no final period) and the value None."""
     return make_result(False, None, error)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=c8efd6bada5695874ff4ed0b829e458af103c528c628c06eb944f665a640ed05 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=81272840b339dec7a303c4a36f84a1271f93a9a2d7754fccb12d4b63aa9d2bf4 ====

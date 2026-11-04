@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: ecp.py
-# About: Environment Context Protocol (ECP) 1.0: QR Palette's registry, asked in plain English...
+# About: ECP 1.0: QR Palette's registry asked in plain English through a local model.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -1213,4 +1213,4 @@ def serve(handler, state, reader, writer):
 # the built-in planner is in force from import on, so the tests and --selftest need no planner.json
 configure_planner(DEFAULT_PLANNER)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f7c2271b6a9c67d273405df1c018a19a068b79aee8cc89574fdf57abf3d2e7ee ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d7f6a51585e65341f9007223514930ae39c0e2b9450c8a8ae88ea97669c41219 ====

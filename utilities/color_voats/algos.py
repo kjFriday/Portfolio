@@ -424,4 +424,4 @@ def run_scorer(name, colors, voats, weights):
         return explore(colors, voats, weights["far"])
     raise ValueError("unknown scorer: " + name)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a58f1e3e7a8c00bd5d1b69896c4b32bf256a31d405a316df66bc6c8db6cda2d7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=811bf1a3c7753d38bb86ed3b61dd784e7fcc24ac56fe2683710c6248d1786c2e ====

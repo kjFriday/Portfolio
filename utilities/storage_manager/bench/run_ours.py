@@ -252,4 +252,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=217b548cd987e7c542e0d74941a30ded3d0c8b6e2d842bdfcea9ad3d929df737 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=fe2f4310342d60f0cd4f6e53f5a8e3d2fc885c7821973180899ed37c297651bf ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_shortlinks.py
-# About: Tests for short links: the IDs and their check digit, the base address, destinations...
+# About: Tests for short links: IDs and check digits, bases, destinations, templates, tags, pages.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -485,4 +485,4 @@ class ServerTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f28942f2401a19de8b3adbc8034551ab04f58bafd91542e7953ac050ba2bcad0 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c99721f5a03d9c7757bb7c7741d8d1db37500899c06a1141d50c067dc21399ff ====

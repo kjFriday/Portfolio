@@ -135,4 +135,4 @@ def majority_filter(bits, width, height):
                 result[here + x] = 0
     return result
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=3f579715dce1c22dc244745ec0857466a0cd37af7e4b48811407c369c0172dcf ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=fbcc969b9637a30f543e8e38e2c379a5a32b166b0126d31dd79514609c05f8dc ====

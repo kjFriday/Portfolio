@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/desktop.rs
-// About: Desktop shortcuts: build each program from source, then put a versioned shortcut to that...
+// About: Desktop shortcuts: build each program, then place shortcuts to the build and its source.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -405,4 +405,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=4003a2f706229c2ff70042e45ee2741d628e9177e3eb276387cb8f6cde5714a6 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=b76cc4d069b3f5e738db0046dced5b3dbd463edca23399cf2589a1f475f9187b ====

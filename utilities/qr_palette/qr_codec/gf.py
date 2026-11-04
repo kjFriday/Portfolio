@@ -91,4 +91,4 @@ def poly_eval_low(coefficients, x):
         index = index - 1
     return result
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4149ed2e1912383d62b94331c58b8b14878b0463cbe39d7d2844550f1a274fb9 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=560b0bd36940fa561da6e791dd30386f780ef44c30eae5189cb66c4d223de61a ====

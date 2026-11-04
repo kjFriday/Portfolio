@@ -499,4 +499,4 @@ def arc_color(arc, mode, max_depth):
         return hls_hex(hue, 0.74 + 0.08 * outward, 0.18)
     return hls_hex(hue, 0.50 + 0.25 * outward, 0.55)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a49a6b1d8dbab6ace59861db60f017ef633e99d713ccbf2ad214cf4fd1a854fa ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=6a201a456ce6ae16679c3c3a134b536bb9b5023341bcae3bd2503dafc5b5882c ====

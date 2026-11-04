@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/main.rs
-// About: Generic Company Dev Console: one window that builds, tests, runs and smoke-checks every...
+// About: The Dev Console's entry point: command-line flags, start-up and opening the window.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -267,4 +267,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=cff5ca0bf3a1c83a577d3cd086044176cde7387b4440452590ab7ba6a7dad027 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=22b984712e3bb89f92746c88866cbf8201947ef513745527068edc4641fea999 ====

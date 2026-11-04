@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_studio | File: studio_history.py
-# About: QR Studio's history of codes read and made, and helpers for links, saving and...
+# About: QR Studio's history of codes read and made, plus link, save and description helpers.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -159,4 +159,4 @@ def describe(reading):
     return ("version " + str(reading["version"]) + ", level " + reading["level"] + ", mask " +
             str(reading["mask"]) + ", " + str(reading["corrected"]) + " codeword(s) corrected")
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e4a04f6880fc76eb89e3a28c85379b58cedea1549fb17b972830deeb4b6b8b81 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=56dc99f665b040ab720a65343d60f466404f2e271c9bd03de79815272c0489ab ====

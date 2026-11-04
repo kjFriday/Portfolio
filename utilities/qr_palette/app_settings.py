@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: app_settings.py
-# About: The settings in force for this run, put in place by apply_settings from settings.json's...
+# About: The settings in force for this run, put in place from settings.json by apply_settings.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -113,4 +113,4 @@ def apply_settings(values):
     LINK_SECTION = values["links"]["use"]
     return warnings + loaded["warnings"] + links["warnings"]
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=32cdd005f29723a0d8ac36d019b26c2991bb64531db72b0c9197e77a2bb822de ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=ede0cc7fa5ad316a45bf09fc3c809248712a251668a4b149ae76788d061602c3 ====

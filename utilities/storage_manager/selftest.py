@@ -670,4 +670,4 @@ def selftest():
     print(str(len(failures)) + " check(s) failed")
     return 1
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=b30ba945d2fb66786523372fe8e84914226bd32023ece219f7295e87682910ba ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=24f1036ac70540b0373428d5b93f08b58e57498f5d11b3058bece20116e5f397 ====

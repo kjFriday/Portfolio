@@ -468,4 +468,4 @@ def remove_from_groups(groups, gone):
             result.append(kept)
     return result
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=790f0e0130081f9d16cef265a50135e3dafe761e209f7286a16e8c5af65283c2 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=30b9b4327a9fe0658a70b317a17d914e98a3c70c4c6596c5dacfeda07d92b6ad ====

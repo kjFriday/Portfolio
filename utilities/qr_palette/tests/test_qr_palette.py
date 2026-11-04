@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_qr_palette.py
-# About: Tests for QR Palette's core and its command line: making, registering, finding, votes...
+# About: Tests for QR Palette's core and its command line: making, finding, votes, settings, MCP.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -1030,4 +1030,4 @@ class CommandLineTests(CoreCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=94adc3c228c14458cfcbdce9fe75b50c1d0eca4423e9193b1877da58901cf5ff ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b05445e01671e2d686ee1b1a02992e1c5317241340d3978f0825a51f49246a08 ====

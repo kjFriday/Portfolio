@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/test_pixel_icons.py
-# About: Tests for pixel_icons.py.
+# About: Unit tests for pixel_icons.py: PNG decoding, pixel scaling, ICO, RES and .syso layout.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -283,4 +283,4 @@ class ProjectTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=b847f87d2aa47ea35ded823165f213ee6d647b68666fc2e61ffcbfbcbc28766b ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=f58ba9cffdbbfd012ad956889b51571f1c8b8d02c3f5b3873566a49ad4993f15 ====

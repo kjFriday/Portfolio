@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: publish.py
-# About: Publishing the nonlocal redirect pages: writing them into a folder a web host serves...
+# About: Publishing the nonlocal redirect pages into a folder a web host serves.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -329,4 +329,4 @@ def publish(folder, kind, rows, base, tags):
         result["push_error"] = pushed["error"]
     return ok_result(result)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a63d0c8d2535187b820fc248f2fcf1d77ef5ad4a3032a23c62042401a1596cca ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1bf77f6a07c9f38dfd8a00722b5f44a383416ef9b8ee793e8ee2b9435ec52eda ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: registry.py
-# About: QR Palette registry: the SQLite database of QR codes, their colors, their links and where...
+# About: QR Palette registry: the SQLite database of QR codes, their colors, links and files.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -1178,4 +1178,4 @@ def find_rows(rows, filters, limit):
             found.append(row)
     return found
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=aa75749cff0b4826d6137039b539a383722d7475f94fd03b8b5ecebcce3c2f0c ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=3760ed4294ae2e6f71a2395c055596a6ef11c72874662ec7a6d4e9d8f3a4caa2 ====

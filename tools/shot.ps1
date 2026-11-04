@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/shot.ps1
-# About: Screenshot one Generic Company window for checking icons and titles by eye...
+# About: Screenshot one Generic Company window so its icon and title can be checked by eye.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -54,4 +54,4 @@ $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.D
 # stop both the window's process and the one started, in case they differ
 Stop-Process -Id $win.Id -ErrorAction SilentlyContinue; Stop-Process $p -ErrorAction SilentlyContinue
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=62068a5b4b330c2e4fa7798185f4e626c42ad59577095c36181cc3ddc7edd106 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=0f8b1c7a988202e9b6b624308971b6877377c9e5dd565c7f451d936ab35ffc02 ====

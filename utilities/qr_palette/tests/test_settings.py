@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_settings.py
-# About: Tests for settings: defaults, checking every value, keeping hand edits, and never...
+# About: Tests for settings.json: defaults, value checks, hand edits kept, broken files left alone.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -207,4 +207,4 @@ class SavingTests(SettingsCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=b452a1e495d7d2cd6950e6e748033a7ae05fcfe12115819ed5f859790ccaa80f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b82cd682b522a4560dcc06fab23401536d6c0b2b784d881690e427820189f0fb ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_audit.py
-# About: Tests for the audit log: the hash chain, what it shows and what it cannot, the lock, and...
+# About: Tests for the audit log: hash chain, anchor, fingerprints, lock and line format.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -167,4 +167,4 @@ class AuditLogTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=99b45a1963f7af5548715945323ebac9900a0a609b8856708a05f74ad5421527 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=d7ee2e99da2585134a98e6877291a3c64e6971c0651c7cd9da782a785fe5c1da ====

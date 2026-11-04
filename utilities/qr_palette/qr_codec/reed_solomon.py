@@ -170,4 +170,4 @@ def rs_correct(block, ec_count):
         return fail("too many errors")
     return ok_result({"block": fixed, "errors": len(powers)})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a51a52693f94ac1af915142824cb11a389e3f0f28f89fde5d0d18454b877810e ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c535ceb11acb5fd03b515efb191ef27799fea6ae45a973e92f6df703bad9c580 ====

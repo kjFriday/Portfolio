@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: gui/make_tab.py
-# About: The Make tab: kind, link, preset and level, short links, the board of colors with votes...
+# About: The Make tab: choose what a QR code holds and its color, preview it, and save it.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -554,4 +554,4 @@ class MakeTab:
         self.state["engine"]["preset"] = self.preset_box.get()
         self.redraw_board()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ae1d1924edd6e1c3ba2ce54e3c1cbcc69fc00f2c8d0f6beb2a097c690776a6e6 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=79c5d5f432a5ba45ce2a0be8cce872746be48bedb9132b97309e7dd51216649d ====

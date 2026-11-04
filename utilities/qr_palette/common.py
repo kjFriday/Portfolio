@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: common.py
-# About: What the core modules share: the Result record, with_registry, and spreadsheet cells that...
+# About: What the core modules share: the Result record, with_registry and safe spreadsheet cells.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -64,4 +64,4 @@ def safe_cell(value):
         return "'" + text
     return text
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=ecabf082e6ccde5c99dad96a19fc3d1cc109b624e532be76dcbe722d42dd4660 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=18e5ba58a59a4f457b54e09e84a1dc025334529f0edc1d42cc78c731c1768bae ====

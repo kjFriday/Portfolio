@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: qr_palette.py
-# About: Generic Company QR Palette: QR codes in recommended colors, a registry of where each one...
+# About: Generic Company QR Palette: QR codes in recommended colors, a registry of them, and ECP.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -340,4 +340,4 @@ if __name__ == "__main__":
     sys.modules["qr_palette"] = sys.modules[__name__]
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a56603c0d7e4e2e0e348519ed07a9e3ef99ebf35f94247c5014395138f3196e8 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1eabd4a5678e6c00acaf7f5c5757cc0f0436258b636bbfc36a771981647b5458 ====

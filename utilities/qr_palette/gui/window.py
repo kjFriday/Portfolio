@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: gui/window.py
-# About: The QR Palette window: PaletteWindow, with its state, job queue, menus, status lines and...
+# About: The QR Palette window: PaletteWindow, which joins the three tabs and the dialogs.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -672,4 +672,4 @@ def run_gui(db_path, engine, smoke_path, config, warnings):
     ECP engine as the MCP server, so it is planned, grounded and audited the same way."""
     return PaletteWindow(db_path, engine, smoke_path, config, warnings).run()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=9c5020ca3daff493dcc065802bcb283f60185f63c2fd6004bf6539a4452b8b31 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=21ec7b5908617653a0c9ae61635409a16908c71cb19d095a5ffde5ec6cbdaf75 ====

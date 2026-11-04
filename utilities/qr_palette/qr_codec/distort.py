@@ -190,4 +190,4 @@ def cover_image(image, box):
             result["gray"][y * image["width"] + x] = 255
     return result
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=bbf163b0ad5fae05e27a1fc5b919fa5a47ff84c77c5e414f35de45115225a240 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b46014bfd814e21c6ca4396e9642b81c0c10c4174d80d7b617ae393aeaa83476 ====

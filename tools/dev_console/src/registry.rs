@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/registry.rs
-// About: The portfolio's programs (from config/programs.ini) and the commands that build, test and...
+// About: The portfolio's programs (from config/programs.ini) and the commands that run each one.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -544,4 +544,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=c0ba4dd2afe5ecc3d4ecacd2493a99bf7fb09280c92c0f97f9c786f47af9f645 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=c017ff425b681a103546c2b8abf0a00e77da5ca1d406a3b5a65834feeb50cbed ====

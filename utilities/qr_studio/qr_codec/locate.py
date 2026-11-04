@@ -497,4 +497,4 @@ def decode_image(image):
                     last = result
     return last
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=82a73f6a4d4065a38c3cd5ac863cbba4d670f43359233943e2094f18a32ae396 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=16f58b9b528e9c4ad491f42451276b4f015046615c386fd842620f0eb79a3668 ====

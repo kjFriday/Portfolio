@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: gui/find_tab.py
-# About: The Find tab: find codes by QR code, color or picture, ask a local model, and act on the...
+# About: The Find tab: find registered codes, ask a local model, and act on the results.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -920,4 +920,4 @@ class FindTab:
         self.color_text.set("")
         self.run_search()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=8134f7b473b455d64ed81eaedbb71d070653bd9b2f478ffe4a6d9580e0e7d3e3 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=2ddee1922f54214123a8cc1b44dbf0f59a9bccae3316337af98d10ce8220562f ====

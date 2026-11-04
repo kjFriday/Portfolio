@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: shortlinks.py
-# About: QR Palette short links: a short address printed in a QR code, pointing at a destination...
+# About: QR Palette short links: checked IDs, links.json, redirect pages and a local page server.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -900,4 +900,4 @@ def stop_server(running):
     running["server"].server_close()
     running["thread"].join(5)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=35924417f2cacc0ca557957b76495f363430f892138a5b75751c80fcb04692eb ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b830c6aef32a0e2ccd46a72cec64e6c05e5022b1f8275b2688712c6d3346bd95 ====

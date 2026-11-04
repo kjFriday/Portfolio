@@ -693,4 +693,4 @@ class VoatsWindow:
             json.dump(report, handle, indent=2)
         self.window.destroy()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=0e6600a958e31ed1cb93b11727f9ae8c2e72f8bb2244b2f51b56c21257e73e3e ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=648d2694081597297f0d09bddd1a2fc84117f494da5907db7b65c3566e47b91f ====

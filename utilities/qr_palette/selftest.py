@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: selftest.py
-# About: The built-in checks: `python qr_palette.py --selftest` runs selftest() (the full suite is...
+# About: The quick built-in checks that `python qr_palette.py --selftest` runs.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -200,4 +200,4 @@ def selftest():
     print(str(len(failures)) + " check(s) failed")
     return 1
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=745a18dbf2ef217baaf440deb922d405a63bed190c093e384edf1c2185536e5c ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=3173a3db13f8af4c9c4dea5edad87feff83dcf8e02211c7b0761e461ccbfdb2b ====

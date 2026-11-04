@@ -31,4 +31,4 @@ def option_value(arguments, name):
         index = index + 1
     return ""
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=c21006128a71915297a40fa678bfd196d0e7e137d75f0e8d2a213382672e4a04 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=190cb302ac76fb1098e66de9e228bd82a13464822d9267cf1c30305143d0d943 ====

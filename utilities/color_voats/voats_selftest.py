@@ -98,4 +98,4 @@ def selftest():
     print(str(len(failures)) + " check(s) failed")
     return 1
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=0b7d1df88ceed613631e718f6a141d5489b1267b263a74656be5c3fb8734105b ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=29e93a31fa402d48592e294363ad4a23b0a8f9f9cc78d48cb2fb8492f9335aae ====

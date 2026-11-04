@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_qr_codec.py
-# About: Tests for the QR codec: QR Studio's tests, ported, plus colored output, transparency and...
+# About: Tests for the QR codec: QR Studio's tests, ported, plus colors, logos and limits.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -681,4 +681,4 @@ class LimitTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=00ec6add5d662debfa02e8e00ceee42501434adaa3a33bd05b64174c60f2ef18 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=fc4eafa571c24138a2bb8a02599223a71c0c89f1d69ebc10a113a761fefe7fa2 ====

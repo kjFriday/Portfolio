@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: short_link_ops.py
-# About: Short links in the registry: the one a new code prints, where each one goes now and...
+# About: Short links in the registry: planning, changes, scans, pages and tamper checks.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -368,4 +368,4 @@ def short_note(shown):
         return ""
     return " (" + section + ")"
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=7518b9c6c8a1ab332f924631dd55c597ae9484b83c690ea7b07186be83ed66d0 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=9279d42722448fbb1a4c4ecf4029a5b3d12b86b242d71e4b25f7cdc9ab0641d2 ====

@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/app/views/sidebar.rs
-// About: The left panel: every program with its last test mark, Test all, the desktop shortcut...
+// About: The left panel: the program list and the controls that apply to every program.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -142,4 +142,4 @@ impl App {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=70539e978d67d0f6e767ee1567c1487b00b40503411adf993c060839dd443c90 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=2ddd7c1ee06882e0e51a6b14c4dc5371b97c611ad18042025f336b44ba0a34ce ====

@@ -121,4 +121,4 @@ class CodecPackage(types.ModuleType):
 # reference to the package and adds the forwarding above
 sys.modules[__name__].__class__ = CodecPackage
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=7c621a567e4dfc5e691408bab8114131c21d0d26d10bd14f1db60acfef3a922c ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=eb8a2ad65ae4e2e49d78339191598f3a42a9d3a20d9f579507f0c046279d69ce ====

@@ -91,4 +91,4 @@ def warp_image(image, corners):
                 result["gray"][y * width + x] = image["gray"][int(v) * width + int(u)]
     return result
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=cd7fe7fc700519902e3e794c2b090c6941a8472a2fd39ce896b2dd97fe043ed8 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=466e6de76f221c341e103f9d41cea5c9e5c82801cdeb6bce79742bbe149cae11 ====

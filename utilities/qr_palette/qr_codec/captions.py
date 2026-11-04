@@ -130,4 +130,4 @@ def caption_pixels(lines, pixel, width, top):
                         corners.append((left + (6 * place + column) * pixel, line_top + row * pixel))
     return corners
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=59e7e72e7afc5371fa3af8e228928dc69081d95e918c4daf8f609e5925324cdf ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=3c5769d1a67107a734ececf65283aa5ee9d222eee6075adb9afd8c6beaabfb7c ====

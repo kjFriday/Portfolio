@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_mcp_server.py
-# About: Tests for ECP's MCP server: both eras of MCP, the three tools and their schemas, isError...
+# About: Tests for ECP's MCP server: both MCP eras, tools, isError, rate limit, batches, audit.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -374,4 +374,4 @@ class StdioTests(ServerCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=d7a195b5c3263bf974a312023861ab951972c30122bc8adb4ec2f8e4df016124 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a324848dc9b425d6abf9e3ed7a5444d9653d6cbe36a6a9710a0225836248280f ====

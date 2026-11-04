@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: gui/read_tab.py
-# About: The Read tab: open or paste a picture, read the code in it, and show its matches in the...
+# About: The Read tab: open or paste a picture, read its QR code and show registry matches.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -319,4 +319,4 @@ class ReadTab:
         if messagebox.askyesno("Open link", "Open this link in your browser?\n\n" + text):
             webbrowser.open(text)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=4f5576b2b407b1e4fc97675b0e7388a63647d8e8c8deea18f3fbe261654edaf5 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=f9c4943a871553016caca24a4b177511bb5008fef731a49be0f47c3086b99ef2 ====

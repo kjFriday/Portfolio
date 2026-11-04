@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/verify.ps1
-# About: End-to-end check of the six Generic Company programs against one sandbox database...
+# About: End-to-end check of the six Generic Company programs against one sandbox database.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -106,4 +106,4 @@ Check "generic_company.db can be renamed with every program closed" $true
 
 if ($failed) { "$failed check(s) failed"; exit 1 } else { "All checks passed." }
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=99b87999d9b7a6c55e319d2744e8010415de56b0560d0eb5e09063e70753d8a2 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=81316c7007ad8ea5abffab93bf5dc1837048b89339a88ebb5ffa2b798433a639 ====

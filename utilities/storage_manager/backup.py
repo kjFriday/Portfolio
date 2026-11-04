@@ -140,4 +140,4 @@ def apply_copies(copies, cancel_flag, progress):
         report_progress(progress, "Copying", done_bytes, total, "bytes")
     return success({"done": count, "errors": errors, "moved": []})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=b6365ad4d94a1e4655319a1ec5fa38cd414028169dcd121295048b0379c1c916 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1ba291c29d171544955279d27c6fbbcbba1dd861b38290dde5d1932a452ee06d ====

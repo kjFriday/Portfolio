@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_swatch.py
-# About: Tests for swatch and ranking: the cube, names and families, contrast, and the JSON...
+# About: Tests for swatch and ranking: cube, names, contrast, and the JSON presets and weights.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -377,4 +377,4 @@ class RankingFileTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=471833d8a5f1276f42011e98ad55a4eeb263e70c83dc9a451744a767c1d24e4a ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=8b9b982c281063dfacfcdf7ebedc819377d83605872b032316ca1e46ae98aa2b ====

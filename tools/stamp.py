@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/stamp.py
-# About: Add a license header and a keyed stamp footer to every tracked source file (standard...
+# About: Add a license header and a keyed stamp footer to every tracked source file.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -653,4 +653,4 @@ def main(argv=None):
 if __name__ == "__main__":
     sys.exit(main())
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=97a4b29104e2c57a327ff76d7a43c35566805e5dc9d59f33b7aef368b8a0ecb2 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=30e40baf2614d1bc68f849e4a9e8f6da7bac6f7279ec15f6c1e6b26451fc88b2 ====

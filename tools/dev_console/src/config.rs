@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/config.rs
-// About: The config fileset: config/settings.ini and config/controls.ini, layered as built-in...
+// About: The config fileset: settings.ini, controls.ini and programs.ini, in layers.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -346,4 +346,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=c719a8f0a4abb0c7193e6218ec32a5b137a04411a22a4371c3a6a5cc1086fec6 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=d0e22e5e4c947f47b2d059628aeadc0a2ec97fe25bdddb1da3b3f33d1ec3ec66 ====

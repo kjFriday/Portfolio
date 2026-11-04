@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_local_inference.py
-# About: Tests for the local inference client: the loopback rule, model listing, cloud checks and...
+# About: Tests for the local inference client: loopback, model list, cloud checks, planning.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -447,4 +447,4 @@ class ServerTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e303c555bce3c543032c1729549540abbfb2b85e1b7ecc50ec87a0be919b51b3 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=af05bd2a5ac1f2a8d79b631412d42cff3f8a3235649e61cea0eb1b7dc643c7bd ====

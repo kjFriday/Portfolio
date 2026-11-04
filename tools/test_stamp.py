@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: portfolio | File: tools/test_stamp.py
-# About: Tests for stamp.py.
+# About: Unit tests for stamp.py: headers, footers, About lines, tamper checks, repo scanning.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -340,4 +340,4 @@ class Repository(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=8eac747357f293f165bdc749cf170da2aa91dbc2308ee1535ab5e3f1d32e1538 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=4f00a8c9aa1297dab27b10d650e9b0e450ad4327d6b750092a224066bd6a5412 ====

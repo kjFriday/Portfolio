@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: color_voats | File: tests/test_color_voats.py
-# About: Tests for the Color Voats feed's core: posts, votes, comments, saves, the store and the...
+# About: Tests for voats_core.py: posts, votes, comments, saves, the store and the feed's order.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -322,4 +322,4 @@ class ModuleTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=be49688e6dcbe7f8e3ec6ad04681b3145a0a9bfa1529ec65bff83a769785a84c ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=0a21a90ece5fa2d2b56a0c44a3f5dce866ed92125a8653832497f49fbaf03693 ====

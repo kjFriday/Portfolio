@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: payloads.py
-# About: QR Palette code kinds: what a QR code can hold other than a web link, built from a small...
+# About: QR Palette code kinds: what a QR code can hold besides a web link, built from a form.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -453,4 +453,4 @@ def kind_of(text):
             return kind
     return ""
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5eebd9fdb65de1bc0a88398093ec96ef5be07f8ea1fbb51eed4890507d30e5a4 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=05bab3e8ffb934324fe85ded46b9c94ad80c696e6555b60a004e0d61b9752db4 ====

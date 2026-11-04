@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_publish.py
-# About: Tests for publishing the nonlocal pages: what would change, with nothing touched; writing...
+# About: Tests for publishing the nonlocal pages: plans, writes, removals, Git commits and pushes.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -403,4 +403,4 @@ class GitTests(FolderCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=7ca4da9f38e7019c52d6b2a9a43def4d57c8b847aa24f62bd60aad4bc6d96422 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=aed5e13034c4f35269a590a944ba48a1d80f65e803490df2e482e0b28d9cf641 ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: storage_manager | File: storage_manager.py
-# About: Generic Company Storage Manager: organize and clean local drives, and handle network...
+# About: Generic Company Storage Manager: entry point, name, version and command line.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -134,4 +134,4 @@ if __name__ == "__main__":
     sys.modules["storage_manager"] = sys.modules[__name__]
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e67a936220bf700e869680fb4ff29f82a21d64c706e2a13ba51154b014918064 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=9e62465df474e603ba21f79134794b77d49443c983da132117f61f2071fa95d8 ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: settings.py
-# About: QR Palette settings: one human-readable JSON file, settings.json, for everything a user...
+# About: QR Palette settings: settings.json, one readable JSON file for all a user may change.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -360,4 +360,4 @@ def write_defaults(state):
         return ok_result(state["path"])
     return save(state, [])
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a657daa9de9657622f6306ad1058416bc54553282cdba60aae42def113eb390f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=f470490309f003cbad6a62a7360ad182501bc91a5ef8bd0de7d22c84f197ddf7 ====

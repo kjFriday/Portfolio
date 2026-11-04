@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: color_voats | File: factory.py
-# About: Color Voats factory: build a standalone Python ranker from a preset and its algos'...
+# About: Color Voats factory: build a standalone Python ranker from a preset and its weights.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -437,4 +437,4 @@ def main(arguments):
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=e505c96e3da7a2301ab062b3ff37a86dd902693809eda69e65399b6b6904441e ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=1bcfe5eb89695f9ca5d69f6c0e1c335ad5d8e5f3a5f46354e82756b08ae693bb ====

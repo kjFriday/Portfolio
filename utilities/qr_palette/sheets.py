@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: sheets.py
-# About: QR Palette print sheets: many codes on a sheet of labels, or one code per page as a...
+# About: QR Palette print sheets: codes laid out on label sheets or posters, as SVG or PDF.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -535,4 +535,4 @@ def write_sheet(path, layout, codes):
             return written
     return ok_result({"files": paths, "pages": len(drawings), "codes": len(codes)})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a17f0aecde1b3a5cce5f9dc431c3589c250d06d9da120e47fd1756912d472987 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=64be7b429a1466b5624cba71eb7b788872cadf1eba89721c7e3df75894e5fcce ====

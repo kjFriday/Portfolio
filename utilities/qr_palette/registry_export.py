@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: registry_export.py
-# About: The registry exported: CSV with one row per code (for spreadsheets), or JSON with...
+# About: Registry export: a CSV file with one row per code, or a JSON file with everything.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -116,4 +116,4 @@ def export_registry(db_path, path, today=""):
         return fail("cannot write " + path + ": " + str(error))
     return ok_result({"path": path, "codes": len(rows), "short_links": len(links)})
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=a412c9f2f3ecb440adee871bd7e50b312432e6367bc5d718f13af765a5dab47d ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=a66d603c8763dd320a6c80579702a7d0082b3389f69baa16fecfea83853f0256 ====

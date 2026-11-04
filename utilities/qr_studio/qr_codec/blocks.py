@@ -103,4 +103,4 @@ def split_blocks(codewords, version, level):
             position = position + 1
     return blocks
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=0b17978cc0fa98cb87f1fcc9f8c6a46534a0e133a19967f88641fb60152765f7 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=be35c9a665ef5f6f41c3820802a9227f6454f3a7917281fa66d517a59fc01e3f ====

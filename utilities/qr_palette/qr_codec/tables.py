@@ -365,4 +365,4 @@ def mask_applies(mask, x, y):
         return (x * y % 2 + x * y % 3) % 2 == 0
     return ((x + y) % 2 + x * y % 3) % 2 == 0
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=fd741971b3d8161bd705fd7648ee1dce6eb6185490e55fa79f01c4aff7c2346a ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=edf33e60841a2e2a38c2a03d25f7420b3e7c19837b2818563edcfdd9f3dab4d1 ====

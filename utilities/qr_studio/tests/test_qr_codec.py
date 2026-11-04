@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_studio | File: tests/test_qr_codec.py
-# About: Tests for QR Studio's codec, the qr_codec package: Reed-Solomon, the tables, matrices and...
+# About: Tests for QR Studio's codec: Reed-Solomon, the tables, matrices and pictures.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -259,4 +259,4 @@ class ImageTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=5eb32df38ab70bf26f4b7aa794e3085a0e9b3907d331e242a4975256223e8aa5 ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=59e1d25c33cbdf43d8ccc98900c6b3f81f25a5cdd177782f97c2d78b4038bf9f ====

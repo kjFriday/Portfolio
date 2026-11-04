@@ -622,4 +622,4 @@ class StudioWindow:
         handle.close()
         self.window.destroy()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=b2c79037503af094f5973248cc7f32d291cc2292174bdec64608844fff76fc2f ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=b87c85c281bc8cf9175215d4bef0350b7180190c03f4b0f49440cb7954177164 ====

@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: tests/test_payloads.py
-# About: Tests for the code kinds and the local key: escaping, what each payload looks like...
+# About: Tests for the code kinds and the local key: payload text, Wi-Fi masking, the key file.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -427,4 +427,4 @@ class KeyTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=aa656cd0dc58d5de8b8ad1903928fe64c7ef1d6b01a7848f91f43c3c089734aa ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c4e2f67f846ec47eca402273de652987081db5bb2e136134850408ca10fb427b ====

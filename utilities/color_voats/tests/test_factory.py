@@ -233,4 +233,4 @@ class FileTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=d650dd9d6b1c05665de3d57a690f3b9013752614222af7eced88c28d2cdaec4c ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=c5afd794fb3d4891f8aadd5084b79d7259010983c27f0eb1ca88404ed9241a36 ====

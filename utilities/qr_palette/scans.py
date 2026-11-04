@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: scans.py
-# About: QR Palette scan counts: how often each short link was opened, read from an analytics...
+# About: QR Palette scan counts: how often each short link was opened, from reports or logs.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -295,4 +295,4 @@ def read_file(path):
         return fail(name + ": " + read["error"])
     return read
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=f3a1a6eb9a2c7437aad15fde627ac870503a33cdebc6c73688a86c55252d0f3e ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=df0cd153f6224d57eacf0cdb17c71f01c055b238632dcb4a46cafb484e93e9fc ====

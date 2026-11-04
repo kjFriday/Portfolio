@@ -1,6 +1,6 @@
 # ==== Generic Company Inc. portfolio ====================================
 # Project: qr_palette | File: making.py
-# About: Making codes: draw a code, save it, read it back to prove it scans, and register it; or...
+# About: Making codes: draw a code, save it, read it back to prove it scans, and register it.
 # Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 # You may change this file under the AGPL-3.0. The stamp at the end marks
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -363,4 +363,4 @@ def robustness_score(matrix, text, color, caption, logo=None):
     """
     return qr_codec.robustness(qr_codec.picture_image(matrix, ROBUSTNESS_SCALE, color, caption, logo), text)
 
-# ==== stamp v1 | author=kjFriday | hmac-sha256=04288c64aa77e8d755cbb90d13dbc723383d7afee60debee751bcae00b37c0db ====
+# ==== stamp v1 | author=kjFriday | hmac-sha256=6af3e3591df549265f0ee15f39987991eb17027b2d347710a70c2ba8734ba158 ====

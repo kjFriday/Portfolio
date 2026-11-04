@@ -1,6 +1,6 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/win.rs
-// About: Windows plumbing used across the console: the flag that keeps child processes from...
+// About: Windows plumbing shared by the console: the no-console-window flag and PowerShell quoting.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
@@ -47,4 +47,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=745a814abb4fa29dc99370a6b749b243aed7fef4c33d26867041803df164fa51 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=1d2cb910a36e2576d453ea4824950ee9fe3e03e1a08a2b0b0ba9542fb7d6665f ====

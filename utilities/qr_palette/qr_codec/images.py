@@ -15,6 +15,16 @@ PNGs are written in gray (write_png) or in two colors with an optional caption (
 Files over MAX_FILE_BYTES and pictures over MAX_SIDE pixels a side are refused before their pixels
 are read. MAX_FILE_BYTES has its one home here: svg.py and files.py read it as images.MAX_FILE_BYTES,
 and setting qr_codec.MAX_FILE_BYTES (as the tests do) sets it here, so a change reaches every reader.
+
+A PNG file (ISO/IEC 15948) is an 8-byte signature and a list of chunks: IHDR (size and pixel format),
+PLTE (palette), tRNS (transparency), one or more IDAT (the zlib-compressed pixel rows) and IEND. Before
+compression each row gets a filter-type byte and its bytes are stored as differences from a predicted
+value (PNG section 9), which makes them compress better; reading undoes that (unfilter_row).
+
+Callers: files.py (saving colour PNGs and loading pictures), locate.py (shrink_image), svg.py
+(MAX_FILE_BYTES), logos.py (png_chunk), the Make tab (gui/make_tab.py) and the tests.
+
+Start reading at read_image_bytes for reading and write_png for writing.
 """
 
 import os
@@ -31,6 +41,7 @@ MAX_SIDE = 4096  # and so is a picture wider or taller than this, before any pix
 
 
 def make_image(width, height, fill):
+    """A new gray Image of width x height pixels, every pixel `fill` (0 black .. 255 white), no rgb."""
     return {"width": width, "height": height, "gray": bytearray([fill]) * (width * height), "rgb": None}
 
 
@@ -52,12 +63,21 @@ def matrix_to_image(matrix, scale, border):
 
 
 def png_chunk(kind, data):
+    """One PNG chunk as bytes: data's length (4 bytes, big-endian), the 4-byte kind, data, and a CRC-32.
+
+    The CRC covers the kind and the data, not the length, so a reader can tell a damaged chunk.
+    """
     checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
 
 
 def write_png(image):
-    """Image -> PNG bytes (8-bit grayscale)."""
+    """Image -> PNG bytes (8-bit grayscale).
+
+    Each row is written with filter type 0 (no prediction); a two-tone code compresses well without
+    one. The IHDR fields after the size are bit depth 8, colour type 0 (gray), and 0 for the
+    compression method, filter method and interlacing.
+    """
     width = image["width"]
     rows = bytearray()
     for y in range(image["height"]):
@@ -105,6 +125,13 @@ def matrix_to_color_png(matrix, scale, border, color, caption=""):
 
 
 def paeth(a, b, c):
+    """The Paeth predictor (PNG section 9.4): whichever of left a, above b and upper-left c is nearest a + b - c.
+
+    a + b - c is what the byte would be if the picture changed at the same rate along the row as it
+    does along the row above (a flat gradient). The neighbour closest to that guess is used, ties going
+    to a, then b, then c, exactly as the PNG specification orders them; any other order would decode
+    some files wrongly.
+    """
     p = a + b - c
     pa = abs(p - a)
     pb = abs(p - b)
@@ -117,6 +144,16 @@ def paeth(a, b, c):
 
 
 def unfilter_row(kind, row, previous, step):
+    """Undo PNG filter type `kind` on one row of bytes, in place, and return it.
+
+    previous is the row above, already unfiltered (all zeros for the first row); step is the bytes per
+    whole pixel, at least 1, so "left" means the same channel of the pixel before. A filtered byte holds
+    the original minus a prediction, modulo 256, so adding the prediction back (& 0xFF) restores it.
+    The five filter types (PNG section 9.2), with left = a, above = b, upper-left = c:
+    0 None: no prediction. 1 Sub: a. 2 Up: b. 3 Average: (a + b) // 2. 4 Paeth: paeth(a, b, c).
+    Bytes left of the first pixel count as 0. The row must be unfiltered left to right, since each
+    byte's prediction uses the restored byte before it.
+    """
     if kind == 0:
         return row
     if kind == 2:
@@ -290,6 +327,11 @@ def put_palette(image, index, palette, transparency, entry):
 
 
 def palette_gray(palette, index):
+    """Gray level of palette entry `index` (a PLTE body of R, G, B triples); a missing entry reads as white.
+
+    Gray is the luma of ITU-R BT.601, 0.299 R + 0.587 G + 0.114 B, in integer thousandths: green looks
+    brightest to the eye and blue darkest.
+    """
     i = index * 3
     if i + 2 >= len(palette):
         return 255
@@ -297,6 +339,10 @@ def palette_gray(palette, index):
 
 
 def over_white(value, alpha):
+    """A channel value (0..255) with opacity alpha (0 clear .. 255 opaque) laid over white, rounded down.
+
+    Alpha blending: value * alpha / 255 + 255 * (1 - alpha / 255), done in integers.
+    """
     return (value * alpha + 255 * (255 - alpha)) // 255
 
 

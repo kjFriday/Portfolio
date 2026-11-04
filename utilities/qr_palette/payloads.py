@@ -7,7 +7,11 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette code kinds: what a QR code can hold other than a web link, built from a small form.
+"""QR Palette code kinds: what a QR code can hold besides a web link, built from a form.
+
+Each kind is a text format phone camera apps recognise; the formats are conventions shared by scanner
+apps (WIFI: and SMSTO: come from the ZXing family of readers) or standards (vCard 3.0, iCalendar,
+the geo:, mailto: and tel: URI schemes).
 
   wifi     WIFI:T:WPA;S:name;P:password;;      joins a network (\\ ; , : and " are escaped)
   contact  a vCard 3.0                         adds a contact
@@ -25,6 +29,14 @@ codes, or read from a picture.
 vCard and iCalendar lines end in CRLF, as their standards say, and long lines are folded at 75 bytes.
 So a built payload must reach the encoder exactly as it is: textsafe.clean would take the CRs out.
 
+Callers: the Make tab's form (FIELDS, TITLES, build), making.py (stored_form for every code it
+registers), and the read and list code (kind_of, one_line, is_masked).
+
+Main flow of build:
+1. Clean the form's values (clean_fields).
+2. Run the kind's builder, which checks the fields and returns (text, file-name part).
+3. Work out what the registry may keep (stored_form) and return the Payload.
+
 Records
   Result   {"ok": bool, "error": str, "value": any}
   Payload  {"kind", "text": what the code holds, "stored": what the registry keeps, "masked": bool,
@@ -37,6 +49,11 @@ import urllib.parse
 
 import textsafe
 
+# The kinds in the order the form offers them, their titles, and each kind's form fields (see Field).
+# MASK replaces a Wi-Fi password in stored text; it is always 8 characters so it reveals no length.
+# FOLD_AT is the content-line limit in bytes from the vCard and iCalendar standards (RFC 5545 3.1).
+# DAY_TIME accepts "YYYY-MM-DD" or "YYYY-MM-DD HH:MM" (or with a "T"). NUMBER_CHARACTERS are the
+# separators a phone number may be typed with; they are dropped.
 KINDS = ("link", "wifi", "contact", "event", "place", "email", "phone", "text")
 TITLES = {"link": "Web link", "wifi": "Wi-Fi join", "contact": "Contact card", "event": "Calendar event",
           "place": "Map location", "email": "Email", "phone": "Phone call", "text": "Text message"}
@@ -61,10 +78,12 @@ NUMBER_CHARACTERS = " -()."
 
 
 def ok_result(value):
+    """A successful Result holding value (kept local so this module imports only textsafe)."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with a message for the user."""
     return {"ok": False, "error": error, "value": None}
 
 
@@ -83,7 +102,11 @@ def clean_fields(fields):
 # --- Wi-Fi -------------------------------------------------------------------------------------------
 
 def wifi_escape(value):
-    """A Wi-Fi field's text with the five special characters escaped."""
+    """A Wi-Fi field's text with the five special characters escaped.
+
+    The WIFI: format separates fields with ";" and keys with ":", so a backslash goes before each of
+    backslash, semicolon, comma, colon and double quote inside a value.
+    """
     escaped = []
     for character in value:
         if character in '\\;,:"':
@@ -98,9 +121,11 @@ def wifi_fields(text):
         return None
     parts = []
     current = []
+    # 5 skips "WIFI:"
     index = 5
     while index < len(text):
         character = text[index]
+        # an escape pair is kept as it is, so an escaped ";" never splits a field
         if character == "\\" and index + 1 < len(text):
             current.append(text[index:index + 2])
             index = index + 2
@@ -118,13 +143,18 @@ def wifi_fields(text):
 
 def stored_form(text):
     """What the registry may keep of a code's text -> (text to keep, masked). A Wi-Fi password is
-    replaced by MASK, always the same length; any other text is kept as it is."""
+    replaced by MASK, always the same length; any other text is kept as it is.
+
+    A masked text is rebuilt from its non-empty fields and ends in ";;" like a built one.
+    """
     parts = wifi_fields(text)
     if parts is None:
         return text, False
     masked = False
     kept = []
     for part in parts:
+        # the key may be any case; an empty password ("P:") has nothing to hide
+        # Known limitation: a lowercase "p:" key keeps its case, so is_masked does not see the mask.
         if part.upper().startswith("P:") and len(part) > 2:
             kept.append(part[:2] + MASK)
             masked = True
@@ -144,6 +174,12 @@ def is_masked(text):
 
 
 def build_wifi(fields):
+    """A WIFI: join text from ssid, password, security and hidden -> Result (text, name part).
+
+    Security is normalised to the format's T: values: WPA (also for WPA2/WPA3), WEP or nopass; empty
+    security means WPA with a password and nopass without. Line breaks and tabs are dropped from the
+    name and password.
+    """
     ssid = fields.get("ssid", "").replace("\n", "").replace("\t", "")
     password = fields.get("password", "").replace("\n", "").replace("\t", "")
     if ssid.strip() == "":
@@ -166,6 +202,7 @@ def build_wifi(fields):
         text = text + "P:" + wifi_escape(password) + ";"
     if fields.get("hidden", "").strip().lower() in ("yes", "y", "true", "1"):
         text = text + "H:true;"
+    # the extra ";" makes the closing ";;" the format ends with
     return ok_result((text + ";", "wifi-" + ssid))
 
 
@@ -173,13 +210,18 @@ def build_wifi(fields):
 
 def text_escape(value):
     """A vCard or iCalendar text value: backslash, comma, semicolon and line breaks escaped."""
+    # backslash first, or the escapes added after it would be doubled
     return (value.replace("\\", "\\\\").replace(",", "\\,").replace(";", "\\;").replace("\r\n", "\\n")
             .replace("\n", "\\n"))
 
 
 def fold(line):
     """A content line folded at FOLD_AT bytes, never inside a character: continuation lines start with
-    a space, which counts."""
+    a space, which counts.
+
+    Folding is the vCard and iCalendar way to keep lines short: a reader joins a line that starts with
+    a space onto the one before it, dropping the space and the CRLF.
+    """
     if len(line.encode("utf-8")) <= FOLD_AT:
         return line
     parts = []
@@ -206,7 +248,11 @@ def content_lines(lines):
 
 
 def clean_number(value):
-    """A phone number as digits and a leading + -> the number, or "" when it is not one."""
+    """A phone number as digits and a leading + -> the number, or "" when it is not one.
+
+    Spaces, dashes, brackets and dots are dropped; 3 to 20 ASCII digits must remain (isdigit alone
+    would also pass other scripts' digits).
+    """
     kept = ""
     for character in value.strip():
         if character in NUMBER_CHARACTERS:
@@ -221,6 +267,11 @@ def clean_number(value):
 
 
 def build_contact(fields):
+    """A vCard 3.0 from first, last, org, phone, email and url -> Result (text, name part).
+
+    Needs a name or an organization. N is "last;first;;;" (family, given, additional, prefixes,
+    suffixes) and FN the name shown, which falls back to the organization.
+    """
     first = fields.get("first", "").strip()
     last = fields.get("last", "").strip()
     org = fields.get("org", "").strip()
@@ -250,11 +301,16 @@ def build_contact(fields):
 
 
 def calendar_time(value):
-    """A day and time typed in the form -> (value, is a whole day), or None when it is not one."""
+    """A day and time typed in the form -> (value, is a whole day), or None when it is not one.
+
+    value is iCalendar's DATE (YYYYMMDD) or local DATE-TIME (YYYYMMDDTHHMMSS, no zone, so the
+    scanning device's own clock applies). Both forms sort as text in time order.
+    """
     match = DAY_TIME.match(value.strip())
     if match is None:
         return None
     year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    # Known limitation: the day is only checked against 31, so 2026-02-31 is accepted.
     if not 1 <= month <= 12 or not 1 <= day <= 31:
         return None
     if match.group(4) is None:
@@ -266,6 +322,11 @@ def calendar_time(value):
 
 
 def build_event(fields):
+    """An iCalendar VEVENT from title, start, end, place and about -> Result (text, name part).
+
+    Start is required; an end must be the same form (both whole days or both timed) and not earlier.
+    The VEVENT is not wrapped in a VCALENDAR; scanner apps accept it bare.
+    """
     title = fields.get("title", "").strip()
     if title == "":
         return fail("type a title")
@@ -280,6 +341,7 @@ def build_event(fields):
             return fail("the end is written YYYY-MM-DD HH:MM, or YYYY-MM-DD for a whole day")
         if end[1] != start[1]:
             return fail("the start and the end must both have a time, or neither")
+        # same-form values compare correctly as text
         if end[0] < start[0]:
             return fail("the event ends before it starts")
         lines.append(("DTEND;VALUE=DATE:" if end[1] else "DTEND:") + end[0])
@@ -295,6 +357,7 @@ def build_event(fields):
 
 def degrees(value, limit):
     """A coordinate as typed -> its text, or "" when it is not a number within +-limit."""
+    # a decimal comma is accepted; at most 8 decimals (about a millimetre)
     text = value.strip().replace(",", ".")
     if re.match(r"^[+-]?[0-9]{1,3}(\.[0-9]{1,8})?$", text) is None or abs(float(text)) > limit:
         return ""
@@ -302,6 +365,7 @@ def degrees(value, limit):
 
 
 def build_place(fields):
+    """A geo: URI (RFC 5870) "geo:latitude,longitude" -> Result (text, name part)."""
     latitude = degrees(fields.get("latitude", ""), 90)
     longitude = degrees(fields.get("longitude", ""), 180)
     if latitude == "" or longitude == "":
@@ -315,6 +379,10 @@ def is_email(value):
 
 
 def build_email(fields):
+    """A mailto: URI (RFC 6068) from to, subject and body -> Result (text, name part).
+
+    The address keeps "@" and "+" unencoded; subject and body are fully percent-encoded.
+    """
     to = fields.get("to", "").strip()
     if not is_email(to):
         return fail("type an address, such as shop@example.com")
@@ -323,6 +391,7 @@ def build_email(fields):
     for key, name in (("subject", "subject"), ("body", "body")):
         value = fields.get(key, "").strip()
         if value != "":
+            # RFC 6068 writes line breaks in a body as CRLF (%0D%0A), so every break is made CRLF first
             query.append(name + "=" + urllib.parse.quote(value.replace("\r\n", "\n").replace("\n", "\r\n"), safe=""))
     if len(query) > 0:
         text = text + "?" + "&".join(query)
@@ -330,6 +399,7 @@ def build_email(fields):
 
 
 def build_phone(fields):
+    """A tel: URI (RFC 3966) from number -> Result (text, name part)."""
     number = clean_number(fields.get("number", ""))
     if number == "":
         return fail("type a number, such as +1 555 0100")
@@ -337,12 +407,18 @@ def build_phone(fields):
 
 
 def build_text(fields):
+    """An "SMSTO:number:message" text-message code from number and message -> Result (text, name part).
+
+    The message is kept as typed; the format has no escaping, and a reader takes everything after the
+    second colon as the message.
+    """
     number = clean_number(fields.get("number", ""))
     if number == "":
         return fail("type a number, such as +1 555 0100")
     return ok_result(("SMSTO:" + number + ":" + fields.get("message", "").strip(), "text-" + number))
 
 
+# kind -> builder; "link" has none, since a link is typed as it is.
 BUILDERS = {"wifi": build_wifi, "contact": build_contact, "event": build_event, "place": build_place,
             "email": build_email, "phone": build_phone, "text": build_text}
 
@@ -365,7 +441,10 @@ def one_line(text):
 
 
 def kind_of(text):
-    """Which kind of code a text is -> one of KINDS, or "" for plain text."""
+    """Which kind of code a text is -> one of KINDS, or "" for plain text.
+
+    Judged by the prefix alone, ignoring case and leading spaces; a VCALENDAR counts as an event.
+    """
     lowered = text.strip().lower()
     for prefix, kind in (("http://", "link"), ("https://", "link"), ("wifi:", "wifi"), ("begin:vcard", "contact"),
                          ("begin:vevent", "event"), ("begin:vcalendar", "event"), ("geo:", "place"),

@@ -35,13 +35,24 @@ def check(condition, message, failures):
 
 
 def selftest():
-    """Run every check -> 0 when all passed, 1 when any failed."""
+    """Run every check -> 0 when all passed, 1 when any failed.
+
+    Steps:
+      1. algos: the palette, OKLab white, one Wilson score and the mixer's lead rule.
+      2. factory: the default preset exists, every ranker is current, and the default ranker loads
+         (which rewrites it when stale, so the order of these two checks matters).
+      3. feed: votes, comments, saves and posts on a store in memory, both feed orders, and a save
+         and load round trip through a temporary folder.
+      4. words: color names and post times.
+    A check that cannot run because an earlier one failed (For you without a ranker) is skipped.
+    """
     failures = []
     colors = algos.palette()
     print("algos")
     check(len(colors) == 216 and len(set(colors)) == 216, "216 different colors", failures)
     white = algos.oklab("#ffffff")
     check(abs(white[0] - 1.0) < 1e-6 and abs(white[1]) < 1e-6 and abs(white[2]) < 1e-6, "white is L 1, a 0, b 0", failures)
+    # one upvoat out of one at 95 % confidence: (1 + 1.9208 - 1.96 * 0.98) / 4.8416, about 0.2065
     one_up = algos.wilson(["#ff0000"], [{"color": "#ff0000", "voat": 1}], 1.96)[0]
     check(abs(one_up - 0.2065) < 0.001, "Wilson score of one upvoat", failures)
     three_down = [{"color": "#000000", "voat": -1}] * 3
@@ -58,7 +69,7 @@ def selftest():
     print("feed")
     store = empty_store()
     check(vote(store, "#ff0000", 1, 1.0) == 1 and vote(store, "#ff0000", 1, 2.0) == 0, "Good twice takes it back", failures)
-    vote(store, "#ff0000", 1, 3.0)
+    vote(store, "#ff0000", 1, 3.0)  # Good again, so the next press has a vote to switch
     check(vote(store, "#ff0000", -1, 4.0) == -1, "Bad switches a Good vote", failures)
     check(add_comment(store, "#ff0000", "  nice\n red ", 5.0)["value"]["text"] == "nice red", "comments are cleaned", failures)
     check(not add_comment(store, "#ff0000", "   ", 5.0)["ok"], "an empty comment is refused", failures)
@@ -68,6 +79,7 @@ def selftest():
     check(not add_post(store, "#FF0000", "again", SEED_TIME + 120.0)["ok"], "a color already in the feed is refused", failures)
     check(feed_order(store, "new", None)[0] == "#123456", "New puts the newest post first", failures)
     if loaded["ok"]:
+        # 216 built-in colors plus the posted one; the only vote left is Bad on red, so it sinks last
         order = feed_order(store, "for_you", loaded["value"])
         check(len(order) == 217 and order[-1] == "#ff0000", "For you puts a Bad post last", failures)
     folder = tempfile.mkdtemp()

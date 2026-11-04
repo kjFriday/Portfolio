@@ -7,7 +7,9 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""What the core modules share: the Result record, with_registry, and spreadsheet cells that stay text.
+"""What the core modules share: the Result record, with_registry and safe spreadsheet cells.
+
+Spreadsheet cells here are cells that always stay text.
 
 Every operation of the core answers with a Result instead of raising. The operations that write the
 registry, and most that read it, go through with_registry: it opens the registry read-write, runs the work
@@ -23,15 +25,22 @@ import registry
 
 
 def ok_result(value):
+    """A successful Result holding `value`."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result: `error` is a short lowercase phrase the window or a caller can show as is."""
     return {"ok": False, "error": error, "value": None}
 
 
 def with_registry(db_path, work):
-    """Open the registry read-write, run work(connection), close it -> work's Result."""
+    """Open the registry read-write, run work(connection), close it -> work's Result.
+
+    `db_path` is the registry file (made with its folder if it is not there yet). A failure to open
+    comes back as registry.connect's own failed Result and work never runs. The connection is closed
+    even when work raises; the exception itself is not caught. Each call opens its own connection,
+    so the window's job thread and its main thread never share one."""
     opened = registry.connect(db_path, False)
     if not opened["ok"]:
         return opened
@@ -43,7 +52,11 @@ def with_registry(db_path, work):
 
 def safe_cell(value):
     """A spreadsheet cell that is never read as a formula: text that starts with = + - @, a tab or a
-    carriage return gets a leading apostrophe."""
+    carriage return gets a leading apostrophe.
+
+    This is the usual guard against CSV formula injection: Excel and its kin start a formula at any
+    of those first characters (a tab or carriage return can hide one), and the apostrophe makes
+    them show the cell as text. None becomes an empty cell; other values go through str()."""
     text = ""
     if value is not None:
         text = str(value)

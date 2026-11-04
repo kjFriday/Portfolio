@@ -1,8 +1,11 @@
 # Color similarity: every voat pulls on the colors near it in OKLab, a space where equal
 # distances look about equally different (lightness 0..1; neighbours in the 216 colors are
-# usually 0.03 apart).
-# reach: how far the pull goes; at 0.15 a voat moves about 20 colors.
-# up, down: how hard an upvoat pulls up and a downvoat pulls down.
+# usually 0.03 apart). The pull fades as (1 - (d / reach)^2)^2, from full at the voated
+# color to nothing at reach. Read by factory.py for every preset that uses similar.
+
+# reach: how far the pull goes (must be above 0); at 0.15 a voat moves about 20 colors.
 reach = 0.15
+# up: how hard an upvoat pulls its neighbours up
 up = 1.0
+# down: how hard a downvoat pulls its neighbours down
 down = 1.0

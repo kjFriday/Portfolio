@@ -13,6 +13,18 @@ decode_image is the reader's entry point: Image -> Result Reading. A big picture
 first, then at full size; each with the global and the local threshold, each raw and through the
 majority filter. Every triple of the eight strongest finder candidates that forms an L is sampled at
 a few grid sizes, and each grid is decoded as it is and transposed (a mirrored picture).
+
+The picture side of reading follows the reference decode algorithm in ISO/IEC 18004: scan rows for
+the finder pattern's 1:1:3:1:1 run ratio, confirm each hit with a vertical and a horizontal pass,
+pick three finders that form an L, estimate the version from their spacing, and map the module grid
+onto the picture with a perspective transform fitted to the three finder centres and the bottom-right
+alignment pattern (or where it would be). decode.py then reads the sampled grid.
+
+Callers: the package's decode_image (re-exported from __init__.py), and through it the app's reading
+paths and the tests. distort.py borrows perspective and apply_perspective to warp test pictures.
+Points are (x, y) in pixels with y going down; bits is one int per pixel, 1 for dark, row by row.
+
+Start reading at decode_image, then decode_bits.
 """
 
 from .records import fail
@@ -23,7 +35,13 @@ from .binarize import binarize_global, binarize_local, majority_filter
 
 
 def ratio_ok(runs):
-    """Five runs dark, light, dark, light, dark in the finder ratio 1:1:3:1:1."""
+    """Five runs dark, light, dark, light, dark in the finder ratio 1:1:3:1:1.
+
+    runs are pixel counts. The finder is 7 modules across, so one module is total / 7; each run may be
+    off from its expected width by less than 70% of a module (three times that for the 3-module
+    centre), which allows for blur and an uneven threshold. Runs of 0 pixels, or fewer than 7 pixels in
+    all, never match.
+    """
     total = 0
     for run in runs:
         if run == 0:
@@ -39,11 +57,26 @@ def ratio_ok(runs):
 
 
 def is_dark(bits, width, height, x, y):
+    """True when pixel (x, y) is inside the picture and dark; points outside count as light."""
     return 0 <= x < width and 0 <= y < height and bits[y * width + x] == 1
 
 
 def cross_check(bits, width, height, x, y, dx, dy, limit):
-    """Runs through dark pixel (x, y) along (dx, dy) -> (centre along the line, total) or None."""
+    """Runs through dark pixel (x, y) along (dx, dy) -> (centre along the line, total) or None.
+
+    Confirms a finder seen along one line by measuring across it along another (dx, dy is (0, 1) for a
+    vertical pass, (1, 0) for a horizontal one). The centre is an offset in pixels from (x, y) along the
+    direction; total is the five runs' summed length. None when (x, y) is light, a side reaches the
+    picture's edge or `limit` steps before its outer dark ring, or the runs miss the 1:1:3:1:1 ratio.
+
+    Steps:
+    1. Walk backward from (x, y), then forward from the next pixel, counting three runs each way: the
+       dark centre, the light ring, the dark ring. state 0 and 2 expect dark, state 1 light; a pixel of
+       the other color moves to the next state, and a fourth run ends the walk.
+    2. Join them into the five runs, outer-back to outer-forward, the two centre parts added together.
+    3. Check the ratio; the centre's offset from (x, y) is half the difference of the two centre parts
+       (plus 1 for the pixel-edge convention the caller undoes with - 0.5).
+    """
     if not is_dark(bits, width, height, x, y):
         return None
     sides = []
@@ -81,6 +114,12 @@ def cross_check(bits, width, height, x, y, dx, dy, limit):
 
 
 def add_candidate(candidates, x, y, module):
+    """Count a finder sighting at (x, y) with module size `module` (pixels) into candidates, in place.
+
+    A finder is crossed by many scanned rows, so a sighting within two modules of a known candidate
+    joins it: position and module size become running averages and its hit count goes up by one.
+    Otherwise it starts a new candidate [x, y, module, 1].
+    """
     for candidate in candidates:
         if abs(candidate[0] - x) <= module * 2 and abs(candidate[1] - y) <= module * 2:
             count = candidate[3]
@@ -93,7 +132,19 @@ def add_candidate(candidates, x, y, module):
 
 
 def find_finders(bits, width, height):
-    """Finder-pattern centres -> list of [x, y, module size, hits], most hits first."""
+    """Finder-pattern centres -> list of [x, y, module size, hits], most hits first.
+
+    Steps:
+    1. Scan rows (every row of a picture under 800 rows, else every height // 400-th) and cut each into runs
+       of one color, remembering where each run starts and its color.
+    2. At every dark run, test it and the next four runs for the 1:1:3:1:1 ratio.
+    3. From the middle run's centre, cross-check vertically to find the centre's y, then horizontally
+       from there to refine its x; either failing drops the hit.
+    4. The module size is the vertical and horizontal totals over 14 (7 modules each way).
+    5. Merge the hit into the candidates (add_candidate) and finally sort them by hit count, so real
+       finders, crossed by many rows, come before chance matches.
+    The + 0.5 and - 0.5 shifts move between pixel indexes and pixel centres.
+    """
     candidates = []
     row_step = max(1, height // 400)
     for y in range(0, height, row_step):
@@ -138,15 +189,28 @@ def find_finders(bits, width, height):
 
 
 def candidate_hits(candidate):
+    """A finder candidate's hit count (its fourth item), the sort key for find_finders."""
     return candidate[3]
 
 
 def point_distance(a, b):
+    """Straight-line (Euclidean) distance between two points; only their first two items, x and y, count."""
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
 
 def order_finders(a, b, c):
-    """Three centres -> (top-left, top-right, bottom-left), or None when they don't form an L."""
+    """Three centres -> (top-left, top-right, bottom-left), or None when they don't form an L.
+
+    Steps:
+    1. The corner (top-left) finder is the one opposite the longest side, the L's hypotenuse.
+    2. Refuse the triple when a leg is zero, one leg is over 1.6 times the other (a QR code is square;
+       the slack allows for perspective), or the angle at the corner is outside 60..120 degrees (the
+       cosine is over 0.5 in size).
+    3. The sign of the cross product of the two legs says which way the L turns. With y going down,
+       turning from the top-right leg to the bottom-left leg must be clockwise on screen (a positive
+       cross product); swap the two if not. A
+       mirrored picture therefore comes out transposed, which decode_bits also tries.
+    """
     ab = point_distance(a, b)
     bc = point_distance(b, c)
     ac = point_distance(a, c)
@@ -172,7 +236,18 @@ def order_finders(a, b, c):
 
 
 def solve_linear(matrix, values):
-    """Gaussian elimination with partial pivoting -> solution list or None."""
+    """Gaussian elimination with partial pivoting -> solution list or None.
+
+    Solves matrix * solution = values for a square matrix (a list of n rows) and n values. None when
+    the matrix is singular (a pivot below 1e-12), as it is for points that lie on one line.
+
+    Steps:
+    1. Append each value to its row (the augmented matrix).
+    2. For each column, swap up the row with the largest entry in it (partial pivoting keeps rounding
+       errors small), then subtract multiples of that row from every other row to clear the column
+       (the Gauss-Jordan form, so no back-substitution is needed).
+    3. Each unknown is its row's last entry over its diagonal entry.
+    """
     n = len(values)
     rows = []
     for i in range(n):
@@ -197,7 +272,18 @@ def solve_linear(matrix, values):
 
 
 def perspective(sources, targets):
-    """Homography taking four source points to four target points -> 8 coefficients or None."""
+    """Homography taking four source points to four target points -> 8 coefficients or None.
+
+    A camera looking at a flat code at an angle turns its square into a general quadrilateral. The
+    mapping that does this is a perspective transform (homography):
+
+        x = (h0 u + h1 v + h2) / (h6 u + h7 v + 1)
+        y = (h3 u + h4 v + h5) / (h6 u + h7 v + 1)
+
+    Eight unknowns, and each point pair gives two equations once the divisor is multiplied out:
+    h0 u + h1 v + h2 - h6 u x - h7 v x = x, and the same with h3..h5 and y. Four pairs, no three on one
+    line, fix all eight; solve_linear finds them. None when the points are degenerate.
+    """
     matrix = []
     values = []
     for i in range(4):
@@ -211,6 +297,11 @@ def perspective(sources, targets):
 
 
 def apply_perspective(h, u, v):
+    """Map point (u, v) through homography h (from perspective) -> (x, y).
+
+    A divisor of (nearly) zero means the point maps to infinity, the horizon of the tilted plane; it
+    returns (-1.0, -1.0), a point outside any picture, so callers read it as light or skip it.
+    """
     divisor = h[6] * u + h[7] * v + 1.0
     if abs(divisor) < 1e-12:
         return (-1.0, -1.0)
@@ -219,7 +310,13 @@ def apply_perspective(h, u, v):
 
 def find_alignment(bits, width, height, guess, across, down, module):
     """Best match for the 5x5 alignment pattern near `guess` -> (x, y) or None.
-    Every position with the top score is averaged, so the result sits on the pattern's centre."""
+    Every position with the top score is averaged, so the result sits on the pattern's centre.
+
+    across and down are one module's step in pixels along the code's rows and columns, so the template
+    follows the code's tilt. Candidate centres cover 5 modules each way around the guess, a third of a
+    module apart. Each scores one point per template module whose pixel has the expected color (dark
+    except the ring at distance 1); fewer than 23 of the 25 is no match.
+    """
     best_score = 0
     sum_x = 0.0
     sum_y = 0.0
@@ -252,7 +349,23 @@ def find_alignment(bits, width, height, guess, across, down, module):
 
 
 def sample_grid(bits, width, height, finders, size):
-    """Read a size x size grid of modules from the picture -> grid of bools, or None."""
+    """Read a size x size grid of modules from the picture -> grid of bools, or None.
+
+    finders are the ordered (top-left, top-right, bottom-left) centres in pixels; grid coordinates count
+    modules from the symbol's top-left corner, so a finder centre is at 3.5 (the middle of module 3).
+
+    Steps:
+    1. From the finders, work out one module's step along a row (across) and down a column (down):
+       the finder centres are size - 7 modules apart.
+    2. A homography needs a fourth point. Guess it by completing the parallelogram: for versions 2 and
+       up, the bottom-right alignment pattern's centre (size - 6.5); for version 1, which has none, the
+       spot where a fourth finder would sit (size - 3.5).
+    3. On versions 2 and up, search for the real alignment pattern near the guess (find_alignment); it
+       corrects for perspective, which a parallelogram cannot show. Keep the guess if none is found.
+    4. Fit the homography from the four grid points to the four picture points (perspective), and
+       read the pixel under each module's centre (column + 0.5, row + 0.5).
+    None when the four points give no homography.
+    """
     top_left, top_right, bottom_left = finders
     span = size - 7.0
     across = ((top_right[0] - top_left[0]) / span, (top_right[1] - top_left[1]) / span)
@@ -284,6 +397,14 @@ def sample_grid(bits, width, height, finders, size):
 
 
 def candidate_sizes(finders):
+    """Symbol sizes (modules a side) worth sampling for three ordered finders, best guess first.
+
+    Finder centres sit 3.5 modules in from the edges, so their distance over the module size is
+    size - 7. Valid sizes are 17 + 4 * version, all one more than a multiple of 4, so the estimate is
+    snapped to the nearest such size (an estimate of 4k + 3, halfway between two sizes, goes down). The neighbouring versions
+    (sizes 4 and 8 either way) follow, since the module size measured from finders is rough; anything
+    outside 21..177 is dropped.
+    """
     top_left, top_right, bottom_left = finders
     module = (top_left[2] + top_right[2] + bottom_left[2]) / 3.0
     across = point_distance(top_left, top_right) / module
@@ -305,6 +426,18 @@ def candidate_sizes(finders):
 
 
 def decode_bits(bits, width, height):
+    """Find and read a code in one binarized picture -> Result Reading, with "corners" added.
+
+    "corners" holds the [x, y] pixel centres of the top-left, top-right and bottom-left finders.
+
+    Steps:
+    1. Find finder candidates and keep the eight with the most hits.
+    2. Try every triple that forms an L (order_finders), at each candidate size.
+    3. Sample the grid and decode it, then its transpose (a mirrored picture swaps rows and columns);
+       the first that decodes wins.
+    Fails with "no QR code found" when fewer than three finders were seen, else "found a QR code but
+    could not read it".
+    """
     finders = find_finders(bits, width, height)
     top = finders[:8]
     for a in range(len(top)):
@@ -331,7 +464,19 @@ def decode_bits(bits, width, height):
 
 
 def decode_image(image):
-    """Image -> Result Reading. Big pictures are tried shrunk first, then at full size."""
+    """Image -> Result Reading. Big pictures are tried shrunk first, then at full size.
+
+    Steps:
+    1. A picture 1600 pixels or more on its longer side is first tried shrunk by largest // 800, which
+       is faster and smooths camera noise; the full size comes second.
+    2. Each size is binarized two ways: one global threshold and a local one for uneven light
+       (binarize.py). The global threshold is Otsu's: the gray level that splits the histogram into a
+       dark and a light class as far apart as possible (the largest between-class variance). Each
+       result is tried as is and after a 3 x 3 majority filter that removes stray specks.
+    3. The first reading that works wins; its finder corners are scaled back to full-size pixels.
+    The failure returned is the first that got past "no QR code found", so "found a QR code but could
+    not read it" is not hidden by a later attempt that saw nothing.
+    """
     attempts = []
     largest = max(image["width"], image["height"])
     factor = largest // 800

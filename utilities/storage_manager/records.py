@@ -51,6 +51,10 @@ Records
               "branch": int, "modified": float}
               bytes: space on disk; size: a file's size (0 for the other kinds)
 
+Who uses it: every core module (scanning, duplicates, moves, organize, backup, shares, settings, desktop,
+windows_calls) builds its Results here; gui.py reads them and owns the cancel flags and the progress
+callback. It imports nothing.
+
 Progress
   Long functions take progress(text, done, total, unit), or None. unit is "files", "bytes" or
   "items"; total 0 means not known yet. It is called from the worker thread.
@@ -58,14 +62,20 @@ Progress
 
 
 def make_result(ok, value, error):
+    """Build a Result record: ok says whether it worked, value is the payload, error the message.
+
+    Callers use success or failure; this is the one place the Result keys are spelled out.
+    """
     return {"ok": ok, "value": value, "error": error}
 
 
 def success(value):
+    """A Result that worked and carries value, with an empty error."""
     return make_result(True, value, "")
 
 
 def failure(error):
+    """A Result that failed with the message error (shown to the user as is) and no value."""
     return make_result(False, None, error)
 
 
@@ -77,6 +87,10 @@ def is_cancelled(cancel_flag):
 
 
 def report_progress(progress, text, done, total, unit):
+    """Call the progress callback with (text, done, total, unit) when there is one; None skips it.
+
+    Runs on the worker thread like its caller; the GUI's callback only posts the values to its queue.
+    """
     if progress is not None:
         progress(text, done, total, unit)
 

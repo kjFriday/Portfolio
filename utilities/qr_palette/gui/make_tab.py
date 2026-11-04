@@ -7,11 +7,28 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The Make tab: kind, link, preset and level, short links, the board of colors with votes, the preview,
-saving, logos and the robustness test.
+"""The Make tab: choose what a QR code holds and its color, preview it, and save it.
+
+It covers the kind, link, preset and level, short links, the board of colors with votes, the
+preview, saving, logos and the robustness test.
 
 MakeTab is part of PaletteWindow (window.py), so its methods reach the window's widgets, state and jobs
 through self. From template… opens a dialog in dialogs.py; saving refreshes the Find tab's colors in use.
+
+Main flow:
+  1. redraw_board() ranks the usable colors for the preset and the votes (votes.board) and draws them
+     as tiles; pick_tile() chooses one.
+  2. Each change of text, kind, level, short link or logo calls schedule_preview(), which waits 250 ms
+     for typing to pause and then runs refresh_preview().
+  3. refresh_preview() builds the text the code will hold (a web link, a short link to it, or a kind's
+     payload), encodes it with qr_codec and shows it with the details of the PNG to come.
+  4. save_as() asks for a file and runs making.make_qr as a job: it draws, reads the file back and
+     registers it.
+
+Error-correction levels (ISO/IEC 18004): L, M, Q and H let a reader recover about 7, 15, 25 and 30
+percent of the codewords. A logo hides modules in the middle of the code, so a logo forces level H.
+
+Start reading at refresh_preview().
 """
 
 import os
@@ -41,7 +58,12 @@ class MakeTab:
     """The Make tab's widgets and actions (a part of PaletteWindow)."""
 
     def build_make_tab(self):
-        """Create the Make tab's widgets and bind them."""
+        """Create the Make tab's widgets and bind them.
+
+        Reads self.preset and self.values (settings) for the starting preset and level, and
+        app_settings.LINKS for the short-link choices. The board's canvas is sized for every usable
+        color: ceil(colors / COLUMNS) rows of tiles. Widgets are created in a fixed order, which sets
+        the order Tab moves through them."""
         make_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(make_tab, text="Make")
         self.make_bar = ttk.Frame(make_tab)
@@ -133,19 +155,26 @@ class MakeTab:
         ttk.Label(logo_bar, textvariable=self.logo_text, foreground="#555555").pack(side="left", padx=6)
 
     def chosen_level(self):
+        """The error-correction level chosen: "L", "M", "Q" or "H" (the first letter of the box), else "M"."""
         return self.level_box.get()[:1] or "M"
 
     def chosen_kind(self):
+        """The kind of code chosen, as a payloads.KINDS name such as "link" (the box shows its title)."""
         return self.kind_names[self.kind_box.get()]
 
     def form_values(self):
+        """The kind form's fields now -> {field key: text}, for payloads.build."""
         values_now = {}
         for key in self.kind_fields:
             values_now[key] = self.kind_fields[key].get()
         return values_now
 
     def change_kind(self, event=None):
-        """A small form for the kind of code chosen, in place of the Link box; a web link has none."""
+        """A small form for the kind of code chosen, in place of the Link box; a web link has none.
+
+        The fields come from payloads.FIELDS (key, label, hidden, choices), laid out three to a row;
+        a hidden field (a password) shows "*". Short-link controls apply only to web links, so they
+        are turned off for every other kind."""
         kind = self.chosen_kind()
         for child in self.kind_form.winfo_children():
             child.destroy()
@@ -180,6 +209,7 @@ class MakeTab:
         self.refresh_preview()
 
     def tile_box(self, index):
+        """The board pixels of tile `index` -> (left, top, right, bottom), filling rows left to right."""
         column = index % COLUMNS
         row = index // COLUMNS
         left = GAP + column * (TILE + GAP)
@@ -187,6 +217,7 @@ class MakeTab:
         return left, top, left + TILE, top + TILE
 
     def draw_tiles(self):
+        """Draw the board: the colors in ranked order, the picked one outlined, a "+" or "−" on voted ones."""
         self.tiles.delete("all")
         for index in range(len(self.state["order"])):
             color = self.state["order"][index]
@@ -206,6 +237,9 @@ class MakeTab:
                                        font=("Segoe UI", 9, "bold"))
 
     def redraw_board(self):
+        """Rank the colors again for the preset and the votes (votes.board), then draw the board.
+
+        Runs on the window's thread: ranking reads the registry's votes and is quick."""
         ranked = board(self.db_path, self.preset_box.get())
         if not ranked["ok"]:
             self.status.set(ranked["error"])
@@ -217,6 +251,10 @@ class MakeTab:
         self.show_picked()
 
     def show_picked(self):
+        """Describe the picked color under the board: name, hex, rank, contrast with white and the vote.
+
+        Contrast is the WCAG ratio (swatch.contrast), from 1:1 to 21:1; dark modules on white need a
+        high one to scan."""
         color = self.state["picked"]
         if color == "":
             self.picked_text.set("Click a color for the code.")
@@ -227,6 +265,7 @@ class MakeTab:
                              ("%.1f" % swatch.contrast(color, swatch.WHITE)) + ":1" + vote_now)
 
     def pick_tile(self, event):
+        """A click on the board: pick the color under the pointer (a click in a gap does nothing)."""
         index = -1
         for candidate in range(len(self.state["order"])):
             box = self.tile_box(candidate)
@@ -240,6 +279,9 @@ class MakeTab:
         self.refresh_preview()
 
     def cast_vote(self, voat):
+        """Vote Good (`voat` 1) or Bad (-1) for the picked color, then rank the board again.
+
+        The same vote twice takes it back (votes.vote_color answers 0). Writes the registry's votes."""
         if self.state["picked"] == "":
             self.status.set("Pick a color first")
             return
@@ -252,6 +294,19 @@ class MakeTab:
         self.redraw_board()
 
     def refresh_preview(self):
+        """Draw the code the current choices would save, and say what it holds and how big it will be.
+
+        Runs on the window's thread (encoding one code is quick). Any problem is shown in the info
+        line and leaves the preview empty. Steps:
+          1. Clear the preview and what it remembered for Test robustness.
+          2. The text: the typed link, or the chosen kind's payload (payloads.build; a masked one says
+             the registry keeps it without its password).
+          3. For a short link, check the destination, then plan the short link (short_link_ops): the
+             one made before for this link in this color, else a new ID kept ready in
+             state["short_candidate"] so the preview shows the ID that Save will use.
+          4. Encode: with a logo, qr_codec.place_logo picks a level H code with room for it; without,
+             the smallest version at the chosen level, with the best of the eight masks (-1).
+          5. Show it fitted to the preview, and read the saved PNG's size from its header."""
         self.state["make_after"] = None
         self.preview.delete("all")
         self.state["photos"]["preview"] = None
@@ -326,6 +381,8 @@ class MakeTab:
         photo = self.photo_from_png(fitted_png(matrix, color, caption, PREVIEW, placed_logo))
         self.state["photos"]["preview"] = photo
         self.preview.create_image((PREVIEW + 20) // 2, (PREVIEW + 20) // 2, image=photo)
+        # a PNG starts with an 8-byte signature and the IHDR chunk (4-byte length, "IHDR"), so bytes
+        # 16-24 are its width and height as big-endian 32-bit ints
         width, height = struct.unpack(">II", qr_codec.matrix_to_color_png(matrix, app_settings.DEFAULT_SCALE, 4, color,
                                                                           caption)[16:24])
         hint = ""
@@ -335,7 +392,10 @@ class MakeTab:
                            ". PNG will be " + str(width) + " × " + str(height) + " px." + hint)
 
     def test_robustness(self):
-        """How much wear the code in the preview survives, as a job: decoding is slow in pure Python."""
+        """How much wear the code in the preview survives, as a job: decoding is slow in pure Python.
+
+        Tests exactly what the preview shows (its matrix, text, color, caption and logo), copied
+        before the job starts so later typing cannot change what is being tested."""
         if self.state["matrix"] is None:
             self.status.set("Type a link first: the test is for the code in the preview")
             return
@@ -345,6 +405,7 @@ class MakeTab:
         caption = self.state["preview_caption"]
         logo = self.state["preview_logo"]
 
+        # on the window's thread when the test ends
         def done(outcome):
             if not outcome["ok"]:
                 self.status.set("Robustness: " + outcome["error"])
@@ -354,12 +415,18 @@ class MakeTab:
         self.start_job("Testing robustness", lambda: robustness_score(matrix, text, color, caption, logo), done)
 
     def choose_logo(self):
+        """Ask for a small picture to put in the middle of the code, read it as a job, and use it.
+
+        A picture over qr_codec.MAX_LOGO_SIDE pixels a side is refused. With a logo the level is
+        locked at H (the most error correction, to make up for the hidden modules); the level chosen
+        before is remembered so No logo can put it back."""
         path = filedialog.askopenfilename(title="A small picture for the middle of the code",
                                           filetypes=[("PNG pictures", "*.png"), ("All files", "*.*")])
         if not path:
             return
         path = registry.display_path(path)
 
+        # on the window's thread when the picture has been read
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Logo", outcome["error"])
@@ -383,6 +450,7 @@ class MakeTab:
         self.start_job("Reading the logo", lambda: qr_codec.load_image_file(path), done)
 
     def clear_logo(self):
+        """Drop the logo, unlock the level and put back the level chosen before it."""
         if self.state["logo"] is None:
             return
         self.state["logo"] = None
@@ -393,6 +461,9 @@ class MakeTab:
         self.refresh_preview()
 
     def schedule_preview(self, event=None):
+        """Redraw the preview 250 ms after the last change (a debounce), so typing stays quick.
+
+        Each call cancels the redraw already waiting and schedules a new one with Tk's after()."""
         if self.state["make_after"] is not None:
             self.window.after_cancel(self.state["make_after"])
         self.state["make_after"] = self.window.after(250, self.refresh_preview)
@@ -404,6 +475,17 @@ class MakeTab:
         self.schedule_preview()
 
     def save_as(self, kind):
+        """Save the code as a `kind` ("png" or "svg") file and register it, as a job.
+
+        Steps:
+          1. Build the text as the preview does; a color must be picked.
+          2. Make sure the pictures folder exists (else start in the home folder) and suggest a file
+             name from the text, or from the kind's name, and the color.
+          3. Ask where to save; for a short link, use the ID the preview showed.
+          4. Run making.make_qr as a job: it draws the file, reads it back to prove it scans and
+             registers it.
+          5. When done: remember the folder (saved in settings unless it is the default), use a new
+             short-link ID next time, refresh served pages, the footer and the colors in use."""
         code_kind = self.chosen_kind()
         name = ""
         if code_kind == "link":
@@ -439,6 +521,7 @@ class MakeTab:
             short = short_request(self.state["short_candidate"], self.section_choice.get())
         logo = self.state["logo"]
 
+        # on the window's thread when saving ends
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Save QR code", outcome["error"])
@@ -466,6 +549,7 @@ class MakeTab:
                                        code_kind != "link"), done)
 
     def change_preset(self, event=None):
+        """Use another color preset: remember it, give it to the ECP engine, and rank the board again."""
         self.save_setting("colors", "preset", self.preset_box.get())
         self.state["engine"]["preset"] = self.preset_box.get()
         self.redraw_board()

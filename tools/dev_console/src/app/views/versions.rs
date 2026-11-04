@@ -6,8 +6,19 @@
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 // ========================================================================
 
-//! The Versions & commands view: the selected program's version in each of its version files, with the bump
-//! and Apply buttons, then the commands the console runs for it, edited here and saved to programs.ini.
+//! The Versions & commands view: the selected program's version lines and its commands.
+//!
+//! The top half shows the program's version in each of its version files, with the bump and Apply buttons;
+//! the bottom half edits the commands the console runs for it, saved to programs.ini. The frame loop in
+//! app/views.rs draws it when its tab is picked, for the program selected in the sidebar. The work is in
+//! app.rs (`load_versions`, `apply_version`, `save_commands`) and versions.rs.
+//!
+//! Top to bottom:
+//! 1. A grid of version files and their values; values that disagree are yellow.
+//! 2. The New version box, Patch/Minor/Major +1, Apply version and Reload.
+//! 3. A grid of every command field, each an editable box; a changed one is marked with *.
+//! 4. Save commands, Revert, and "unsaved changes".
+//! 5. The last note from a save or a version change.
 
 use eframe::egui::{self, Color32, RichText};
 
@@ -15,7 +26,12 @@ use super::{GREEN, RED};
 use crate::app::App;
 use crate::{registry, versions};
 
+// The view's body, drawn as part of App.
 impl App {
+    /// The newest note in green or red, with a button that clears them all.
+    ///
+    /// Only the last note shows, so the line does not grow with every save; nothing is drawn when there are no
+    /// notes.
     fn notes_ui(&mut self, ui: &mut egui::Ui) {
         if self.notes.is_empty() {
             return;
@@ -29,6 +45,24 @@ impl App {
         });
     }
 
+    /// Draw the Versions & commands view for the selected program; `ctx` is passed to Apply's restamp job.
+    ///
+    /// Steps:
+    /// 1. Reread the version spots when another program was picked since the last read.
+    /// 2. The version grid: each file's path relative to the root (hover for the line number) and its value.
+    ///    All values are compared; when they differ they turn yellow, since Apply exists to make them agree.
+    ///    A file with no version line shows its error in red, with an empty second cell to keep the grid's
+    ///    rows whole.
+    /// 3. The New version box (90 px, enough for a version) and the bump buttons, which bump the first value
+    ///    found. Apply version is enabled only for a valid version and a found root.
+    /// 4. The commands grid: one row per field in registry::FIELDS, label then box. A label turns yellow with
+    ///    * when the field differs from the saved programs. The box fills the row (`f32::INFINITY` width) in
+    ///    the code-editor style (monospace), and its tip shows how the console splits the text into words,
+    ///    each in brackets (desktop_build as its steps joined by "then"), so quoting mistakes show before
+    ///    saving.
+    /// 5. Save commands and Revert, enabled only with unsaved changes; Revert copies the programs back over
+    ///    the edits.
+    /// 6. The notes line.
     pub(super) fn versions_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if self.ver.for_program != Some(self.selected) {
             self.load_versions();

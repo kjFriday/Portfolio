@@ -7,7 +7,7 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette registry: the SQLite database of QR codes, their colors, their links and where they are.
+"""QR Palette registry: the SQLite database of QR codes, their colors, links and files.
 
 It is relational: colors and links are tables of their own, and each QR code row points at one of
 each, so one link can have codes in many colors and one color can be on many codes. A short link
@@ -26,6 +26,34 @@ registry keeps no logo, so such a code cannot be drawn again whole). A writable 
 copy of an older registry beside it (NAME-vN.db) and moves it to the current version in one
 transaction; a read-only open reads older versions as they are, since it may not write. Version 3
 only adds to version 2: other programs that read the older tables and columns read them the same.
+
+Who uses it: the window (gui/) and the core modules behind it open it read-write for one piece of
+work, mostly through common.with_registry; ecp.py, sheets.py, registry_export.py and the redirect
+export and publishing in short_link_ops.py open it read-only. It calls swatch for the 216 cube colors, their names
+and their families.
+
+Main flow
+  1. connect() opens a file. A writable open of an empty file runs create_schema(); every open then
+     checks the header marks (application_id, user_version) and refuses any other file.
+  2. A writable open of an older registry keeps a copy of it (keep_older_copy) and runs upgrade_schema().
+  3. A read-only open goes through harden_read_rail(), the "read rail": the connection may only read
+     the allowed columns, for a short time, so a query a local model planned cannot do anything else.
+  4. Each writer (save_qr, retarget, undo_last_change, schedule_change, apply_due, import_scans, vote,
+     import_votes, forget_qr) is one BEGIN IMMEDIATE transaction, rolled back on any error.
+  5. Readers (all_rows, short_links, scan_totals, ...) return plain dicts; find_rows() filters Rows in
+     Python, not in SQL.
+  6. close() forgets the connection's schema version and closes it.
+
+SQLite in brief
+  * application_id and user_version are two 32-bit numbers in the file's 100-byte header that SQLite
+    keeps but never reads itself; PRAGMA sets and reads them. Here they say "QR Palette registry,
+    version N".
+  * BEGIN IMMEDIATE takes the write lock when the transaction starts, so a second writer waits
+    (busy_timeout) before it has done anything, instead of failing halfway.
+  * An authorizer is a callback SQLite asks, while it compiles a statement, about each column read and
+    each function called; DENY makes the statement fail.
+
+Start reading at connect().
 
 Records
   Result     {"ok": bool, "error": str, "value": any}
@@ -59,19 +87,25 @@ import swatch
 # "QRPA" in the SQLite header marks a QR Palette registry. Keep it in every schema, including a move to the
 # ECP spec's DDL (which sets only user_version): other programs, such as Data Bridge, find the registry by it
 # and by SCHEMA_VERSION, and refuse a file without it.
+# 0x51525041 is the four ASCII bytes "QRPA".
 APPLICATION_ID = 0x51525041
 SCHEMA_VERSION = 3  # those programs check it too: raise it only together with them
 READABLE_VERSIONS = (1, 2, 3)  # what a read-only connection accepts (it cannot move a registry to SCHEMA_VERSION)
+# id() is unique only while the object lives (Python reuses it later), so close() drops the entry.
 OPEN_VERSIONS = {}  # id(connection) -> the schema version that connection opened, until close()
-BUSY_SECONDS = 5.0
+BUSY_SECONDS = 5.0  # how long a connection waits for another's lock before SQLite gives up
+# How many Rows find_rows returns (clamp_limit); app_settings sets both from settings.json's queries.
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 RECENT_DAYS = 30  # "recent" scans: this many days, today included
-DAY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+DAY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")  # the shape of a day; is_day also checks the calendar
+# What SCHEMA's CHECK constraints allow; check_entry tests them first, for a clearer error.
 FORMATS = ("png", "svg")
 ORIGINS = ("made", "registered")
 EC_LEVELS = ("L", "M", "Q", "H")
 STATEMENT_SECONDS = 2.0  # a read-only visit may take this long before it is stopped (settings.json)
+# 64 MiB for PRAGMA hard_heap_limit. SQLite keeps one such limit for the whole process, so once a
+# read-only connection sets it, every connection in the program lives under it.
 HEAP_LIMIT = 64 * 1024 * 1024
 
 # The read rail's allow-list: the only tables, columns and functions a read-only connection may use.
@@ -86,13 +120,18 @@ READ_COLUMNS = {
     "scheduled_changes": ("id", "code", "target", "from_day", "created", "applied"),
     "scans": ("code", "day", "source", "count"),
 }
-READ_FUNCTIONS = ("count",)
+READ_FUNCTIONS = ("count",)  # no sum(): scan_totals adds up in Python
 # sqlite3_limit values for the read rail (the sqlite.org high-security column, ECP spec 7.4)
 READ_LIMITS = (("SQLITE_LIMIT_LENGTH", 1000000), ("SQLITE_LIMIT_SQL_LENGTH", 10000), ("SQLITE_LIMIT_COLUMN", 100),
                ("SQLITE_LIMIT_EXPR_DEPTH", 10), ("SQLITE_LIMIT_COMPOUND_SELECT", 3),
                ("SQLITE_LIMIT_VDBE_OP", 25000), ("SQLITE_LIMIT_FUNCTION_ARG", 8), ("SQLITE_LIMIT_ATTACHED", 0),
                ("SQLITE_LIMIT_LIKE_PATTERN_LENGTH", 50), ("SQLITE_LIMIT_VARIABLE_NUMBER", 10),
                ("SQLITE_LIMIT_TRIGGER_DEPTH", 10))
+# Each caps one thing a statement may hold or do: string and SQL length, columns, expression depth,
+# UNION parts, compiled program size, function arguments, ?-variables. ATTACHED 0 forbids ATTACH.
+# The SELECT behind every Row, one form per schema version: an older registry lacks columns, so
+# LOOKUP_V2 and LOOKUP_V1 put fixed values in their place. Rows are read through these joins rather
+# than the qr_lookup view, because the read rail turns views off.
 LOOKUP_COLUMNS = ("SELECT q.id AS id, l.url AS link, c.hex AS hex, c.name AS name, c.family AS family, "
                   "c.cube_index AS cube_index, q.path AS path, q.path_key AS path_key, q.format AS format, "
                   "q.ec_level AS ec_level, q.version AS version, q.origin AS origin, q.created AS created")
@@ -105,10 +144,13 @@ LOOKUP_V2 = (LOOKUP_COLUMNS + ", s.code AS short_code, s.target AS target, NULL 
              "LEFT JOIN short_links s ON s.link_id = l.id")
 LOOKUP_V1 = (LOOKUP_COLUMNS + ", NULL AS short_code, NULL AS target, NULL AS payload_hash, 0 AS has_logo "
              "FROM qr_codes q JOIN links l ON l.id = q.link_id JOIN colors c ON c.id = q.color_id")
+# The SELECT behind every ShortLink; the subquery counts the pictures that print it.
 SHORT_LINKS = ("SELECT s.code, l.url, s.target, c.hex, s.created, s.updated, "
                "(SELECT count(*) FROM qr_codes q WHERE q.link_id = s.link_id) "
                "FROM short_links s JOIN links l ON l.id = s.link_id JOIN colors c ON c.id = s.color_id")
 
+# Version 1: colors (the 216 cube colors, and any other color a code or vote uses), links, QR codes
+# and votes. path_key is UNIQUE, so one file is one record; the CHECKs repeat FORMATS, EC_LEVELS, ORIGINS.
 SCHEMA = (
     """CREATE TABLE colors (
         id INTEGER PRIMARY KEY,
@@ -159,6 +201,7 @@ TO_VERSION_2 = (
         LEFT JOIN short_links s ON s.link_id = l.id""",
 )
 # Version 3: history, schedules, scans and masked payloads. Nothing older is renamed or dropped.
+# The qr_lookup view keeps its version 2 columns. scans holds one count per short link, day and source.
 TO_VERSION_3 = (
     "ALTER TABLE qr_codes ADD COLUMN payload_hash TEXT",
     "ALTER TABLE qr_codes ADD COLUMN has_logo INTEGER NOT NULL DEFAULT 0",
@@ -184,15 +227,18 @@ TO_VERSION_3 = (
         count INTEGER NOT NULL CHECK (count >= 0),
         PRIMARY KEY (code, day, source))""",
 )
+# The Row record's keys, as lookup()'s SELECT names them.
 ROW_KEYS = ("id", "link", "hex", "name", "family", "cube_index", "path", "path_key", "format", "ec_level",
             "version", "origin", "created", "short_code", "target", "payload_hash", "has_logo")
 
 
 def ok_result(value):
+    """A successful Result holding `value`."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with the short error phrase `error` and the value None."""
     return {"ok": False, "error": error, "value": None}
 
 
@@ -202,6 +248,8 @@ def utc_text(seconds):
 
 
 def now_text():
+    """Now as UTC ISO-8601 text (utc_text). Every stored time has this one form, so text order is time
+    order."""
     return utc_text(time.time())
 
 
@@ -255,6 +303,7 @@ def is_local_drive_path(path):
         kind = ctypes.windll.kernel32.GetDriveTypeW(path[0] + ":\\")
     except (AttributeError, OSError):
         return False
+    # GetDriveTypeW answers 4 for a network drive, 5 for a CD-ROM and 0 or 1 when it cannot tell
     return kind in (2, 3, 6)  # removable, fixed, RAM disk
 
 
@@ -269,6 +318,8 @@ def file_state(path, local_only):
 # --- Opening ---------------------------------------------------------------------------------------
 
 def close(connection):
+    """Close a connection from connect() and forget its schema version; a close that fails is ignored.
+    Every connection connect() returned must end here, or OPEN_VERSIONS keeps a stale id()."""
     OPEN_VERSIONS.pop(id(connection), None)
     try:
         connection.close()
@@ -282,6 +333,7 @@ def schema_of(connection):
 
 
 def rollback(connection):
+    """Roll back the open transaction, ignoring the error SQLite raises when none is open."""
     try:
         connection.execute("ROLLBACK")
     except sqlite3.Error:
@@ -292,7 +344,19 @@ def connect(path, read_only):
     """Open the registry -> Result connection. Read-write creates a new registry in a missing or
     empty file, and moves an older one to SCHEMA_VERSION; read-only never creates or changes
     anything, sets query_only, and also reads the versions in READABLE_VERSIONS. Any file that is
-    not a QR Palette registry of such a version is refused. Close it with close() when done."""
+    not a QR Palette registry of such a version is refused. Close it with close() when done.
+
+    Steps:
+    1. Open the file. Read-only goes through a "file:...?mode=ro" URI, so SQLite never creates or
+       writes it; read-write first makes its folder. isolation_level=None: this module writes BEGIN and
+       COMMIT itself, so Python's sqlite3 starts no transaction behind its back.
+    2. Set busy_timeout, and foreign_keys (SQLite enforces REFERENCES only when a connection asks).
+    3. Read the header marks. A writable open of a new file (no marks, no tables) creates the schema.
+    4. Refuse a file without APPLICATION_ID, or of a version this kind of open cannot use.
+    5. Read-only: harden the connection (the read rail). Read-write: leave WAL if an old registry
+       used it, and move an older registry to SCHEMA_VERSION after keeping a copy of it.
+    6. Remember the version the connection opened, for schema_of().
+    """
     connection = None
     try:
         if read_only:
@@ -358,15 +422,22 @@ def harden_read_rail(connection):
     pass; a 64 MiB heap ceiling; sqlite3_limit values (Python 3.11+); an allow-list authorizer that
     denies everything else; and a progress handler that stops the visit once STATEMENT_SECONDS have
     passed since it opened (a call reads all it needs in one short visit). The pragmas run before
-    the authorizer, which would deny them."""
+    the authorizer, which would deny them.
+
+    The deadline counts from the open and covers every statement on the connection, so a read-only
+    connection serves one short visit. SQLite calls the progress handler every 1000 virtual-machine
+    instructions; when it answers 1, the running statement fails with "interrupted"."""
     connection.execute("PRAGMA query_only=ON")
     connection.execute("PRAGMA trusted_schema=OFF")
+    # setconfig and these constants exist from Python 3.12; an older Python skips them. DEFENSIVE
+    # refuses writes that could corrupt the file even through SQL; DQS off makes "x" a name, never text.
     if hasattr(connection, "setconfig"):
         for name, enable in (("SQLITE_DBCONFIG_DEFENSIVE", True), ("SQLITE_DBCONFIG_TRUSTED_SCHEMA", False),
                              ("SQLITE_DBCONFIG_ENABLE_TRIGGER", False), ("SQLITE_DBCONFIG_ENABLE_VIEW", False),
                              ("SQLITE_DBCONFIG_DQS_DML", False), ("SQLITE_DBCONFIG_DQS_DDL", False)):
             if hasattr(sqlite3, name):
                 connection.setconfig(getattr(sqlite3, name), enable)
+    # quick_check: integrity_check without the slow comparison of indexes against their tables
     check = connection.execute("PRAGMA quick_check").fetchone()[0]
     if check != "ok":
         return fail("the registry is damaged (quick_check: " + str(check) + "); it is not served")
@@ -379,6 +450,7 @@ def harden_read_rail(connection):
     deadline = time.monotonic() + STATEMENT_SECONDS
 
     def too_long():
+        """Progress handler: 1 (stop the statement) once the deadline has passed, else 0."""
         return 1 if time.monotonic() > deadline else 0
 
     connection.set_progress_handler(too_long, 1000)
@@ -386,12 +458,14 @@ def harden_read_rail(connection):
 
 
 def read_rail_authorizer(action, first, second, database, inner):
-    """Allow plain SELECTs that read the allowed columns of the five tables and call the allowed
-    functions; deny everything else (DENY, never IGNORE, so a mistake is an error, not a silent
-    NULL)."""
+    """Allow plain SELECTs that read the allowed columns of the tables in READ_COLUMNS and call the
+    allowed functions; deny everything else (DENY, never IGNORE, so a mistake is an error, not a
+    silent NULL). SQLite calls it while compiling each statement: for SQLITE_READ `first` is the table
+    and `second` the column; for SQLITE_FUNCTION `second` is the function's name."""
     if action == sqlite3.SQLITE_SELECT:
         return sqlite3.SQLITE_OK
     if action == sqlite3.SQLITE_READ:
+        # an empty column name: a table is read with no column taken from it, as in count(*)
         if first in READ_COLUMNS and (second in READ_COLUMNS[first] or second in ("", None)):
             return sqlite3.SQLITE_OK
         return sqlite3.SQLITE_DENY
@@ -404,7 +478,9 @@ def read_rail_authorizer(action, first, second, database, inner):
 
 def create_schema(connection):
     """Tables, the 216 cube colors and the header marks, all in one transaction. The journal stays
-    SQLite's default rollback journal: a read-only connection can then always read the file."""
+    SQLite's default rollback journal: a read-only connection can then always read the file (WAL
+    would need it to write a -shm file beside the registry). Runs only on a file connect() found
+    empty."""
     try:
         connection.execute("BEGIN IMMEDIATE")
         for statement in SCHEMA + TO_VERSION_2 + TO_VERSION_3:
@@ -435,7 +511,8 @@ def keep_older_copy(path, version):
 
 
 def upgrade_schema(connection):
-    """Move an older registry to SCHEMA_VERSION, step by step, all in one transaction."""
+    """Move an older registry to SCHEMA_VERSION, step by step, all in one transaction. Each step
+    reads user_version again, so a version 1 file goes to 2 and then to 3."""
     try:
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
@@ -454,6 +531,8 @@ def upgrade_schema(connection):
 
 
 def insert_color(connection, color):
+    """Add a #rrggbb color with its channels, cube index (NULL when it is not one of the 216), name and
+    family -> its id. Runs inside the caller's transaction."""
     values = swatch.channels(color)
     index = swatch.cube_index(color)
     if index < 0:
@@ -467,6 +546,8 @@ def insert_color(connection, color):
 # --- Writing (the window only) ---------------------------------------------------------------------
 
 def color_id(connection, color):
+    """The id of a #rrggbb color, adding it first when it is not there yet (a color outside the cube,
+    from a registered picture or an imported vote). Runs inside the caller's transaction."""
     row = connection.execute("SELECT id FROM colors WHERE hex = ?", (color,)).fetchone()
     if row is not None:
         return row[0]
@@ -474,6 +555,7 @@ def color_id(connection, color):
 
 
 def link_id(connection, url):
+    """The id of a link's text, adding it first when it is new. Runs inside the caller's transaction."""
     row = connection.execute("SELECT id FROM links WHERE url = ?", (url,)).fetchone()
     if row is not None:
         return row[0]
@@ -505,7 +587,16 @@ def check_entry(entry):
 
 def save_qr(connection, entry):
     """Add a QR code, or replace the one already registered at the same file -> Result id. An Entry
-    with "short" also records its short link (or keeps the one already recorded for that ID)."""
+    with "short" also records its short link (or keeps the one already recorded for that ID).
+
+    Steps:
+    1. check_entry, then one BEGIN IMMEDIATE transaction.
+    2. Find or add the color and the link.
+    3. With "short": add the short link, or refuse when its ID already belongs to another link.
+    4. Insert the code, or update the row with the same path_key (an "upsert": INSERT ... ON CONFLICT
+       DO UPDATE), so a file drawn again keeps its record id.
+    5. Drop links no record uses any more, then commit.
+    """
     problem = check_entry(entry)
     if problem != "":
         return fail(problem)
@@ -557,6 +648,7 @@ def short_link_for(connection, target, color, base):
 
 
 def code_taken(connection, code):
+    """True when a short link with this ID is recorded."""
     return connection.execute("SELECT count(*) FROM short_links WHERE code = ?", (code,)).fetchone()[0] > 0
 
 
@@ -715,7 +807,8 @@ def scan_totals(connection, today):
     totals = {}
     if schema_of(connection) < 3:
         return totals
-    recent_from = days_before(today, RECENT_DAYS - 1)
+    recent_from = days_before(today, RECENT_DAYS - 1)  # 29 days back plus today: 30 days
+    # YYYY-MM-DD text sorts in date order, so days compare as strings
     for row in connection.execute("SELECT code, day, count FROM scans").fetchall():
         if row[0] not in totals:
             totals[row[0]] = {"total": 0, "recent": 0}
@@ -792,11 +885,13 @@ def import_votes(connection, votes):
             if hex_value == "" or not isinstance(entry, dict) or entry.get("voat") not in (1, -1):
                 continue
             when = entry.get("when")
+            # 32503680000 seconds is 3000-01-01T00:00:00Z; a vote's time is a number of seconds, never a bool
             if isinstance(when, bool) or not isinstance(when, (int, float)) or when < 0 or when > 32503680000:
                 continue
             voted = utc_text(when)
             number = color_id(connection, hex_value)
             row = connection.execute("SELECT voat, voted FROM votes WHERE color_id = ?", (number,)).fetchone()
+            # both times are utc_text, so text order is time order; the same vote at the same time is no change
             if row is not None and (row[1] > voted or (row[1] == voted and row[0] == entry["voat"])):
                 continue
             connection.execute("INSERT INTO votes (color_id, voat, voted) VALUES (?, ?, ?) "
@@ -813,6 +908,8 @@ def import_votes(connection, votes):
 # --- Reading ---------------------------------------------------------------------------------------
 
 def row_record(row):
+    """A sqlite3.Row from lookup()'s SELECT -> Row record. A code with no short link gets "" for
+    short_code and target instead of NULL."""
     record = {}
     for key in ROW_KEYS:
         record[key] = row[key]
@@ -840,6 +937,7 @@ def all_rows(connection):
 
 
 def row_by_id(connection, number):
+    """One QR code by its record id -> Row, or None when there is no such record."""
     row = connection.execute(lookup(connection) + " WHERE q.id = ?", (number,)).fetchone()
     if row is None:
         return None
@@ -858,7 +956,14 @@ def vote_entries(connection):
 def backup(path, target):
     """Copy the registry into `target`, a new file -> Result target. SQLite's backup copies it page by
     page, consistently even while the window writes; the copy is checked (marks, version, quick_check)
-    before it counts, and written next to its place first."""
+    before it counts, and written next to its place first.
+
+    Steps:
+    1. Refuse when there is no registry, or when `target` exists already.
+    2. Open the registry read-only and copy it with SQLite's online backup API into TARGET.part.
+    3. Move TARGET.part into place with os.replace, which is one step on the same drive.
+    4. Open the copy on the read rail, which checks its marks, its version and quick_check.
+    """
     if not os.path.isfile(path):
         return fail("no registry yet at " + path)
     if os.path.exists(target):
@@ -887,6 +992,7 @@ def backup(path, target):
     finally:
         if source is not None:
             source.close()
+    # Known limitation: a copy that fails this check stays at `target`.
     checked = connect(target, True)
     if not checked["ok"]:
         return fail("the backup did not check out: " + checked["error"])
@@ -947,6 +1053,7 @@ def vote_log(connection):
 
 
 def vote_map(connection):
+    """Every color's vote now -> {"#rrggbb": 1 | -1}."""
     votes = {}
     for row in connection.execute("SELECT c.hex, v.voat FROM votes v JOIN colors c ON c.id = v.color_id").fetchall():
         votes[row[0]] = row[1]
@@ -964,6 +1071,8 @@ def colors_in_use(connection):
 
 
 def counts(connection):
+    """How much the registry holds -> {"records": QR codes, "links": links, "colors_used": colors with
+    at least one code}."""
     records = connection.execute("SELECT count(*) FROM qr_codes").fetchone()[0]
     links = connection.execute("SELECT count(*) FROM links").fetchone()[0]
     used = connection.execute("SELECT count(DISTINCT color_id) FROM qr_codes").fetchone()[0]
@@ -980,6 +1089,8 @@ def empty_filters():
 
 
 def clamp_limit(value):
+    """A result limit made safe: DEFAULT_LIMIT when it is not a whole number (a bool is not one), else
+    held to 1..MAX_LIMIT."""
     if isinstance(value, bool) or not isinstance(value, int):
         return DEFAULT_LIMIT
     if value < 1:
@@ -990,6 +1101,8 @@ def clamp_limit(value):
 
 
 def has_filter(filters):
+    """True when a Filters record sets any filter ("near" alone is none: it only changes how a color
+    matches)."""
     return (filters["color"] != "" or filters["family"] != "" or filters["link"] != "" or
             filters["link_exact"] != "" or filters["path"] != "" or filters["section"] != "" or filters["short"])
 
@@ -1010,6 +1123,9 @@ def text_contains(haystack, needle):
 
 
 def contains_once(haystack, needle):
+    """text_contains for one form of the haystack: the needle as typed, case-folded, or else each of the
+    needle's words somewhere in the haystack's words (a substring test, so "sto" finds "store"). A
+    needle with no words matches only as typed."""
     if needle.casefold() in haystack.casefold():
         return True
     wanted = loose_words(needle).split(" ")
@@ -1023,6 +1139,8 @@ def contains_once(haystack, needle):
 
 
 def row_matches(row, filters):
+    """True when a Row passes every filter set in `filters` (Filters). "section" is only on Rows that
+    ECP marked; a path matches by its path_key or by its words."""
     if filters["color"] != "":
         if filters["near"]:
             if not swatch.is_near(row["hex"], filters["color"]):

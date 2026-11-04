@@ -6,8 +6,20 @@
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 // ========================================================================
 
-//! The left panel: every program with its last test mark, Test all, the desktop shortcut buttons, the text
-//! size, config warnings, About and the portfolio root.
+//! The left panel: the program list and the controls that apply to every program.
+//!
+//! It shows every program with its last test mark, Test all, the desktop shortcut buttons, the text size,
+//! config warnings, About and the portfolio root. The frame loop in app/views.rs draws it in a fixed-width
+//! left panel inside a scroll area, on every view, so the program picked here is the one the Run and Versions
+//! views work on.
+//!
+//! Top to bottom:
+//! 1. One row per program: test mark, name (click to select), language, and "live" when Live tests are on.
+//! 2. Test all.
+//! 3. Desktop shortcuts and Remove desktop shortcuts.
+//! 4. The text size with smaller, larger and 100% buttons.
+//! 5. Config warnings, in yellow.
+//! 6. About (folded), then the portfolio root.
 
 use eframe::egui::{self, Color32};
 
@@ -15,7 +27,23 @@ use super::{GREEN, badge, status_text};
 use crate::app::{App, Kind, TEST};
 use crate::{VERSION, install};
 
+// The sidebar, drawn as part of App.
 impl App {
+    /// Draw the left panel; `ctx` is passed on to the jobs and the zoom the buttons change.
+    ///
+    /// Steps:
+    /// 1. Per program, a row (`ui.horizontal`) with its last test mark and status tip, its name as a
+    ///    selectable label (clicking selects it), its language, and a green "live" tag. Each program is cloned
+    ///    out first, since the row's closure also changes `self.selected`.
+    /// 2. Test all starts every program's tests at once; each start skips a run already going.
+    /// 3. The desktop buttons need the root and the user's config folder (where the list of placed shortcuts
+    ///    lives), and are disabled while a desktop job runs.
+    /// 4. The text size row: −, + and 100% use the same `set_zoom` as the zoom keys, and their tips name those
+    ///    keys.
+    /// 5. Each config warning in yellow, so a typo in controls.ini or programs.ini is seen, not silently lost.
+    /// 6. About folds away (`collapsing`), since it is rarely needed; it holds the version, licence and the
+    ///    icon's CC BY credit, which the licence requires to be shown. Then the root, so the user can see which
+    ///    portfolio folder was found.
     pub(super) fn sidebar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Programs")
             .on_hover_text("Every program in config/programs.ini. Pick one to work on it.");

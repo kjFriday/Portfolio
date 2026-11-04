@@ -6,9 +6,9 @@
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
-"""Tests for QR Studio's own code around the codec: the history and links (studio_history.py).
+"""Tests for QR Studio's code around the codec: the history and links in studio_history.py.
 
-The codec's tests are in test_qr_codec.py. Run from the program folder: python -m unittest discover -s tests
+They use a throwaway temp folder, never the real history in the user's data folder. The codec's tests are in test_qr_codec.py. Run from the program folder: python -m unittest discover -s tests
 """
 
 import os
@@ -20,7 +20,14 @@ import studio_history as history
 
 
 class HistoryTests(unittest.TestCase):
+    """The history list, its file, and which texts count as links."""
+
     def test_round_trip_and_dedupe(self):
+        """A repeated read moves to the top with its new time; the list survives a save and load.
+
+        The file goes in a "sub" folder that does not exist yet, so save_history must create it; a
+        missing file loads as an empty history.
+        """
         folder = tempfile.mkdtemp(prefix="qr_studio_test_")
         try:
             path = os.path.join(folder, "sub", "history.json")
@@ -36,6 +43,7 @@ class HistoryTests(unittest.TestCase):
             shutil.rmtree(folder, ignore_errors=True)
 
     def test_links(self):
+        """A web link with a leading space counts; a javascript: address, which could run script, does not."""
         self.assertTrue(history.is_link(" https://example.com"))
         self.assertFalse(history.is_link("javascript:alert(1)"))
 

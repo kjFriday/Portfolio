@@ -10,6 +10,17 @@
 
 The commands that show a file or open a folder differ per OS (Explorer, Finder, xdg-open). A file is
 only ever shown in its folder, never opened.
+
+What it is for: gui.py fills the folder box from list_drives and add_recent, cleans what the user
+typed with normalize_folder, and runs reveal_command or open_folder_command through launch for "Show
+in its folder" and "Open folder" (gui_views.py does the same for the map and the trash folder). These
+are the OS-specific pieces README.md names for porting. The self-test pins command_line's Explorer
+quoting, normalize_folder and add_recent.
+
+Main flow for showing a file:
+  1. reveal_command or open_folder_command builds an argument list for this OS.
+  2. launch starts it without waiting. On Windows it first turns the list into one command line
+     with command_line, because Explorer parses its command line its own way.
 """
 
 import os
@@ -32,7 +43,12 @@ MAC_PACKAGES = {
 
 
 def list_drives():
-    """Drive roots on this machine (C:\\, D:\\ ... on Windows, / elsewhere)."""
+    """Drive roots on this machine (C:\\, D:\\ ... on Windows, / elsewhere).
+
+    On Python 3.12+ os.listdrives asks Windows (GetLogicalDriveStrings) and returns [] when that
+    fails. Older Pythons probe C: to Z: with os.path.exists instead; A: and B: are skipped, as
+    probing a floppy letter can be slow.
+    """
     if os.name != "nt":
         return ["/"]
     if hasattr(os, "listdrives"):
@@ -48,7 +64,12 @@ def list_drives():
 
 
 def reveal_command(path):
-    """The command that shows a file selected in the system file manager."""
+    """The command that shows a file selected in the system file manager -> argument list.
+
+    Windows: explorer /select,<path> (command_line joins the two). macOS: open -R reveals it in
+    Finder. Elsewhere xdg-open has no way to select a file, so it opens the file's folder; the file
+    itself is never passed, as that would open (run) it.
+    """
     if os.name == "nt":
         return ["explorer", "/select,", path]
     if sys.platform == "darwin":
@@ -57,6 +78,11 @@ def reveal_command(path):
 
 
 def open_folder_command(folder):
+    """The command that opens folder in the system file manager -> argument list.
+
+    On macOS a folder that is a package (see MAC_PACKAGES) is shown selected instead of opened, as
+    "open" would launch it. A trailing "/" is stripped first so "Xcode.app/" is still recognised.
+    """
     if os.name == "nt":
         return ["explorer", folder]
     if sys.platform == "darwin":
@@ -69,7 +95,19 @@ def open_folder_command(folder):
 
 def command_line(arguments):
     """The Windows command line for arguments. Explorer splits its own arguments at "," and "=", so
-    every path for it is quoted, with "/select," joined to the path after it."""
+    every path for it is quoted, with "/select," joined to the path after it.
+
+    Any other program gets the usual Microsoft C runtime quoting from subprocess.list2cmdline.
+    Explorer does not use those rules: it reads its command line as a list of switches split at ","
+    and "=", so an unquoted path such as D:\\Q1,Q2\\a.xlsx would be cut in two. The self-test pins
+    these outputs (for example explorer /select,"D:\\Q1,Q2\\a.xlsx").
+
+    Steps:
+      1. Start the line with "explorer".
+      2. For each argument: when it ends with "," (a switch such as "/select,") and a path follows,
+         take the path too and write the switch right before the quoted path, with no space.
+      3. Quote every path, adding "." after a trailing backslash (see below).
+    """
     if len(arguments) == 0 or arguments[0] != "explorer":
         return subprocess.list2cmdline(arguments)
     line = "explorer"
@@ -82,6 +120,8 @@ def command_line(arguments):
             index = index + 1
             part = arguments[index]
         if part.endswith("\\"):
+            # C runtime rule: backslashes are literal unless a quote follows them; "\." names the
+            # same folder and keeps the closing quote a quote
             part = part + "."  # D:\ becomes "D:\." : a backslash right before the closing quote would escape it
         part = '"' + part + '"'
         if switch != "":
@@ -93,7 +133,13 @@ def command_line(arguments):
 
 
 def launch(arguments):
-    """Start a program without waiting for it -> Result(None)."""
+    """Start a program without waiting for it -> Result(None).
+
+    arguments: an argument list from reveal_command or open_folder_command. Windows gets one command
+    line built by command_line (Popen passes a string through as is); elsewhere the list is passed
+    as argv. The process is not waited for or kept. Fails with the OS message when the program
+    cannot be started; what the program does after starting is not checked.
+    """
     try:
         if os.name == "nt":
             subprocess.Popen(command_line(arguments))
@@ -105,7 +151,11 @@ def launch(arguments):
 
 
 def normalize_folder(text):
-    """What the user typed -> a folder path ("D:" becomes "D:\\", surrounding quotes and spaces go)."""
+    """What the user typed -> a folder path ("D:" becomes "D:\\", surrounding quotes and spaces go).
+
+    Quotes come with a pasted path, for example from Explorer's "Copy as path". A bare "D:" means the current folder on drive D, not
+    its root, so it gets a separator. The path is not checked to exist.
+    """
     folder = text.strip()
     if len(folder) >= 2 and folder[0] == '"' and folder[len(folder) - 1] == '"':
         folder = folder[1:len(folder) - 1]
@@ -115,7 +165,11 @@ def normalize_folder(text):
 
 
 def add_recent(recent, folder, limit):
-    """recent with folder moved to the front, at most limit entries."""
+    """recent with folder moved to the front, at most limit entries.
+
+    Any earlier entry for the same folder is dropped, compared with os.path.normcase so "d:\\x" and
+    "D:\\X" are one entry on Windows. The list passed in is not changed.
+    """
     result = [folder]
     for item in recent:
         if os.path.normcase(item) != os.path.normcase(folder) and len(result) < limit:

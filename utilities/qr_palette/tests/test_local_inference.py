@@ -7,8 +7,21 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""Tests for the local inference client: the loopback rule, model listing, cloud checks and planning
-calls. FakeOllama, a small Ollama stand-in on 127.0.0.1, is also used by the ECP, MCP and CLI tests."""
+"""Tests for the local inference client: loopback, model list, cloud checks, planning.
+
+FakeOllama, a small Ollama stand-in on 127.0.0.1, is also used by the ECP, MCP and CLI tests. It speaks
+just enough of Ollama's HTTP API (GET /api/version, /api/status, /api/tags; POST /api/show,
+/api/generate) for local_inference.py, records every request it receives, and can be switched into the
+failure modes the client must name: redirects, server errors, answers that are not JSON, a missing
+model, a slow server, cloud features left on, and answers stamped as coming from another host.
+
+Records
+  FakeOllama.received  [(method, path, body text)] every request, in order
+  default_models()     what /api/tags lists: two usable chat models, a base model, an embedding model,
+                       a cloud model, a remote-only model, and an old entry without capabilities
+
+Start reading at FakeOllama, then ServerTests.
+"""
 
 import json
 import os
@@ -19,13 +32,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import local_inference
 
+# the empty QueryPlan a planning call answers with when no plan is queued (ecp.PLAN_FIELDS, in order)
 PLAN = {"intent": "find", "color": "", "near": False, "family": "", "link": "", "link_exact": "", "path": "",
         "section": "", "short": False, "limit": 20}
+# stand-in model digests, shaped like real ones (64 hex digits of SHA-256); they pin a model as name@digest
 QWEN_DIGEST = "a" * 64
 R1_DIGEST = "b" * 64
 
 
 def default_models():
+    """A fresh copy of the models /api/tags lists, shaped like Ollama's answer.
+
+    qwen2.5 and deepseek-r1 are usable (deepseek-r1 thinks); deepseek-coder:base is a base model;
+    nomic-embed-text only embeds; gpt-oss:120b-cloud and remote-only:latest run elsewhere
+    (remote_host or remote_model); old-model:latest has no capabilities, so /api/show must be asked."""
     return [
         {"name": "qwen2.5:7b-instruct", "digest": QWEN_DIGEST, "size": 4683087332,
          "capabilities": ["completion", "tools"],
@@ -53,9 +73,14 @@ class FakeOllama:
     stamp    True: every /api/generate answer says it came from another host
     plans    answers for the next planning calls: a dict (sent as JSON), a string as it is, or "CUT"
              for an answer cut off at the length limit
-    shown    extra fields /api/show adds for a model name (remote_host, for instance)"""
+    shown    extra fields /api/show adds for a model name (remote_host, for instance)
+    models   what /api/tags lists (default_models(), changeable per test)
+    delay    seconds every answer waits before it is sent (for the timeout tests)
+    received every request as (method, path, body text), guarded by `lock`
+    The server runs on a daemon thread from construction until stop()."""
 
     def __init__(self):
+        """Start the server on a free loopback port; `url` is its address, such as http://127.0.0.1:50123."""
         self.models = default_models()
         self.plans = []
         self.mode = "normal"
@@ -65,13 +90,20 @@ class FakeOllama:
         self.delay = 0.0
         self.received = []
         self.lock = threading.Lock()
-        fake = self
+        fake = self  # the handler class below reads the test's settings through this name
 
         class Handler(BaseHTTPRequestHandler):
+            """One request to the fake: answers from the FakeOllama settings at the time it arrives."""
+
             def log_message(self, *arguments):
+                """Log nothing, so test output stays clean."""
                 pass
 
             def answer(self, status, value, raw):
+                """Send `status` with `value` as JSON, or the bytes `raw` as they are when not None.
+
+                Waits `delay` first. A redirect status also gets a Location off this computer, which
+                the client must never follow."""
                 if fake.delay > 0:
                     time.sleep(fake.delay)
                 data = raw
@@ -89,6 +121,7 @@ class FakeOllama:
                     pass  # the client gave up waiting (the slow-server test)
 
             def special(self):
+                """Answer for the failure modes that apply to every path -> True when one answered."""
                 if fake.mode == "redirect":
                     self.answer(307, {}, b"{}")
                     return True
@@ -101,6 +134,7 @@ class FakeOllama:
                 return False
 
             def do_GET(self):
+                """Record the request, then answer /api/version, /api/status or /api/tags; 404 otherwise."""
                 with fake.lock:
                     fake.received.append(("GET", self.path, ""))
                 if self.special():
@@ -115,6 +149,10 @@ class FakeOllama:
                     self.answer(404, {"error": "not found"}, None)
 
             def do_POST(self):
+                """Record the request with its body, then answer /api/show or /api/generate; 404 otherwise.
+
+                /api/show reports a model's capabilities from `models` ("completion" when it lists
+                none), plus any extra fields in `shown`."""
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length).decode("utf-8")
                 with fake.lock:
@@ -135,6 +173,16 @@ class FakeOllama:
                     self.answer(404, {"error": "not found"}, None)
 
             def generate(self, request):
+                """Answer /api/generate the way Ollama does with stream off.
+
+                Steps:
+                  1. Mode "missing": 404 with Ollama's "model not found" text.
+                  2. No "prompt": a load request (warm), answered with done_reason "load".
+                  3. Otherwise a planning call: the next queued plan or PLAN; "CUT" becomes a JSON
+                     fragment with done_reason "length", as when num_predict runs out.
+                  4. With `stamp` on, add remote_host and remote_model, the marks of an answer that
+                     was sent off the computer.
+                """
                 if fake.mode == "missing":
                     self.answer(404, {"error": "model '" + request["model"] + "' not found"}, None)
                     return
@@ -152,6 +200,7 @@ class FakeOllama:
                         reason = "length"
                     if not isinstance(content, str):
                         content = json.dumps(content)
+                    # durations are in nanoseconds, as Ollama reports them
                     answer = {"model": request["model"], "response": content, "done": True, "done_reason": reason,
                               "total_duration": 900000000, "load_duration": 1000000, "eval_count": 60}
                 if fake.stamp:
@@ -159,12 +208,14 @@ class FakeOllama:
                     answer["remote_model"] = "gpt-oss:120b"
                 self.answer(200, answer, None)
 
+        # port 0 asks the system for any free port, so parallel test runs never collide
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = "http://127.0.0.1:" + str(self.server.server_address[1])
 
     def posted(self, path):
+        """The JSON bodies POSTed to `path` so far, oldest first."""
         found = []
         with self.lock:
             for entry in self.received:
@@ -181,16 +232,22 @@ class FakeOllama:
         return found
 
     def stop(self):
+        """Stop serving and free the port; later requests find nothing listening."""
         self.server.shutdown()
         self.server.server_close()
 
 
 def endpoint_of(url):
+    """The Endpoint local_inference.parse_endpoint makes of `url` (the url must be valid)."""
     return local_inference.parse_endpoint(url)["value"]
 
 
 class EndpointTests(unittest.TestCase):
+    """parse_endpoint: only plain http on a loopback address passes, and no name is ever looked up."""
+
     def test_loopback_addresses_are_accepted(self):
+        """localhost (any case) becomes 127.0.0.1, the default port is 11434, any 127.x and ::1 pass,
+        and an IPv4-mapped IPv6 loopback is read as its IPv4 address."""
         cases = {"http://127.0.0.1:11434": ("127.0.0.1", 11434), "http://localhost:11434": ("127.0.0.1", 11434),
                  "http://LOCALHOST": ("127.0.0.1", 11434), "http://[::1]:8080/": ("::1", 8080),
                  "http://127.0.0.2:9": ("127.0.0.2", 9), "http://[::ffff:127.0.0.1]:11434": ("127.0.0.1", 11434)}
@@ -201,6 +258,9 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(endpoint_of("http://[::1]:8080")["url"], "http://[::1]:8080")
 
     def test_everything_else_is_refused_without_looking_names_up(self):
+        """Each case breaks one rule: https, a private or public address, a name that only starts with
+        localhost, credentials, a path or query, a port out of range, a zone, another scheme, nothing,
+        0.0.0.0, the 127.1 shorthand, no scheme, a mapped private address, and None."""
         for url in ("https://127.0.0.1:11434", "http://10.0.0.5:11434", "http://example.com:11434",
                     "http://localhost.example.com", "http://user:pw@127.0.0.1:11434", "http://127.0.0.1:11434/api",
                     "http://127.0.0.1:11434?x=1", "http://127.0.0.1:99999", "http://[fe80::1%25eth0]:11434",
@@ -209,6 +269,8 @@ class EndpointTests(unittest.TestCase):
             self.assertFalse(local_inference.parse_endpoint(url)["ok"], url)
 
     def test_nothing_listening_is_a_clear_failure(self):
+        """Port 1 has nothing listening: the failure is "inference_unavailable" with a plain message,
+        and reachable(None) is False."""
         listed = local_inference.list_models(endpoint_of("http://127.0.0.1:1"), 1.0, "")
         self.assertFalse(listed["ok"])
         self.assertEqual(listed["kind"], "inference_unavailable")
@@ -216,6 +278,8 @@ class EndpointTests(unittest.TestCase):
         self.assertFalse(local_inference.reachable(None))
 
     def test_cloud_names(self):
+        """A last ":cloud" or ":local" part (any case) or a "-cloud" tag is refused as a name; "cloud"
+        or "local" inside a word is not. ":local" is refused because the client adds it itself."""
         for name in ("gpt-oss:120b-cloud", "gpt-oss:120b:cloud", "qwen3:CLOUD", "qwen2.5:7b-instruct:local"):
             self.assertTrue(local_inference.is_cloud_name(name), name)
         for name in ("qwen2.5:7b-instruct", "deepseek-r1:7b", "cloudy:latest", "local-model:latest"):
@@ -223,14 +287,19 @@ class EndpointTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    """The client against a running FakeOllama: listing, show, warm, planning calls and their failures."""
+
     def setUp(self):
+        """Start a FakeOllama and parse its address."""
         self.fake = FakeOllama()
         self.endpoint = endpoint_of(self.fake.url)
 
     def tearDown(self):
+        """Stop the fake."""
         self.fake.stop()
 
     def listed(self, default_name=""):
+        """list_models' models, checked to have succeeded -> (list in order, {name: LocalModel})."""
         listed = local_inference.list_models(self.endpoint, 3.0, default_name)
         self.assertTrue(listed["ok"], listed["error"])
         by_name = {}
@@ -239,6 +308,8 @@ class ServerTests(unittest.TestCase):
         return listed["value"], by_name
 
     def test_only_local_models_that_complete_text_are_listed(self):
+        """Cloud, remote and embedding-only models are left out; the rest come sorted by name with
+        notes, name@digest ids, sizes and the default marked."""
         models, by_name = self.listed("deepseek-r1:7b")
         names = []
         for model in models:
@@ -254,11 +325,16 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(local_inference.reachable(self.endpoint))
 
     def test_capabilities_come_from_show_when_tags_lack_them(self):
+        """old-model:latest lists no capabilities, so /api/show is asked once, for it alone."""
         models, by_name = self.listed()
         self.assertEqual(by_name["old-model:latest"]["capabilities"], ["completion"])
         self.assertEqual(len(self.fake.posted("/api/show")), 1)
 
     def test_proxy_settings_are_ignored(self):
+        """Proxy variables pointing at an unreachable address change nothing: the client never uses a proxy.
+
+        10.255.255.1:9 is a private address with nothing behind it, so going through it would hang
+        or fail. The variables are put back as they were afterwards."""
         saved = {}
         for key in ("HTTP_PROXY", "http_proxy", "ALL_PROXY"):
             saved[key] = os.environ.get(key)
@@ -274,6 +350,8 @@ class ServerTests(unittest.TestCase):
                     os.environ[key] = saved[key]
 
     def test_redirects_and_bad_answers_fail(self):
+        """A redirect, an HTTP 500 and an answer that is not JSON each fail as "inference_unavailable",
+        naming the problem, and the redirect is never followed."""
         for mode, words in (("redirect", "redirect"), ("server-error", "HTTP 500"), ("not-json", "JSON")):
             self.fake.mode = mode
             listed = local_inference.list_models(self.endpoint, 3.0, "")
@@ -287,12 +365,15 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(followed, 3)  # the redirect was not followed anywhere
 
     def test_a_slow_server_times_out(self):
+        """A server that connects but answers after 1.5 s, with a 0.3 s timeout, is "inference_timeout"."""
         self.fake.delay = 1.5
         listed = local_inference.list_models(self.endpoint, 0.3, "")
         self.assertFalse(listed["ok"])
         self.assertEqual(listed["kind"], "inference_timeout")
 
     def test_version_and_cloud_status(self):
+        """The version is read; cloud counts as disabled only for {"disabled": true} exactly, and an older
+        daemon without /api/status counts as not disabled; a server error is a failure."""
         self.assertEqual(local_inference.version(self.endpoint)["value"], "0.40.10")
         self.assertIs(local_inference.cloud_disabled(self.endpoint)["value"], True)
         for cloud in ({"disabled": False}, {}, None, {"disabled": "yes"}):
@@ -304,6 +385,7 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(local_inference.cloud_disabled(self.endpoint)["ok"])
 
     def test_show_reports_remote_models(self):
+        """show() marks a model with remote_host as remote, and reads "thinking" from its capabilities."""
         self.fake.shown["qwen2.5:7b-instruct"] = {"remote_host": "https://ollama.com:443"}
         shown = local_inference.show(self.endpoint, "qwen2.5:7b-instruct", 3.0)
         self.assertTrue(shown["value"]["remote"])
@@ -311,6 +393,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual((shown["value"]["remote"], shown["value"]["thinking"]), (False, True))
 
     def test_warming_loads_the_local_copy(self):
+        """warm() loads NAME:local with the planning context size only, and a stamped answer is egress."""
         warmed = local_inference.warm(self.endpoint, "qwen2.5:7b-instruct", 3.0)
         self.assertEqual(warmed["value"], {"loaded": True, "load_duration_ns": 1234567})
         warmed = self.fake.posted("/api/generate")[0]
@@ -320,6 +403,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(local_inference.warm(self.endpoint, "qwen2.5:7b-instruct", 3.0)["kind"], "egress_detected")
 
     def test_plans_are_asked_deterministically_of_the_local_copy(self):
+        """A planning call goes to NAME:local with greedy settings (temperature 0, top_k 1, a fixed seed),
+        the answer budget given, no streaming and the schema as "format"; think is set to false only for
+        a model that thinks. The timings come back in nanoseconds."""
         models, by_name = self.listed()
         self.fake.plans.append({"intent": "find", "color": "", "near": False, "family": "blue", "link": "",
                                 "link_exact": "", "path": "", "limit": 20})
@@ -342,6 +428,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(asked[0]["format"], {"type": "object"})
 
     def test_cut_off_stamped_and_missing_answers_fail_by_kind(self):
+        """A cut-off answer is "plan_truncated", a stamped one "egress_detected", and a 404 for the model
+        "model_not_local" with the status as its value."""
         models, by_name = self.listed()
         model = by_name["qwen2.5:7b-instruct"]
         self.fake.plans.append("CUT")

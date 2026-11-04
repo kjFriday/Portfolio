@@ -7,11 +7,22 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The Read tab: open or paste a picture, read the code in it, and show its matches in the registry.
+"""The Read tab: open or paste a picture, read its QR code and show registry matches.
 
 ReadTab is part of PaletteWindow (window.py). Find it switches to the Find tab and searches there. The
 helpers before the class (pictures through Tk and from the clipboard) follow QR Studio's
 (PROVENANCE.md); the Find tab pastes pictures with clipboard_picture too.
+
+Main flow:
+  1. Open picture… or Paste picture gives a file path (a pasted picture is first saved as a PNG in
+     the temporary folder).
+  2. read_path() runs a job that decodes the picture (qr_codec, or making.picture_from_image for a
+     GIF Tk converted), finds the registry records holding the same text (finding.matches_for_text)
+     and asks short_link_ops.tamper_verdict whether a short link only looks like one of yours.
+  3. show_reading() fills the text box, the detected color, the verdict and the matches table.
+  4. Register this picture…, Find it and Open link act on what was read.
+
+Start reading at read_path().
 """
 
 import os
@@ -32,7 +43,10 @@ from short_link_ops import tamper_verdict
 
 
 def picture_through_tk(tk, path):
-    """Any picture Tk can open (GIF, PNG, PPM) -> Result Image, by way of a temporary PPM."""
+    """Any picture Tk can open (GIF, PNG, PPM) -> Result Image, by way of a temporary PPM.
+
+    `tk` is the tkinter module (a Tk root must exist). Tk decodes the format and writes it out as a
+    PPM, which qr_codec's own reader understands; the temporary file is always removed."""
     try:
         photo = tk.PhotoImage(file=path)
     except Exception:
@@ -52,12 +66,19 @@ def picture_through_tk(tk, path):
 
 
 def clipboard_picture(path):
-    """Save the picture on the clipboard as a PNG -> Result path. Windows only (PowerShell)."""
+    """Save the picture on the clipboard as a PNG -> Result path. Windows only (PowerShell).
+
+    Side effects: starts a hidden PowerShell process (at most 20 seconds) that writes `path`.
+    Python's standard library cannot read a clipboard picture, so .NET's Windows Forms clipboard
+    does it. The script exits with 3 when the clipboard holds no picture."""
     if os.name != "nt":
         return fail("pasting a picture needs Windows")
+    # the path sits in a PowerShell single-quoted string, where a quote is escaped by doubling it
     script = ("Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; "
               "$i = [Windows.Forms.Clipboard]::GetImage(); if ($i -eq $null) { exit 3 }; "
               "$i.Save('" + path.replace("'", "''") + "', [Drawing.Imaging.ImageFormat]::Png)")
+    # -STA: the Windows Forms clipboard works only on a single-threaded apartment thread;
+    # CREATE_NO_WINDOW keeps a console window from flashing up
     try:
         done = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", script], capture_output=True,
                               text=True, timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -118,6 +139,16 @@ class ReadTab:
         ttk.Button(read_buttons, text="Open link", command=self.open_read_link).pack(side="left")
 
     def show_reading(self, outcome):
+        """Show a finished read_path job: clear the tab, then fill it from `outcome`.
+
+        `outcome` is a Result {"picture": Picture, "matches": [Shown], "verdict": {"line", "warning"}};
+        a failure shows its message. Steps:
+          1. Clear the picture, swatch, verdict, text and matches; forget the last picture.
+          2. Show the decoded text, its kind (when not a plain link), the detected color and the
+             tamper verdict (red when it warns).
+          3. Show the picture itself when Tk can open it (PNG or GIF), shrunk to fit 380 pixels;
+             otherwise a preview drawn again from the decoded text.
+          4. List the registry matches."""
         self.picture_canvas.delete("all")
         self.detected_swatch.delete("all")
         self.detected_text.set("")
@@ -146,6 +177,7 @@ class ReadTab:
         if picture["format"] != "svg" and self.state["picture_path"].lower().endswith((".png", ".gif")):
             try:
                 photo = tk.PhotoImage(file=self.state["picture_path"])
+                # Tk can shrink a picture only by a whole factor (subsample keeps every n-th pixel)
                 factor = 1
                 while photo.width() // factor > 380 or photo.height() // factor > 380:
                     factor = factor + 1
@@ -155,6 +187,7 @@ class ReadTab:
                 photo = None
         if photo is None:
             photo = self.photo_from_png(png)
+        # kept in state: Tk shows a PhotoImage only while Python holds a reference to it
         self.state["photos"]["picture"] = photo
         if photo is not None:
             self.picture_canvas.create_image(190, 190, image=photo)
@@ -165,6 +198,11 @@ class ReadTab:
         self.status.set("Read a QR code from " + self.state["picture_source"] + "; " + str(found) + " in the registry")
 
     def read_path(self, path, source):
+        """Read the QR code in the picture at `path` as a job, then show it (show_reading).
+
+        `source` names it in messages: the file's name, or "the clipboard" for a pasted picture, which
+        is never matched by its path (it is a temporary file). A GIF is converted through Tk here, on
+        the window's thread, since Tk must not be used from a job's thread."""
         self.state["picture_path"] = path
         self.state["picture_source"] = source
         image = None
@@ -175,6 +213,7 @@ class ReadTab:
                 return
             image = loaded["value"]
 
+        # runs off the window's thread: decode, find matches, judge the link
         def work():
             if image is not None:
                 picture = picture_from_image(image)
@@ -194,6 +233,7 @@ class ReadTab:
         self.start_job("Reading " + source, work, self.show_reading)
 
     def open_picture(self):
+        """Ask for a picture file and read it."""
         path = filedialog.askopenfilename(title="Open a QR code picture",
                                           filetypes=[("Pictures", "*.png *.svg *.gif *.ppm *.pgm"),
                                                      ("All files", "*.*")])
@@ -201,6 +241,9 @@ class ReadTab:
             self.read_path(registry.display_path(path), os.path.basename(path))
 
     def paste_picture(self):
+        """Save the clipboard's picture to a temporary PNG and read it.
+
+        Any old file of that name is removed first, so a failed paste never reads the last one."""
         temporary = os.path.join(tempfile.gettempdir(), "qr_palette_clipboard.png")
         if os.path.isfile(temporary):
             os.remove(temporary)
@@ -211,6 +254,12 @@ class ReadTab:
         self.read_path(temporary, "the clipboard")
 
     def register_shown(self):
+        """Add the picture just read to the registry, after asking for its color.
+
+        Only a PNG or SVG file can be registered (registry.FORMATS), and never a pasted picture, which
+        has no file of its own. The detected color is offered; the person may correct it, since a
+        printed or photographed code rarely keeps its exact color. Registering runs as a job
+        (making.register_picture) and refreshes the footer and the colors in use."""
         picture = self.state["picture"]
         if picture is None:
             self.status.set("Read a picture first")
@@ -229,6 +278,7 @@ class ReadTab:
         value = tk.StringVar(value=picture["color"])
         ttk.Entry(ask, textvariable=value, width=12).pack(anchor="w", padx=10)
 
+        # the Register button: check the color, close the dialog, register as a job
         def confirm():
             color = swatch.normalize_hex(value.get())
             if color == "":
@@ -236,6 +286,7 @@ class ReadTab:
                 return
             ask.destroy()
 
+            # on the window's thread when registering ends
             def done(outcome):
                 if not outcome["ok"]:
                     messagebox.showerror("Register", outcome["error"])
@@ -250,6 +301,7 @@ class ReadTab:
         ttk.Button(ask, text="Register", command=confirm).pack(anchor="e", padx=10, pady=10)
 
     def find_read_text(self):
+        """Find it: search the Find tab by the text in the box (which the person may have edited)."""
         text = self.read_text.get("1.0", "end-1c").strip()
         if text != "":
             self.selector.set("qr_code")
@@ -259,6 +311,7 @@ class ReadTab:
             self.run_search()
 
     def open_read_link(self):
+        """Open the text in the box in the browser, only when it is an http(s) link and the person agrees."""
         text = self.read_text.get("1.0", "end-1c").strip()
         if not qr_codec.is_link(text):
             self.read_details.set("Only http:// and https:// links can be opened.")

@@ -7,7 +7,12 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""Input guard for text that arrives from outside: drop invisible control characters, cap the length.
+"""Input guard for outside text: drop invisible control characters, cap the length.
+
+Why: a terminal or log viewer obeys control characters, so a stored ESC [ 2 J can clear a screen
+when a row is printed, and the bidirectional controls can make text display in a different order
+than it is stored (a name that reads one way and is another). db.py runs every string it writes
+through clean().
 
 Removed: C0 controls except tab and newline, DEL, the whole C1 block (U+0080-U+009F, which includes
 U+009B, a one-character escape-sequence start), the line/paragraph separators U+2028/U+2029, and the
@@ -17,16 +22,22 @@ Everything else, including ordinary non-ASCII text, passes through unchanged.
 
 LIMIT = 240  # shared default cap, in characters
 
+# U+2028/U+2029, then the bidi controls U+202A-U+202E and U+2066-U+2069 (range ends are exclusive)
 _INVISIBLE = frozenset([0x2028, 0x2029, *range(0x202A, 0x202F), *range(0x2066, 0x206A)])
 
 
 def refused(ch):
+    """True when the one-character string ch is a character clean() removes (see the module doc)."""
     c = ord(ch)
     return (c < 0x20 and ch not in "\t\n") or 0x7F <= c <= 0x9F or c in _INVISIBLE
 
 
 def clean(text, limit=LIMIT):
-    """Return text without refused characters, cut to at most `limit` characters (None = no cap)."""
+    """Return text without refused characters, cut to at most `limit` characters (None = no cap).
+
+    None becomes "". The cut comes after the removal, so removed characters never use up the limit.
+    A limit of 0 or less gives "".
+    """
     if text is None:
         return ""
     if limit is not None:

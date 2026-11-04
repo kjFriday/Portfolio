@@ -1,3 +1,7 @@
 # Exploration: a color scores its OKLab distance to the nearest voated color, so new ground
-# comes first. far: from this distance on, a color counts as fully unexplored.
+# comes first. Read by factory.py for every preset that uses explore; changing a value makes
+# those rankers stale until python factory.py rewrites them.
+
+# far: from this distance on, a color counts as fully unexplored (the score is capped here).
+# 0.5 is half the OKLab distance from black to white. Must be above 0.
 far = 0.5

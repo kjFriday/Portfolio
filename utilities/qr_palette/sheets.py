@@ -7,8 +7,10 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette print sheets: many codes on a sheet of labels, or one code per page as a poster, written
-as SVG (one drawing per page) or as a PDF.
+"""QR Palette print sheets: codes laid out on label sheets or posters, as SVG or PDF.
+
+Many codes go on a sheet of labels, or one code on each page as a poster. SVG gives one drawing per
+page; PDF gives one file.
 
 The layouts are in sheets.json beside the program, plain JSON like the other settings files, read
 fresh each time a sheet is made. Each layout gives a page size, the top-left margins, a grid of cells
@@ -18,6 +20,23 @@ address under a code that has one, in the same 5 x 7 font as the pictures.
 The PDF is written here by hand (PDF 1.4): every module and every font pixel is a filled rectangle in
 the page's content stream, so it needs no fonts and no images, and the same codes always give the same
 bytes (no dates, no IDs).
+
+Who calls it: the Find tab's Print sheet (gui/find_tab.py) loads sheets.json with load_sheets() and
+prints with print_sheet(); selftest prints one too. It calls registry (read-only), qr_codec to draw each
+code again and lay out its label, and shortlinks.caption for the label's text.
+
+Flow (print_sheet)
+  1. codes_from_registry() reads the chosen records and draws each code's matrix again.
+  2. place() gives each code a cell; code_shape() turns it into filled rectangles in millimetres.
+  3. write_sheet() writes the rectangles as SVG pages or as one PDF.
+
+A PDF in brief: numbered objects (here a catalog, a page tree, then a page and its content stream for
+each page), a cross-reference table giving each object's byte offset, and a trailer naming the catalog.
+A content stream is drawing operators: "r g b rg" sets the fill color, "x y w h re" adds a rectangle
+and "f" fills every rectangle added since. PDF measures in points (1/72 inch) from the page's bottom
+left.
+
+Start reading at print_sheet().
 
 Records
   Result   {"ok": bool, "error": str, "value": any}
@@ -37,10 +56,12 @@ import qr_codec
 import registry
 import shortlinks
 
-MM_TO_PT = 72.0 / 25.4
+MM_TO_PT = 72.0 / 25.4  # 72 points and 25.4 mm to the inch
 BORDER = 4  # modules of quiet zone around every code, as in the pictures
-MAX_PAGE_MM = 2000.0
+MAX_PAGE_MM = 2000.0  # no layout size may be above 2 m: a bigger one is a typing mistake
 
+# The built-in layouts, used when sheets.json is missing, broken or holds none that work. The about
+# texts are data, written out with the layouts.
 DEFAULT_SHEETS = {
     "about": "Print sheets: how Print sheet in Find lays codes out on paper. Each layout has page_mm (width and "
              "height of the page), margins_mm (from the top and from the left to the first cell), columns and rows "
@@ -70,16 +91,19 @@ DEFAULT_SHEETS = {
 
 
 def ok_result(value):
+    """A successful Result holding `value`."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with the short error phrase `error` and the value None."""
     return {"ok": False, "error": error, "value": None}
 
 
 # --- sheets.json ---------------------------------------------------------------------------------
 
 def is_number(value):
+    """True for an int or a float that is not a bool (bool is a kind of int in Python)."""
     return not isinstance(value, bool) and isinstance(value, (int, float))
 
 
@@ -116,12 +140,15 @@ def check_layout(layout):
         layout["gutter_mm"][0]
     bottom = layout["margins_mm"][0] + layout["rows"] * layout["cell_mm"][1] + (layout["rows"] - 1) * \
         layout["gutter_mm"][1]
+    # 0.01 mm of slack: decimal millimetres do not always add up exactly in floating point
     if right > page[0] + 0.01 or bottom > page[1] + 0.01:
         return "the cells do not fit on the page"
     return ""
 
 
 def copy_sheets(sheets):
+    """A copy of a Sheets record with each layout's dict copied (its lists are shared), so a change to
+    the copy's layouts never reaches DEFAULT_SHEETS."""
     layouts = {}
     for name in sheets["layouts"]:
         layouts[name] = dict(sheets["layouts"][name])
@@ -190,13 +217,18 @@ def place(layout, count):
 
 
 def page_count(layout, count):
+    """How many pages `count` codes take on this layout; at least 1."""
     per_page = layout["columns"] * layout["rows"]
     return max(1, (count + per_page - 1) // per_page)
 
 
 def code_size(code, cell, label):
     """How a code fills its cell -> (module in mm, its height in modules with its label, label lines, font
-    pixel in sixteenths of a module)."""
+    pixel in sixteenths of a module).
+
+    The code's side is its matrix plus BORDER modules of quiet zone on each side; the label band is
+    caption_size's height in sixteenths, turned into modules. The module is the smaller of the cell's
+    width over the side and its height over the whole height, so the code and label fit both ways."""
     side = code["matrix"]["size"] + 2 * BORDER
     grid = qr_codec.SVG_GRID
     lines = []
@@ -223,7 +255,15 @@ def smallest_module(layout, codes):
 def code_shape(code, cell, label):
     """A code drawn as large as its cell allows, quiet zone and label included, centred -> Shape.
     Runs of dark modules along a row are one rectangle each; so are runs of a label's font pixels.
-    The label is laid out as the pictures lay it out, in sixteenths of a module."""
+    The label is laid out as the pictures lay it out, in sixteenths of a module.
+
+    Steps:
+    1. Size the code (code_size) and centre it, label included, in its cell.
+    2. Each run of dark modules along a row becomes one rectangle, in millimetres.
+    3. The label's font pixels sit below the quiet zone (top = side * grid, in sixteenths); a pixel that
+       continues the run on its left widens it. These runs are 3-item lists, still in sixteenths.
+    4. Turn the 3-item runs into millimetre rectangles, so every rectangle is [left, top, width, height].
+    """
     matrix = code["matrix"]
     size = matrix["size"]
     side = size + 2 * BORDER
@@ -275,7 +315,7 @@ def number(value):
     """A length for SVG or PDF, as short as it can be: 12.5, 3, 0.333."""
     text = "%.3f" % value
     text = text.rstrip("0").rstrip(".")
-    if text in ("-0", ""):
+    if text in ("-0", ""):  # a tiny negative value rounds to "-0.000"
         return "0"
     return text
 
@@ -303,7 +343,7 @@ def sheet_svg(layout, codes):
 # --- PDF -----------------------------------------------------------------------------------------
 
 def rgb_text(color):
-    """"#3366cc" -> "0.2 0.4 0.8", PDF's fill color operands."""
+    """"#3366cc" -> "0.2 0.4 0.8", PDF's fill color operands (each channel from 0 to 1)."""
     values = []
     for start in (1, 3, 5):
         values.append(number(int(color[start:start + 2], 16) / 255.0))
@@ -317,15 +357,25 @@ def page_content(page, height):
     for shape in page:
         lines.append(rgb_text(shape["color"]) + " rg")
         for rect in shape["rects"]:
+            # a rectangle's bottom edge, counted up from the page's bottom: height - top - its height
             lines.append(number(rect[0] * MM_TO_PT) + " " + number((height - rect[1] - rect[3]) * MM_TO_PT) + " " +
                          number(rect[2] * MM_TO_PT) + " " + number(rect[3] * MM_TO_PT) + " re")
-        lines.append("f")
+        lines.append("f")  # fill all the rectangles of this code at once
     return ("\n".join(lines) + "\n").encode("ascii")
 
 
 def sheet_pdf(layout, codes):
     """The codes laid out -> PDF 1.4 bytes: a catalog, a page tree, and for every page a page object
-    and its compressed content stream; then the cross-reference table and the trailer."""
+    and its compressed content stream; then the cross-reference table and the trailer.
+
+    Objects are numbered from 1: the catalog is 1, the page tree 2, and page i (from 0) is 3 + 2i with
+    its content stream at 4 + 2i. "N 0 R" refers to object N.
+
+    Steps:
+    1. Build every object's bytes; each content stream is zlib-compressed (/FlateDecode).
+    2. Write the header, then each object as "N 0 obj ... endobj", noting its byte offset.
+    3. Write the cross-reference table, the trailer and startxref, the table's own offset.
+    """
     width = number(layout["page_mm"][0] * MM_TO_PT)
     height = number(layout["page_mm"][1] * MM_TO_PT)
     pages = shapes_by_page(layout, codes)
@@ -341,6 +391,8 @@ def sheet_pdf(layout, codes):
                         str(4 + 2 * index) + " 0 R /Resources << >> >>").encode("ascii"))
         objects.append(("<< /Length " + str(len(stream)) + " /Filter /FlateDecode >>\nstream\n").encode("ascii") +
                        stream + b"\nendstream")
+    # the second line is a comment of four bytes above 127, which marks the file as binary for tools
+    # that move files between systems (PDF 1.4 reference, section 3.4.1)
     data = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     offsets = []
     for index in range(len(objects)):
@@ -348,6 +400,8 @@ def sheet_pdf(layout, codes):
         data.extend(str(index + 1).encode("ascii") + b" 0 obj\n" + objects[index] + b"\nendobj\n")
     table = len(data)
     data.extend(("xref\n0 " + str(len(objects) + 1) + "\n").encode("ascii"))
+    # every entry is exactly 20 bytes: a 10-digit offset, a 5-digit generation, n (in use) or f (free)
+    # and a two-byte line end; object 0 is always free, with generation 65535
     data.extend(b"0000000000 65535 f \n")
     for offset in offsets:
         data.extend(("%010d 00000 n \n" % offset).encode("ascii"))
@@ -364,7 +418,14 @@ def codes_from_registry(db_path, numbers):
     have, which the registry does not keep}. Each is drawn again from the text it holds, at its own level
     and at least its own version, with its short address as its label. A code whose text is masked (a
     Wi-Fi password the registry does not keep) is read from its picture instead, or left out. The
-    registry is only read, on the read-only rail, and closed before any code is drawn."""
+    registry is only read, on the read-only rail, and closed before any code is drawn.
+
+    Steps:
+    1. Read every chosen Row in one read-only visit.
+    2. For each: skip a record that is gone; count a logo the sheet cannot show.
+    3. A masked code's text comes from reading its picture file again.
+    4. Encode the text (mask -1: the best of the eight) and add its short address as the caption.
+    """
     opened = registry.connect(db_path, True)
     if not opened["ok"]:
         return opened
@@ -416,6 +477,8 @@ def page_paths(path, pages):
 
 
 def write_file(path, data):
+    """Write bytes to `path` through PATH.part and os.replace, so a failed write leaves no half file
+    -> Result path."""
     temporary = path + ".part"
     try:
         handle = open(temporary, "wb")
@@ -435,7 +498,8 @@ def write_file(path, data):
 
 def print_sheet(db_path, numbers, layout, path):
     """The registered codes `numbers` on a sheet at `path` -> Result {"files", "pages", "codes", "skipped",
-    "without_logo", "smallest_module_mm"}."""
+    "without_logo", "smallest_module_mm"}. smallest_module_mm lets the window warn when codes come
+    out too small to scan."""
     found = codes_from_registry(db_path, numbers)
     if not found["ok"]:
         return found

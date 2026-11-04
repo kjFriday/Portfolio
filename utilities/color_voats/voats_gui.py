@@ -22,6 +22,20 @@ Records
          included; "more" is the Show more button or the caught-up note, "empty" the note for no posts
   Smoke  {"app_id", "version", "title", "icon_set", "preset", "tabs", "posts", "cards_shown", "vote_ok",
          "save_ok", "comment_ok", "saved_tab_ok", "post_ok"}: the report --smoke FILE writes
+
+Main flow
+  1. color_voats.main loads the ranker and calls run_gui(), which makes a VoatsWindow and runs it.
+  2. __init__ sets the Windows identity, loads the store, builds the tabs and fills the Feed tab.
+  3. Each button handler calls one voats_core function, saves (keep) and redraws the cards of that
+     color (each_card, refresh_card); deleting a post also drops its cards (drop_card).
+  4. Refresh, a sort change or a preset change rebuilds the Feed tab (refresh_feed, show, more).
+Tk runs everything on its one thread; no handler blocks for long except ranking, which is fast.
+
+Scrolling a list of widgets in Tk: a Canvas cannot scroll a Frame directly, so each feed puts one
+inner Frame inside the canvas as a window item (create_window), resizes the scroll region whenever
+the frame changes size (fit_content) and the frame's width whenever the canvas does (fit_column).
+
+Start reading at VoatsWindow.__init__, then make_card and refresh_feed.
 """
 
 import json
@@ -36,7 +50,7 @@ from voats_core import (APP_ID, CAPTION_LIMIT, HERE, add_comment, add_post, all_
                         delete_post, empty_store, feed_order, load_ranker, load_store, my_vote, normalize_hex,
                         save_store, saved_colors, toggle_save, vote, when_text)
 
-ICON_FILE = os.path.join(HERE, "icon", "app.ico")
+ICON_FILE = os.path.join(HERE, "icon", "app.ico")  # also setup.json's icon
 PAGE = 20  # posts shown at a time; "Show more" adds the next page
 
 # Sizes in pixels at 96 DPI; the window scales them to the screen.
@@ -58,6 +72,8 @@ SAVED_TAB = 1
 NEW_POST_TAB = 2
 SMOKE_DELAY = 800  # milliseconds a --smoke run lets the window settle before it uses it
 
+# The palette: a light feed background, white cards and a muted grey for secondary text. A button's
+# colors are (background, text) pairs; each "on" pair is a pale tint with a dark text of the same hue.
 FEED_BACKGROUND = "#eef0f3"
 CARD = "#ffffff"
 CARD_EDGE = "#dadde1"
@@ -71,22 +87,36 @@ SAVE_ON = ("#e3ecfd", "#1d4ed8")
 
 
 def windows_identity():
-    """Own taskbar button (not Python's) and crisp text on scaled displays. Windows only."""
+    """Own taskbar button (not Python's) and crisp text on scaled displays. Windows only.
+
+    Side effects: sets two process-wide Windows settings; elsewhere it does nothing. A missing DLL or
+    function (shcore.dll needs Windows 8.1) is caught and ignored, and the error codes the calls
+    return are not checked: the window still works, only grouped under Python or scaled up blurrily.
+    """
     if os.name != "nt":
         return
     try:
         import ctypes
+        # the AppUserModelID is what the taskbar groups windows and pins shortcuts by; without it the
+        # window joins python.exe's button. It matches setup.json's appUserModelId for the shortcut
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        # 1 is PROCESS_SYSTEM_DPI_AWARE: Tk draws at the real pixel size instead of Windows stretching
+        # a 96 DPI bitmap; size_window then scales the layout by the screen's DPI itself
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
         pass
 
 
 def set_icon(window):
-    """The pixel icon on the window and its dialogs -> True when it was set."""
+    """The pixel icon on the window and its dialogs -> True when it was set.
+
+    False when icon/app.ico is missing or Tk cannot use it (Tk reads .ico files only on Windows);
+    the smoke report records the result as icon_set.
+    """
     if not os.path.isfile(ICON_FILE):
         return False
     try:
+        # default= sets the icon for this window and every toplevel made later, such as the dialogs
         window.iconbitmap(default=ICON_FILE)
     except Exception:
         return False
@@ -104,7 +134,16 @@ class VoatsWindow:
     def __init__(self, ranker, preset, data_file, smoke_path, version):
         """Open the window on the store in `data_file` (an empty store in memory when `smoke_path` is set,
         which also schedules the smoke run), with For you ranked by `ranker`, the module of `preset`.
-        `version` goes in the title."""
+        `version` goes in the title.
+
+        Steps:
+          1. Set the Windows identity, then load the store (a smoke run never reads or writes the
+             real one).
+          2. Make the Tk root, size it to the screen, set the icon and fonts, build the tabs and bind
+             the keys and the wheel.
+          3. Fill the Feed tab and greet in the status bar; a smoke run schedules its script.
+        Every attribute the handlers use is set here or by the make_* methods it calls.
+        """
         self.data_file = data_file
         self.smoke_path = smoke_path
         self.version = version
@@ -137,7 +176,11 @@ class VoatsWindow:
 
     def size_window(self):
         """Size the window to the column and the screen. self.scale is the screen's pixels per inch over 96
-        (1.0 at 100 %, 1.5 at 150 %); self.column is the feed column's width in pixels."""
+        (1.0 at 100 %, 1.5 at 150 %); self.column is the feed column's width in pixels.
+
+        The height is WINDOW_HEIGHT, or less on a short screen so the taskbar stays visible.
+        """
+        # winfo_fpixels("1i") is how many pixels Tk counts in one inch; Windows' 100 % is 96 DPI
         self.scale = self.window.winfo_fpixels("1i") / 96.0
         self.column = int(round(COLUMN * self.scale))
         height = min(int(round(WINDOW_HEIGHT * self.scale)),
@@ -158,8 +201,13 @@ class VoatsWindow:
         self.mono = tkfont.nametofont("TkFixedFont")
 
     def make_tabs(self):
-        """The status bar at the bottom and the notebook with its three tabs and their contents."""
+        """The status bar at the bottom and the notebook with its three tabs and their contents.
+
+        The tabs are added in the order FEED_TAB, SAVED_TAB, NEW_POST_TAB number them.
+        """
         self.status = ttk.Label(self.window, anchor="w", padding=(10, 3))
+        # packed before the notebook: pack gives space in order, so the bar keeps its line when the
+        # window shrinks and the notebook takes what is left
         self.status.pack(side="bottom", fill="x")
         self.tabs = ttk.Notebook(self.window)
         self.tabs.pack(fill="both", expand=True)
@@ -221,7 +269,10 @@ class VoatsWindow:
         self.tabs.bind("<<NotebookTabChanged>>", self.tab_changed)
         self.caption_entry.bind("<Return>", lambda event: self.publish())
         self.window.bind("<F5>", lambda event: self.refresh_feed())
+        # bind_all: the wheel event goes to the widget under the pointer, usually a card's label or
+        # frame, not the canvas, so it is caught for every widget and wheel() picks the feed
         self.window.bind_all("<MouseWheel>", self.wheel)
+        # X11 Tk (before 8.7) sends no <MouseWheel>; the wheel arrives as buttons 4 (up) and 5 (down)
         if self.window.tk.call("tk", "windowingsystem") == "x11":
             self.window.bind_all("<Button-4>", self.wheel)
             self.window.bind_all("<Button-5>", self.wheel)
@@ -262,12 +313,17 @@ class VoatsWindow:
         tk.Label(top, text="You", font=self.bold, background=COMMENT_BACKGROUND).pack(side="left")
         tk.Label(top, text=" · " + when_text(comment["when"], time.time()), font=self.small, foreground=MUTED,
                  background=COMMENT_BACKGROUND).pack(side="left")
+        # the lambda captures this call's color and index, which never change after it is made
         self.link(top, "Delete", COMMENT_BACKGROUND, lambda: self.remove_comment(color, index)).pack(side="right")
         tk.Label(bubble, text=comment["text"], anchor="w", justify="left", background=COMMENT_BACKGROUND,
                  wraplength=self.column - int(round(COMMENT_MARGIN * self.scale))).pack(fill="x", padx=8, pady=(2, 6))
 
     def refresh_card(self, card):
-        """Redraw a card from the store: Good, Bad and Save, the comment count and every comment."""
+        """Redraw a card from the store: Good, Bad and Save, the comment count and every comment.
+
+        The counts on Good and Bad are your own vote (0 or 1): the store holds one person's votes.
+        The comments are destroyed and drawn again, so their Delete indexes always match the store.
+        """
         color = card["color"]
         mine = my_vote(self.store, color)
         if mine == 1:
@@ -294,7 +350,11 @@ class VoatsWindow:
 
     def make_card(self, feed, post):
         """Add a card for `post` at the end of `feed`: who posted it and when, the color, its caption and
-        hex code, Good, Bad and Save, the comments and a box to write one."""
+        hex code, Good, Bad and Save, the comments and a box to write one.
+
+        The card is stored in feed["cards"] under its color, which is how each_card finds it later.
+        Its buttons start blank; refresh_card at the end gives them their text and colors.
+        """
         color = post["color"]
         card = {"color": color}
         frame = tk.Frame(feed["inner"], background=CARD, highlightthickness=1, highlightbackground=CARD_EDGE)
@@ -310,13 +370,14 @@ class VoatsWindow:
                  background=CARD).pack(side="left")
         if post["mine"]:
             self.link(head, "Delete post", CARD, lambda: self.remove_post(color)).pack(side="right")
-        tk.Frame(frame, background=color, height=int(round(SWATCH * self.scale))).pack(fill="x")
+        tk.Frame(frame, background=color, height=int(round(SWATCH * self.scale))).pack(fill="x")  # the post itself
         tk.Label(frame, text=post["caption"], anchor="w", justify="left", background=CARD,
                  wraplength=self.column - int(round(CAPTION_MARGIN * self.scale))).pack(fill="x", padx=12, pady=(10, 0))
         tk.Label(frame, text=color, font=self.mono, anchor="w", foreground=MUTED, background=CARD).pack(fill="x", padx=12)
         actions = tk.Frame(frame, background=CARD)
         actions.pack(fill="x", padx=8, pady=8)
-        card["good"] = tk.Button(actions, relief="flat", borderwidth=0, padx=10, pady=4, cursor="hand2",
+        # tk.Button rather than ttk: the native Windows ttk theme ignores a button's background color
+        card["good"] =tk.Button(actions, relief="flat", borderwidth=0, padx=10, pady=4, cursor="hand2",
                                  command=lambda: self.press(color, 1))
         card["bad"] = tk.Button(actions, relief="flat", borderwidth=0, padx=10, pady=4, cursor="hand2",
                                 command=lambda: self.press(color, -1))
@@ -343,8 +404,11 @@ class VoatsWindow:
 
     def make_feed(self, parent):
         """A scrolling feed in `parent`: a canvas showing one frame of cards, centered and no wider than the
-        column -> Feed record, also added to self.feeds."""
-        canvas = tk.Canvas(parent, background=FEED_BACKGROUND, highlightthickness=0, borderwidth=0,
+        column -> Feed record, also added to self.feeds.
+
+        yscrollincrement sets one scroll unit (SCROLL_UNIT, scaled) for wheel() and the scrollbar arrows.
+        """
+        canvas =tk.Canvas(parent, background=FEED_BACKGROUND, highlightthickness=0, borderwidth=0,
                            yscrollincrement=int(round(SCROLL_UNIT * self.scale)))
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -370,7 +434,11 @@ class VoatsWindow:
 
     def show(self, feed, order, empty_text):
         """Fill `feed` afresh with the posts in `order`, a page at a time, or with `empty_text` when there are
-        none, and scroll it to the top."""
+        none, and scroll it to the top.
+
+        Steps: destroy the old cards and notes, keep a copy of `order` (drop_card changes it later),
+        reset the paging, show the empty note if needed, then draw the first page with more().
+        """
         for color in feed["cards"]:
             feed["cards"][color]["frame"].destroy()
         feed["cards"] = {}
@@ -388,7 +456,11 @@ class VoatsWindow:
 
     def more(self, feed):
         """Add the next PAGE places of the feed's order as cards (a deleted color is skipped), then Show more,
-        or a caught-up note at the end."""
+        or a caught-up note at the end.
+
+        The old Show more button is destroyed first, so the new cards and the new button land below
+        the cards already shown (pack adds widgets at the end of the frame).
+        """
         posts = {}
         for post in all_posts(self.store):
             posts[post["color"]] = post
@@ -413,6 +485,7 @@ class VoatsWindow:
         """Take a deleted post out of `feed`: its place in the order (so paging carries on where it was) and
         its card."""
         if color in feed["order"]:
+            # a place already paged in shifts every later place down by one, so "shown" shifts with it
             if feed["order"].index(color) < feed["shown"]:
                 feed["shown"] = feed["shown"] - 1
             feed["order"].remove(color)
@@ -519,13 +592,19 @@ class VoatsWindow:
 
     def wheel(self, event):
         """The mouse wheel scrolls the open tab's feed while the pointer is over it. X11 reports buttons 4 (up)
-        and 5 (down), Windows deltas in multiples of WHEEL_NOTCH, macOS small deltas."""
+        and 5 (down), Windows deltas in multiples of WHEEL_NOTCH, macOS small deltas.
+
+        A positive delta means the wheel turned away from the user, which scrolls up (negative
+        steps). Any delta smaller than a notch still scrolls one step, so macOS wheels work.
+        """
         current = self.tabs.index(self.tabs.select())
         if current > SAVED_TAB:  # the New post tab has no feed
             return
         canvas = self.feed_view["canvas"]
         if current == SAVED_TAB:
             canvas = self.saved_view["canvas"]
+        # Tk path names nest like folders (".!notebook.!frame.!canvas.!frame..."), so a widget inside the
+        # canvas has the canvas's path as a prefix
         if not str(event.widget).startswith(str(canvas)):  # the pointer is not over a widget inside this canvas
             return
         if event.num == 4:
@@ -550,6 +629,7 @@ class VoatsWindow:
         if start == "":
             start = NEW_POST_COLOR
         chosen = colorchooser.askcolor(color=start, title="Pick a color", parent=self.window)
+        # askcolor returns ((r, g, b), "#rrggbb"), or (None, None) when the dialog is cancelled
         if chosen is not None and chosen[1] is not None:
             self.new_color.set(normalize_hex(chosen[1]))
 
@@ -571,7 +651,18 @@ class VoatsWindow:
 
     def write_smoke_report(self):
         """Use the window like a person would (vote, save and comment on the first post, open Saved, post a
-        color), write what worked to the smoke file as JSON and close the window."""
+        color), write what worked to the smoke file as JSON and close the window.
+
+        Steps:
+          1. Press Good, Save and Comment on the first For you card through the real buttons
+             (invoke), checking both the store and what the card now shows.
+          2. Open the Saved tab and check it holds exactly that post.
+          3. Open New post, type a color and caption, press Post, and check the post tops New in the
+             Feed tab.
+          4. Write the Smoke record to self.smoke_path and destroy the window, which ends mainloop.
+        The store is the in-memory one __init__ made for the smoke run, so nothing real is changed.
+        update() between steps lets Tk run the tab-change events the handlers rely on.
+        """
         self.window.update()
         first = self.feed_view["order"][0]
         card = self.feed_view["cards"][first]

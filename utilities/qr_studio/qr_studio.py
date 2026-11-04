@@ -40,6 +40,8 @@ Usage
 
 Exit codes: 0 done, 1 a failed read, make or self-test check, 2 --read, --smoke or --make without its
 values. Flags it does not know open the window.
+
+Start reading at main.
 """
 
 import sys
@@ -55,6 +57,8 @@ from studio_history import save_matrix
 from studio_options import option_value
 from studio_selftest import selftest
 
+# --version prints both; the window shows the name in its About box, and the version there, in its
+# title bar and in the smoke report
 __version__ = "0.1.0"
 APP_NAME = "Generic Company QR Studio"
 
@@ -66,7 +70,11 @@ def run_gui(smoke_path):
 
 
 def command_read(path):
-    """--read: print the text of the code in the picture at `path` -> exit code (1 when nothing was read)."""
+    """--read: print the text of the code in the picture at `path` -> exit code (1 when nothing was read).
+
+    The picture must be PNG, PGM or PPM: the command line uses only the codec's own readers, not Tk.
+    On failure the reason is printed instead: the file error, or why decode_image found no code.
+    """
     loaded = load_image_file(path)
     if not loaded["ok"]:
         print(loaded["error"])
@@ -75,17 +83,22 @@ def command_read(path):
     if not reading["ok"]:
         print(reading["error"])
         return 1
-    sys.stdout.write(reading["value"]["text"] + "\n")
+    sys.stdout.write(reading["value"]["text"] + "\n")  # the text exactly, for scripts to capture
     return 0
 
 
 def command_make(arguments):
-    """--make TEXT OUT: write TEXT as a level M code, 8 pixels per module, to OUT (.png or .svg) -> exit code."""
+    """--make TEXT OUT: write TEXT as a level M code, 8 pixels per module, to OUT (.png or .svg) -> exit code.
+
+    `arguments` is the whole command line; TEXT and OUT are the two words after --make. Exit 2 when
+    either is missing, 1 when the text does not fit in any version or the file cannot be written.
+    The version is the smallest that fits and the mask the best of the eight by penalty score.
+    """
     index = arguments.index("--make")
     if index + 2 >= len(arguments):
         print("--make needs TEXT and an output file")
         return 2
-    made = encode_text(arguments[index + 1], "M", 1, -1)
+    made = encode_text(arguments[index + 1], "M", 1, -1)  # min_version 1: smallest that fits; mask -1: best
     if not made["ok"]:
         print(made["error"])
         return 1
@@ -99,7 +112,16 @@ def command_make(arguments):
 
 def main(arguments):
     """Run the command line `arguments` (see Usage) -> the exit code. The first of --version, --selftest,
-    --make and --read that is present wins; otherwise the window opens, as a smoke run with --smoke FILE."""
+    --make and --read that is present wins; otherwise the window opens, as a smoke run with --smoke FILE.
+
+    Steps:
+      1. --version prints the name and version.
+      2. --selftest runs studio_selftest.selftest and returns its code.
+      3. --make hands the whole list to command_make, which finds its own two values.
+      4. --read with a value reads that picture; --read as the last word is a usage error (2).
+      5. --smoke as the last word is a usage error (2); otherwise the window opens, and with a FILE
+         it writes the smoke report there and closes itself.
+    """
     if "--version" in arguments:
         print(APP_NAME + " " + __version__)
         return 0

@@ -30,6 +30,9 @@ Jobs
 storage_manager.py imports this module only when it opens the window, so --selftest, --version and the
 core never load tkinter. ctypes is imported inside windows_identity. The program's name, id, version and
 icon come from storage_manager.py.
+
+Start reading at StorageWindow.__init__ and run_job, then analyze: one analysis shows how a job's
+messages fill the views. Changes on disk all go through apply_and_forget (or apply_organize) and undo.
 """
 
 import json
@@ -84,9 +87,13 @@ def windows_identity():
         return
     try:
         import ctypes
+        # the AppUserModelID groups the window under its own taskbar button and icon instead of python.exe's
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        # 1 = PROCESS_SYSTEM_DPI_AWARE: Tk draws at the display's scale instead of being stretched (blurry)
+        # by Windows; it must run before the first window is made, so before tk.Tk()
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
+        # older Windows without shcore.dll (before 8.1): the window still works, only less crisp
         pass
 
 
@@ -95,6 +102,7 @@ def set_icon(window):
     if not os.path.isfile(ICON_FILE):
         return False
     try:
+        # default= applies the .ico to every toplevel made later too, such as the share dialog
         window.iconbitmap(default=ICON_FILE)
     except Exception:
         return False
@@ -141,6 +149,17 @@ class StorageWindow:
     """
 
     def __init__(self, smoke_path):
+        """Build the whole window, empty; start() fills it in.
+
+        smoke_path: where --smoke writes its report, "" for a normal run. Reads the settings file. Creates
+        the Tk root, so it must run on the thread that will run mainloop.
+
+        Steps:
+          1. Load the settings and set up the shared state (listed below, one line each).
+          2. Make the Tk window with the saved size, the icon and the styles.
+          3. Build the top bar, status bar and sidebar, then the views (gui_views.py), in the fixed order.
+          4. Bind the window's events.
+        """
         self.smoke_path = smoke_path  # where --smoke writes its report; "" for a normal run
         self.path_to_settings = settings_path()
         self.settings = load_settings(self.path_to_settings)
@@ -215,6 +234,7 @@ class StorageWindow:
         self.line_height = self.base_font.metrics("linespace")
         size = self.base_font.cget("size")
         self.title_font = self.base_font.copy()
+        # Tk font sizes are points when positive and pixels when negative, so "bigger" is size - 5 there
         if size < 0:
             self.title_font.configure(size=size - 5, weight="bold")
         else:
@@ -274,6 +294,8 @@ class StorageWindow:
         self.sidebar.column("info", width=150, anchor="e", stretch=False)
         self.sidebar.pack(fill="both", expand=True)
         self.sidebar.tag_configure("section", font=self.strong_font)
+        # each view is a sidebar row whose iid is its VIEWS key; a section is a bold parent row
+        # ("section-clean-up") made the first time one of its views needs it
         for entry in VIEWS:
             parent = ""
             if entry[2] != "":
@@ -317,6 +339,10 @@ class StorageWindow:
 
     # --- small helpers -------------------------------------------------------------------------------
     def log(self, message):
+        """Add a time-stamped line to the Activity view and scroll to it. Tk thread only.
+
+        The text widget stays disabled so the user cannot type in it; it is enabled just for the insert.
+        """
         if self.log_text is None:
             return
         self.log_text.configure(state="normal")
@@ -330,14 +356,22 @@ class StorageWindow:
         return label
 
     def rel(self, path):
+        """path as the lists show it: relative to the analyzed folder, or whole before any analysis."""
         if self.root == "":
             return path
         return relative_path(self.root, path)
 
     def ask(self, question):
+        """Ask a yes/no question in a modal dialog over the window -> True for Yes."""
         return messagebox.askyesno(APP_NAME, question, parent=self.window)
 
     def refresh_buttons(self):
+        """Enable or disable every button for the current state.
+
+        A view button is enabled when no job runs (or it is in usable_when_busy) and its predicate is
+        true; a predicate that raises (say, a widget not filled in yet) counts as false. Browse and Analyze
+        need no job running, Undo also needs an undo log in the analyzed folder, Cancel needs a job.
+        """
         busy = self.busy
         for pair in self.buttons:
             enabled = False
@@ -360,6 +394,11 @@ class StorageWindow:
         self.cancel_button.configure(state="normal" if busy else "disabled")
 
     def show_progress(self, item):
+        """Show a progress report, item = (text, done, total, unit) as in records.py, in the status bar.
+
+        With a known total the bar fills to done/total and the line says "done of total"; with total 0
+        the bar bounces (indeterminate mode) and the line counts what is done so far.
+        """
         text = item[0]
         done = item[1]
         total = item[2]
@@ -382,7 +421,20 @@ class StorageWindow:
 
     def run_job(self, label, work, finish, on_message, on_fail):
         """Run work(post) on a worker thread. post(kind, value) sends messages back; the window polls
-        for them, so Tk is only touched from its own thread. finish(result) runs on success."""
+        for them, so Tk is only touched from its own thread. finish(result) runs on success.
+
+        label: the job's name for the status line and the Activity log. work(post) runs on the worker
+        thread and returns a Result; an exception becomes failure("unexpected error: ..."). on_message(kind,
+        value) gets every message but "progress", on the Tk thread (None ignores them). on_fail(result)
+        runs on failure, after the error is shown and logged (None for nothing more). Does nothing while
+        another job runs.
+
+        Steps:
+          1. Mark the window busy, clear the cancel flag, start the bar bouncing and disable the buttons.
+          2. Start the worker as a daemon thread (closing the window does not wait for it).
+          3. Every POLL_MS, poll drains the queue and shows the newest progress, until the worker is done.
+          4. Then show the outcome, call finish or on_fail, and enable the buttons again.
+        """
         if self.busy:
             return
         self.busy = True
@@ -391,9 +443,11 @@ class StorageWindow:
         holder = {"result": None, "done": False}
 
         def post(kind, value):
+            """Queue a (kind, value) message for the Tk thread; safe to call from the worker."""
             messages.put((kind, value))
 
         def worker():
+            """Run work on the worker thread and leave its Result in holder; never touches Tk."""
             try:
                 result = work(post)
             except Exception as e:  # keep the window alive whatever happens in a job
@@ -402,6 +456,7 @@ class StorageWindow:
             holder["done"] = True
 
         def poll():
+            """Read the job's messages on the Tk thread; reschedule itself until the job is done, then end it."""
             # "done" is read before the queue is emptied: once it is true every message is already queued,
             # so none is left unread when the job ends.
             finished = holder["done"]
@@ -447,16 +502,23 @@ class StorageWindow:
         self.window.after(POLL_MS, poll)
 
     def progress_sender(self, post):
+        """A progress callback for the core (see records.py) that posts each report as a "progress" message."""
         def send(text, done, total, unit):
+            """Post one progress report; runs on the worker thread."""
             post("progress", (text, done, total, unit))
         return send
 
     def cancel(self):
+        """Ask the running job to stop: set the shared cancel flag; the core functions check it as they go."""
         self.cancel_flag[0] = True
         self.status_var.set("Cancelling\u2026")
         self.log("cancel requested")
 
     def report_apply(self, result, verb):
+        """Log and show the outcome of apply_moves or apply_copies: verb ("Moved", "Copied"...) and counts.
+
+        Each error goes to the Activity log; the status line only counts them.
+        """
         info = result["value"]
         self.log("  " + verb + " " + plural(info["done"], "item"))
         for error in info["errors"]:
@@ -468,6 +530,11 @@ class StorageWindow:
 
     # --- views: the parts they share ---------------------------------------------------------------
     def make_view(self, key, title):
+        """Add a view under key: a frame in main's one grid cell with a title, a subtitle and an actions row.
+
+        -> view {"frame", "subtitle" (a StringVar), "actions" (the frame add_button fills)}. Every view
+        shares the cell; show_view raises the one shown.
+        """
         frame = ttk.Frame(self.main)
         frame.grid(row=0, column=0, sticky="nsew")
         ttk.Label(frame, text=title, style="Title.TLabel").pack(anchor="w")
@@ -480,6 +547,11 @@ class StorageWindow:
         return view
 
     def add_button(self, view, text, command, predicate, primary_style):
+        """Add a button to view's actions row, left to right in call order -> the ttk.Button.
+
+        command runs on click; predicate() -> bool says when it is enabled (see refresh_buttons);
+        primary_style draws it bold, for the view's main action.
+        """
         style_name = "Primary.TButton" if primary_style else "TButton"
         button = ttk.Button(view["actions"], text=text, command=command, style=style_name)
         button.pack(side="left", padx=(0, 6))
@@ -487,7 +559,17 @@ class StorageWindow:
         return button
 
     def make_table(self, parent, columns, values, sort_keys):
-        """columns: list of (key, heading, width, anchor, stretch). values(row) -> tuple for a row."""
+        """A sortable list with a scrollbar and a note line under it -> the table record.
+
+        columns: list of (key, heading, width in pixels, anchor "w"/"e"/"center", stretch). values(row) ->
+        tuple for a row, one text per column. sort_keys: column key -> sort key function of a row;
+        clicking a heading not in it does nothing. The caller packs table["frame"].
+
+        The table record: {"tree": the Treeview, "frame": its holder, "rows": the rows in shown order,
+        "values", "sort_keys", "sorted_by": key or "", "descending": bool, "note": StringVar under the
+        list, "extra_note": a note of the table's own that fill_table puts back}. A row's iid is its
+        index in rows, so picked_rows can map the selection back.
+        """
         holder = ttk.Frame(parent)
         keys = []
         for column in columns:
@@ -509,6 +591,10 @@ class StorageWindow:
         return table
 
     def fill_table(self, table, rows):
+        """Replace a table's rows; only the first MAX_ROWS are shown, but table["rows"] keeps them all.
+
+        A cut list says so in its note; otherwise the note is the table's extra_note.
+        """
         tree = table["tree"]
         tree.delete(*tree.get_children())
         table["rows"] = rows
@@ -526,6 +612,7 @@ class StorageWindow:
             table["note"].set(table["extra_note"])  # a note of the table's own that sorting must keep
 
     def sort_table(self, table, key):
+        """Sort a table by the column key (a heading click): a second click on it reverses the order."""
         if key not in table["sort_keys"]:
             return
         if table["sorted_by"] == key:
@@ -550,24 +637,34 @@ class StorageWindow:
         return rows
 
     def has_rows(self, table):
+        """Button predicate: the table has rows (shown or not)."""
         return len(table["rows"]) > 0
 
     def has_selection(self, table):
+        """Button predicate: at least one row of the table is selected."""
         return len(table["tree"].selection()) > 0
 
     def path_key(self, row):
+        """Sort key for a FileInfo row: its path, case ignored."""
         return row["path"].lower()
 
     def text_key(self, row):
+        """Sort key for a row that is a plain string (a folder or an error line), case ignored."""
         return row.lower()
 
     def file_values(self, row):
+        """The texts of a FileInfo row in a file list: path below the analyzed folder, on disk, size, changed."""
         name = self.rel(row["path"])
         if row["link"] is not None and row["link"] != "":
             name = name + "  (hard link)"  # one of several names: its space shows under the first one
         return (name, human_size(row["disk"]), human_size(row["size"]), human_date(row["modified"]))
 
     def reveal_first(self, table):
+        """Open Explorer (or the platform's file manager) with the first picked row selected.
+
+        Rows are FileInfo dicts or plain path strings; with nothing selected it is the table's first row.
+        Starts a process through desktop.launch.
+        """
         rows = self.picked_rows(table)
         if len(rows) > 0:
             target = rows[0]
@@ -576,10 +673,12 @@ class StorageWindow:
             launch(reveal_command(target))
 
     def double_click(self, table):
+        """Make a double-click on the table show the picked file in its folder."""
         table["tree"].bind("<Double-1>", lambda event: self.reveal_first(table))
 
     # --- Overview ------------------------------------------------------------------------------------
     def trash_folder(self):
+        """The analyzed folder's own trash folder, "" before any analysis. It may not exist yet."""
         if self.root == "":
             return ""
         return os.path.join(self.root, TRASH_DIR_NAME)
@@ -591,12 +690,16 @@ class StorageWindow:
     # Every new tree goes through set_map_tree. The list beside the map is refilled only when the tree or
     # the folder in the middle changed (map_serial, map_table_key).
     def map_ready(self):
+        """Button predicate: there is a map tree and nothing is rebuilding it."""
         return self.map_tree is not None and not self.map_pending
 
     def map_can_go_up(self):
+        """Button predicate: the map is ready and its centre is below the analyzed folder."""
         return self.map_ready() and self.map_center_node() is not self.map_tree
 
     def map_center_node(self):
+        """The Node in the middle of the map; when map_center is no longer in the tree (it was moved
+        away), the tree's root, and map_center is reset to the analyzed folder."""
         node = find_node(self.map_tree, self.root, self.map_center)
         if node is None:
             node = self.map_tree
@@ -644,12 +747,14 @@ class StorageWindow:
         self.map_pending = True
 
         def work(post):
+            """Worker thread: build the Node tree from the copied lists and mark the duplicate copies."""
             tree = build_folder_tree(root, files, trash)
             if groups is not None:
                 mark_wasted(tree, root, groups, keep)
             return success(tree)
 
         def finish(result):
+            """Tk thread: take the new tree and draw it if the map is still shown."""
             self.map_pending = False
             self.set_map_tree(result["value"])
             # The marks match only if the groups are still the ones the job was given.
@@ -659,6 +764,7 @@ class StorageWindow:
                 self.map_draw()
 
         def on_fail(result):
+            """Tk thread: keep the reason, so the map says it and is not rebuilt again and again."""
             self.map_pending = False
             self.map_build_error = result["error"]
             if self.view == "map":
@@ -898,6 +1004,7 @@ class StorageWindow:
     def map_target(self, event):
         """The Arc under the mouse, "centre", or None."""
         found = self.map_canvas.find_withtag("current")
+        # Tk's "current" tag marks the topmost canvas item under the mouse (disabled items are skipped)
         if len(found) == 0:
             return None
         if found[0] in self.map_items:
@@ -907,6 +1014,11 @@ class StorageWindow:
         return None
 
     def map_hover(self, event):
+        """Mouse moved over (or left) the map: outline the slice under it and describe it in the info line.
+
+        Off any slice, the info line goes back to the default help text and the cursor is a hand only
+        over a centre that can go up. Nothing changes while the pointer stays on the same slice.
+        """
         found = self.map_canvas.find_withtag("current")
         item = None
         if len(found) > 0 and found[0] in self.map_items:
@@ -931,14 +1043,17 @@ class StorageWindow:
         self.map_info.set(self.map_arc_text(arc, self.map_center_node()))
 
     def map_zoom(self, path):
+        """Put the folder path in the middle of the map and draw it again."""
         self.map_center = path
         self.map_draw()
 
     def map_zoom_from_menu(self, path):
+        """Zoom to path from the right-click menu, giving the canvas the keyboard focus first."""
         self.map_canvas.focus_set()  # so the Backspace the info line mentions goes up, as after a click
         self.map_zoom(path)
 
     def map_up(self):
+        """Move the map's centre up one folder, never above the analyzed folder."""
         if not self.map_can_go_up():
             return
         root = self.root
@@ -949,6 +1064,10 @@ class StorageWindow:
         self.map_zoom(parent)
 
     def map_click(self, event):
+        """A click on the map: the centre goes up a level, a folder slice zooms in, anything else does nothing.
+
+        Remembers the item clicked in map_pressed, which map_double_click compares against.
+        """
         self.map_canvas.focus_set()  # so Backspace goes up a level instead of editing the folder box
         found = self.map_canvas.find_withtag("current")
         self.map_pressed = found[0] if len(found) > 0 else None
@@ -973,11 +1092,13 @@ class StorageWindow:
             launch(reveal_command(target["path"]))
 
     def map_triple_click(self, event):
+        """A third quick click on the map; Tk sends it instead of another double-click."""
         # A third quick click: up again on the centre, nothing elsewhere (the file was shown already).
         if self.map_target(event) == "centre":
             self.map_up()
 
     def map_right_click(self, event):
+        """Pop up the map's menu for the slice or centre under the mouse: Zoom in (folders), open, show."""
         target = self.map_target(event)
         if target is None:
             return
@@ -1000,16 +1121,26 @@ class StorageWindow:
         self.map_menu.tk_popup(event.x_root, event.y_root)
 
     def map_resized(self, event):
+        """The canvas changed size: draw again once it has kept one size for MAP_REDRAW_MS.
+
+        Dragging a window edge sends a stream of <Configure> events; each one cancels the pending redraw
+        and schedules a new one (a debounce), so the map is drawn once the drag pauses.
+        """
         if self.map_redraw is not None:
             self.window.after_cancel(self.map_redraw)
         self.map_redraw = self.window.after(MAP_REDRAW_MS, self.map_resize_done)
 
     def map_resize_done(self):
+        """The debounced redraw after a resize; only draws while the map is the view shown."""
         self.map_redraw = None
         if self.view == "map":
             self.map_draw()
 
     def map_table_open(self, event):
+        """Enter (or a double-click) on "Biggest here": zoom into a folder row, show any other row in its folder.
+
+        Needs a selected row: picked_rows alone would fall back to every row.
+        """
         rows = self.picked_rows(self.map_table)
         if len(self.map_table["tree"].selection()) == 0 or len(rows) == 0:
             return
@@ -1019,11 +1150,16 @@ class StorageWindow:
             launch(reveal_command(rows[0]["path"]))  # select the file in its folder; never open it
 
     def map_table_double_click(self, event):
+        """A double-click on "Biggest here" opens the row like Enter does."""
         # Only a double-click on a row: not on a heading, a column divider or the empty space below.
         if self.map_table["tree"].identify_region(event.x, event.y) == "cell":
             self.map_table_open(event)
 
     def map_backspace(self, event):
+        """Backspace anywhere in the window goes up a level on the map, while the map is shown.
+
+        The binding is on the whole window, so text fields are skipped: there Backspace deletes text.
+        """
         if self.view != "map":
             return
         if isinstance(event.widget, (ttk.Entry, ttk.Combobox, ttk.Spinbox, tk.Entry, tk.Text)):
@@ -1032,6 +1168,11 @@ class StorageWindow:
 
     # --- Old files -------------------------------------------------------------------------------------
     def change_days(self):
+        """Take the Old files day count from its box: save it in the settings and list the old files again.
+
+        Text that is not a number puts the last good value back; 0 or less, or no change, does nothing.
+        Writes the settings file.
+        """
         try:
             days = int(self.days_var.get())
         except (ValueError, tk.TclError):
@@ -1048,9 +1189,14 @@ class StorageWindow:
 
     # --- Duplicates: the tree's rows are "g<N>" for group N and "g<N>:<i>" for its copy i --------------
     def has_groups(self):
+        """Button predicate: the comparison ran and found at least one group of duplicates."""
         return self.groups is not None and len(self.groups) > 0
 
     def selected_group_numbers(self):
+        """Group numbers with a selected row, the group's own row or one of its copies -> dict N -> True.
+
+        "g12" and "g12:3" both give 12: the part before ":" without its "g".
+        """
         numbers = {}
         for iid in self.dup_tree.selection():
             numbers[int(iid.split(":")[0][1:])] = True
@@ -1066,6 +1212,10 @@ class StorageWindow:
         return pairs
 
     def keep_selected(self):
+        """Make each selected copy the one its group keeps, then refresh the Duplicates view.
+
+        A group keeps one copy: choosing one drops any earlier choice in the same group from keep.
+        """
         groups = self.groups
         for pair in self.selected_copies():
             group = groups[pair[0]]
@@ -1080,6 +1230,10 @@ class StorageWindow:
         self.refresh_duplicates()
 
     def trash_duplicates(self):
+        """After asking, move every copy but the kept one to the trash, for the selected groups or all.
+
+        Moves files on a worker thread (apply_and_forget); undoable.
+        """
         groups = self.groups
         numbers = self.selected_group_numbers()
         chosen = []
@@ -1098,12 +1252,14 @@ class StorageWindow:
         self.apply_and_forget("Moving duplicates to the trash", moves, "Moved")
 
     def reveal_copy(self):
+        """Show the first selected copy in its folder; a selected group row alone does nothing."""
         pairs = self.selected_copies()
         if len(pairs) > 0:
             launch(reveal_command(self.groups[pairs[0][0]][pairs[0][1]]["path"]))
 
     # --- Empty folders ---------------------------------------------------------------------------------
     def remove_empty(self):
+        """After asking, remove the picked empty folders and the empty folders inside them; undoable."""
         chosen = {}
         for folder in self.picked_rows(self.empty_table):
             chosen[folder] = True
@@ -1115,6 +1271,7 @@ class StorageWindow:
 
     # --- Organize --------------------------------------------------------------------------------------
     def clear_organize(self):
+        """Drop the Organize preview (a mode change makes it stale) and show the view's help line."""
         self.org_moves = []
         self.fill_table(self.org_table, [])
         self.organize_view["subtitle"].set("Sorts the files directly inside the folder into subfolders. "
@@ -1122,12 +1279,17 @@ class StorageWindow:
         self.refresh_buttons()
 
     def preview_organize(self):
+        """Plan the Organize moves for the folder in the folder box, as a job, and list them. Moves nothing.
+
+        The folder and mode are read now, on the Tk thread; the job only gets plain values.
+        """
         folder = self.current_folder()
         if folder == "":
             return
         mode = self.org_mode.get()
 
         def finish(result):
+            """Tk thread: keep the plan for Apply, list it and say how many files go into how many folders."""
             self.org_moves = result["value"]
             self.org_root = folder
             self.fill_table(self.org_table, result["value"])
@@ -1140,6 +1302,7 @@ class StorageWindow:
         self.run_job("Planning", lambda post: plan_organize(folder, mode, self.cancel_flag), finish, None, None)
 
     def apply_organize(self):
+        """After asking, carry out the previewed Organize moves as a job; undoable from that folder."""
         moves = self.org_moves
         root = self.org_root
         if not self.ask("Move " + plural(len(moves), "file") + " into subfolders of " + root
@@ -1147,8 +1310,10 @@ class StorageWindow:
             return
 
         def finish(result):
+            """Tk thread: report, clear the preview, and analyze again when the results show that folder."""
             self.report_apply(result, "Moved")
             self.clear_organize()
+            # the new analysis starts from the event loop, after run_job's poll has finished with this job
             if self.report is not None and os.path.normcase(self.root) == os.path.normcase(root):
                 self.window.after(10, self.analyze)
 
@@ -1173,12 +1338,19 @@ class StorageWindow:
         self.refresh_buttons()
 
     def selected_share(self):
+        """The Share record of the first selected row in the Network list, or None."""
         chosen = self.net_table["tree"].selection()
         if len(chosen) == 0:
             return None
         return self.net_table["rows"][int(chosen[0])]["share"]
 
     def add_share_dialog(self):
+        """Open the modal Add network share dialog: share path, name and drive letter.
+
+        Add (or Enter) checks the fields and, when they are good, saves the share in the settings file
+        and refills the list; a bad field shows its problem in red and keeps the dialog open. No password
+        is asked or stored. grab_set makes the dialog modal: the main window takes no input until it closes.
+        """
         dialog = tk.Toplevel(self.window)
         dialog.title("Add network share")
         dialog.transient(self.window)
@@ -1202,8 +1374,10 @@ class StorageWindow:
         row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
 
         def save():
+            """Check the fields; save the new share and close the dialog, or show what is wrong."""
             unc = unc_var.get().strip()
             letter = letter_var.get().strip().upper()
+            # "z" is accepted for "Z:"
             if len(letter) == 1:
                 letter = letter + ":"
             if unc_host(unc) == "":
@@ -1229,9 +1403,14 @@ class StorageWindow:
         dialog.grab_set()
 
     def check_shares(self):
+        """Check every saved share as a job (ping the host, read the space) and show the outcome per row.
+
+        Each check runs OS commands and can take seconds; Cancel stops between shares.
+        """
         rows = list(self.net_rows)
 
         def work(post):
+            """Worker thread: check the shares in order -> Result(list of (row, ShareState))."""
             results = []
             for row in rows:
                 if is_cancelled(self.cancel_flag):
@@ -1240,6 +1419,7 @@ class StorageWindow:
             return success(results)
 
         def finish(result):
+            """Tk thread: write each share's status and space into its row, log it and refill the list."""
             for pair in result["value"]:
                 row = pair[0]
                 found = pair[1]
@@ -1257,12 +1437,14 @@ class StorageWindow:
         self.run_job("Checking shares", work, finish, None, None)
 
     def analyze_share(self):
+        """Put the selected share's path (its drive letter when it has one) in the folder box and analyze it."""
         share = self.selected_share()
         if share is not None:
             self.folder_var.set(share_path(share))
             self.analyze()
 
     def map_selected(self):
+        """Map the selected share to its drive letter ("net use", Windows) as a job, then check the shares."""
         share = self.selected_share()
         if share is None:
             return
@@ -1270,6 +1452,7 @@ class StorageWindow:
                      None, None)
 
     def unmap_selected(self):
+        """After asking, disconnect the selected share's drive letter as a job, then check the shares."""
         share = self.selected_share()
         if share is None or not self.ask("Disconnect " + share_path(share) + "?"):
             return
@@ -1277,9 +1460,11 @@ class StorageWindow:
                      lambda result: self.check_shares_later(), None, None)
 
     def check_shares_later(self):
+        """Start check_shares from the event loop: called from a job's finish, while run_job still ends that job."""
         self.window.after(10, self.check_shares)
 
     def remove_share(self):
+        """Remove the selected share from the saved list (settings file); nothing is disconnected."""
         share = self.selected_share()
         if share is None:
             return
@@ -1289,6 +1474,14 @@ class StorageWindow:
         self.rebuild_shares()
 
     def backup_to_share(self):
+        """Back up a folder the user picks to a folder of the same name on the selected share.
+
+        Steps:
+          1. Ask for the folder; the target is the share's path plus the folder's name.
+          2. A job compares the two (plan_sync) and lists the files that are new or changed.
+          3. After the user confirms the count and size, a second job copies them (apply_copies).
+        Nothing in the target is deleted.
+        """
         share = self.selected_share()
         if share is None:
             return
@@ -1301,6 +1494,7 @@ class StorageWindow:
         target = os.path.join(share_path(share), os.path.basename(folder))
 
         def finish(result):
+            """Tk thread: say when there is nothing to copy, else ask and start the copying job."""
             copies = result["value"]
             total = 0
             for copy in copies:
@@ -1322,15 +1516,23 @@ class StorageWindow:
 
     # --- Activity --------------------------------------------------------------------------------------
     def clear_log(self):
+        """Empty the Activity view (the Clear button)."""
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
 
     # --- refreshing the views from the state -----------------------------------------------------------
     def set_side(self, key, text):
+        """Set the short count shown beside a view's name in the sidebar."""
         self.sidebar.set(key, "info", text)
 
     def refresh_all(self):
+        """Push the current report and duplicate groups into the sidebar and every view.
+
+        With no report, clears the sidebar counts and the map. Otherwise: the sidebar counts, the
+        Overview (totals, drive, trash, what is worth a look, space by type), the file lists, then the
+        Duplicates view (refresh_duplicates) and the buttons. Tk thread only.
+        """
         report = self.report
         if report is None:
             for entry in VIEWS:
@@ -1408,6 +1610,11 @@ class StorageWindow:
         self.refresh_buttons()
 
     def refresh_duplicates(self):
+        """Refill the Duplicates tree: a bold row per group, then its copies, green for the kept one.
+
+        Groups come biggest saving first (as find_duplicates_in returns them); rows stop near MAX_ROWS,
+        always after a whole group. Without groups it says why (dup_note) instead.
+        """
         # The space map shows the duplicate copies too; redraw it now if it is on screen. (Its marks are
         # only recomputed where the groups or the kept copies change, which sets map_wasted_ok.)
         if self.view == "map":
@@ -1461,6 +1668,10 @@ class StorageWindow:
         self.refresh_buttons()
 
     def show_view(self, key):
+        """Show the view key: raise its frame over the others in main's cell and select it in the sidebar.
+
+        The map is drawn on showing, since it is not kept up to date while hidden.
+        """
         self.view = key
         self.views[key]["frame"].tkraise()
         if key == "map":
@@ -1469,6 +1680,8 @@ class StorageWindow:
             self.sidebar.selection_set(key)
 
     def on_sidebar(self, event):
+        """Sidebar selection changed: show that view. show_view selecting the row again fires this too,
+        which the key != self.view check turns into nothing."""
         chosen = self.sidebar.selection()
         if len(chosen) == 0:
             return
@@ -1484,6 +1697,8 @@ class StorageWindow:
 
     # --- the main actions ------------------------------------------------------------------------------
     def folder_choices(self):
+        """The folder box's list, built each time it opens: recent folders, the drives, then the saved
+        shares, each once (case ignored)."""
         choices = []
         seen = {}
         candidates = list(self.settings["recent"])
@@ -1499,6 +1714,7 @@ class StorageWindow:
         return choices
 
     def browse(self):
+        """Pick a folder in the system folder dialog, starting at the one in the box, and analyze it."""
         start = self.folder_var.get().strip()
         chosen = filedialog.askdirectory(parent=self.window, initialdir=start if start != "" else None)
         if chosen:
@@ -1520,7 +1736,17 @@ class StorageWindow:
 
     def analyze(self):
         """Analyze the folder in the box. The worker posts "scan" when the folders are read (the lists
-        fill in), then "tree" for the map, then compares the files and returns the duplicate groups."""
+        fill in), then "tree" for the map, then compares the files and returns the duplicate groups.
+
+        Steps (worker thread):
+          1. scan reads the folders -> ScanReport; posted as "scan".
+          2. build_folder_tree makes the map's Node tree; posted as "tree".
+          3. find_duplicates_in compares the files (the slow part) -> groups.
+          4. When that comparison found hard links the listing hid, count_links_once makes a corrected
+             report and the tree is built again; both go back with the groups.
+        On the Tk thread, on_message takes "scan" and "tree" as they come and finish takes the rest. A
+        failed or cancelled comparison keeps the report and says the duplicates were not compared.
+        """
         if self.busy:
             return
         root = self.current_folder()
@@ -1530,6 +1756,7 @@ class StorageWindow:
         cancel_flag = self.cancel_flag
 
         def work(post):
+            """Worker thread: scan, post the report and tree, compare -> Result({"groups", "report", "tree"})."""
             send = self.progress_sender(post)
             scanned = scan(root, LARGEST_COUNT, days, time.time(), cancel_flag, send)
             if not scanned["ok"]:
@@ -1550,6 +1777,10 @@ class StorageWindow:
             return success(found)
 
         def on_message(kind, value):
+            """Tk thread: "scan" makes the new report current and fills the views; "tree" gives the map its tree.
+
+            The queue keeps their order, so "scan" (which clears the old tree) is always handled first.
+            """
             if kind == "tree":
                 self.set_map_tree(value)
                 self.map_pending = False
@@ -1575,6 +1806,7 @@ class StorageWindow:
                     self.show_view("overview")
 
         def finish(result):
+            """Tk thread: take the corrected report and tree when there are any, then the duplicate groups."""
             found = result["value"]
             if found["report"] is not None:
                 counted_once = found["report"]["saved"]["links"] - self.report["saved"]["links"]
@@ -1595,6 +1827,7 @@ class StorageWindow:
                                 + human_size(savings["bytes"]) + " in duplicate copies")
 
         def on_fail(result):
+            """Tk thread: the scan or the comparison failed or was cancelled; keep what arrived and say why."""
             self.map_scanning = False
             if self.map_pending:  # the tree never arrived; build it here when the map is shown
                 self.map_pending = False
@@ -1612,10 +1845,15 @@ class StorageWindow:
             self.map_draw()  # "Reading folders…" instead of "Analyze a folder" while the first walk runs
 
     def apply_and_forget(self, label, moves, verb):
-        """Apply moves, then drop the moved paths from the results instead of analyzing again."""
+        """Apply moves, then drop the moved paths from the results instead of analyzing again.
+
+        label: the job's name; verb: the past tense report_apply shows ("Moved", "Removed"). Moves files
+        on a worker thread and writes the undo log (apply_moves).
+        """
         root = self.root
 
         def finish(result):
+            """Tk thread: report, then take what moved out of the report, the groups and the map."""
             self.report_apply(result, verb)
             gone = {}
             for move in result["value"]["moved"]:
@@ -1637,6 +1875,7 @@ class StorageWindow:
                      finish, None, None)
 
     def trash_rows(self, table):
+        """After asking, move a file list's picked rows (selected, or all) to the trash folder; undoable."""
         rows = self.picked_rows(table)
         if len(rows) == 0:
             return
@@ -1648,6 +1887,10 @@ class StorageWindow:
         self.apply_and_forget("Moving files to the trash", plan_trash(self.root, rows), "Moved")
 
     def undo(self):
+        """After asking, reverse the last batch in the analyzed folder's undo log as a job, then analyze again.
+
+        Ignored while a job runs or when that folder has no undo log (Ctrl+Z reaches here even then).
+        """
         root = self.root
         if self.busy or root == "" or not os.path.isfile(undo_log_path(root)):
             return
@@ -1655,16 +1898,22 @@ class StorageWindow:
             return
 
         def finish(result):
+            """Tk thread: report and analyze again, since files came back that the results do not list."""
             self.report_apply(result, "Restored")
             self.window.after(10, self.analyze)
 
         self.run_job("Undoing the last change", lambda post: undo_last(root), finish, None, None)
 
     def about(self):
+        """Show the About box: name, version, license and the icon's credit."""
         messagebox.showinfo("About", APP_NAME + " " + __version__ + "\n\nGeneric Company Inc. is fictional.\n"
                             "License: AGPL-3.0.\n\n" + ICON_CREDIT, parent=self.window)
 
     def on_delete(self, event):
+        """The Delete key runs the shown view's main action (primary), which asks first.
+
+        Skipped in text fields (where Delete edits text), while a job runs and before any analysis.
+        """
         if isinstance(event.widget, (ttk.Entry, ttk.Combobox, ttk.Spinbox, tk.Entry, tk.Text)):
             return
         if self.busy or self.report is None:
@@ -1673,6 +1922,10 @@ class StorageWindow:
             self.primary[self.view]()
 
     def close(self):
+        """Closing the window: ask a running job to stop, save the window's size and place, and close.
+
+        The worker is a daemon thread, so the process does not wait for it to notice the cancel.
+        """
         self.cancel_flag[0] = True
         self.settings["geometry"] = self.window.geometry()
         save_settings(self.path_to_settings, self.settings)

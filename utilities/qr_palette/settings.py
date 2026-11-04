@@ -7,13 +7,29 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette settings: one human-readable JSON file, settings.json, for everything a user may change.
+"""QR Palette settings: settings.json, one readable JSON file for all a user may change.
 
 The file lives in %LOCALAPPDATA%\\Generic Company Inc\\GenericCompany.QRPalette\\ (or wherever
 --settings points). The window writes it with every setting and its default the first time it runs,
 indented and with an "about" text in each section, so it reads like a form. Any setting left out, or
 not valid, uses its default and is reported; a file that is not valid JSON is never overwritten.
 --ecp and --mcp only read it. settings.example.json beside the program shows the defaults.
+
+Who calls it: qr_palette.main reads the file with load(), and app_settings.apply_settings hands the
+values to the modules; the window writes it with write_defaults() and save(). The tests compare
+example_text() with settings.example.json.
+
+Flow
+  1. load() starts from a copy of DEFAULTS and reads the file, when there is one.
+  2. Each setting in SPEC is checked by valid(): a missing one keeps its default quietly, a bad one
+     keeps it with a warning, and path settings are expanded.
+  3. save() writes changed settings into the file's own data, so keys added by hand stay, then loads
+     the file again.
+
+The "about" texts in DEFAULTS are data, not comments: they are written into settings.json and must
+match settings.example.json.
+
+Start reading at load().
 
 Records
   Result    {"ok": bool, "error": str, "value": any}
@@ -25,6 +41,7 @@ import json
 import math
 import os
 
+# Every setting with its default, grouped as in settings.json; load() starts from a copy of it.
 DEFAULTS = {
     "about": "QR Palette settings. Edit with any text editor while the program is closed. A setting that is "
              "left out or not valid uses its default (see settings.example.json and README.md). registry: the "
@@ -106,7 +123,8 @@ DEFAULTS = {
     },
 }
 
-# (section or "", key, kind, low, high or choices): what each setting may be
+# (section or "", key, kind, low, high or choices): what each setting may be. Kinds: path (text, then
+# expanded), text, int, number, bool, choice (low holds the choices) and name (a preset's file name).
 SPEC = (
     ("", "registry", "path", None, None),
     ("pictures", "folder", "path", None, None),
@@ -144,10 +162,12 @@ SPEC = (
 
 
 def ok_result(value):
+    """A successful Result holding `value`."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with the short error phrase `error` and the value None."""
     return {"ok": False, "error": error, "value": None}
 
 
@@ -188,6 +208,7 @@ def expand(path):
 
 
 def describe(kind, low, high):
+    """What a setting of this kind must be, in words for a warning ("a whole number from 1 to 40")."""
     if kind == "int":
         return "a whole number from " + str(low) + " to " + str(high)
     if kind == "number":
@@ -202,6 +223,8 @@ def describe(kind, low, high):
 
 
 def valid(value, kind, low, high):
+    """True when `value` is a usable setting of this kind and range (see SPEC). A name starts with a
+    letter and holds only lower-case ASCII letters, digits and _."""
     if kind in ("text", "path"):
         return isinstance(value, str)
     if kind == "name":
@@ -215,7 +238,7 @@ def valid(value, kind, low, high):
         return value in low
     if kind == "bool":
         return isinstance(value, bool)
-    if isinstance(value, bool):
+    if isinstance(value, bool):  # bool is a kind of int in Python: true must not pass as 1
         return False
     if kind == "int" and not isinstance(value, int):
         return False
@@ -226,7 +249,15 @@ def valid(value, kind, low, high):
 
 def load(path):
     """settings.json -> Settings record. Never fails: what cannot be used is reported in "warnings"
-    and replaced by its default."""
+    and replaced by its default.
+
+    Steps:
+    1. Start from a copy of DEFAULTS. A file that is not valid JSON, cannot be read or is not one
+       object is "broken": the defaults stand, with a warning.
+    2. For each SPEC entry take the file's value when it is valid, else keep the default (warning
+       only when the value was there but wrong). Expand path settings.
+    3. Hold queries.default_limit to max_limit.
+    """
     state = {"path": path, "state": "missing", "raw": {}, "values": copy_tree(DEFAULTS), "warnings": []}
     if os.path.isfile(path):
         try:
@@ -283,7 +314,14 @@ def load(path):
 def save(state, changes):
     """Write settings changed in the window -> Result path. `changes` is [(section, key, value)].
     The rest of the file, including anything added by hand, is kept as it was. A broken file is
-    never overwritten. Written to a temporary file first, then moved into place."""
+    never overwritten. Written to a temporary file first, then moved into place.
+
+    Steps:
+    1. Refuse a broken file. Start from the file's own data, or from DEFAULTS when there is no file.
+    2. Set each changed setting, making its section when it is missing or not an object.
+    3. Write NAME.tmp and move it into place.
+    4. Load the file again and keep its fresh state in `state`.
+    """
     if state["state"] == "broken":
         return fail(state["path"] + " is not valid JSON; fix it by hand first (nothing was saved)")
     raw = state["raw"]
@@ -302,6 +340,7 @@ def save(state, changes):
     try:
         if not os.path.isdir(folder):
             os.makedirs(folder)
+        # Known limitation: when the write fails, the handle is not closed and NAME.tmp is left behind.
         handle = open(temporary, "w", encoding="utf-8", newline="\n")
         handle.write(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
         handle.close()

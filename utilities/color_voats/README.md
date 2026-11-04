@@ -26,24 +26,87 @@ python color_voats.py
 
 Also `--preset NAME` (default `mixer`), `--data FILE` (keep everything in another file), `--selftest`, `--version` and `--smoke FILE`.
 
-The tests are in `tests/`. Run them from this folder:
+## How it works
 
-```bash
-python -m unittest discover -s tests
-```
+1. `color_voats.py` reads the command line. `--version` and `--selftest` (`voats_selftest.py`) answer at once, before the store or tkinter is touched.
+2. `voats_core.load_ranker()` asks `factory.ensure()` to make sure `rankers/ranker_<preset>.py` matches its preset and weights, writes it again if not, and loads it.
+3. Only then is `voats_gui.py` imported. `run_gui()` opens a `VoatsWindow`, which loads the store with `voats_core.load_store()` and builds the Feed, Saved and New post tabs.
+4. The 216 built-in posts are never stored: `all_posts()` makes them from `algos.palette()` each time and adds your own.
+5. Each button calls one `voats_core` function (`vote`, `toggle_save`, `add_comment`, `add_post`, a delete), and the window saves the store at once with `save_store()`, through a temporary file.
+6. On Refresh (F5), a sort change or a preset change, `feed_order()` turns your votes into the voat log (`voat_log()`, oldest first) and the ranker's `rank(voats, colors)` gives the For you order.
 
-One suite: `python -m unittest discover -s tests -p test_factory.py`.
+Where state lives:
 
-## Files
+| What | Where |
+|---|---|
+| Your posts, votes, comments and saves | `social.json` in `%LOCALAPPDATA%\Generic Company Inc\GenericCompany.ColorVoats\` (`voats_core.data_path()`), or the `--data` file. QR Palette reads it to import your votes. |
+| How For you ranks | `presets/*.toml` and `weights/*.toml`, read by `factory.py` |
+| The rankers | `rankers/ranker_<preset>.py`, generated beside the program |
+| Window settings | none are kept; the preset and sort start fresh each launch |
+
+A `--smoke` run uses an empty store in memory and never reads or writes `social.json`. No database and no registry.
+
+## Code map
+
+In reading order:
 
 | File | What it holds |
 |---|---|
-| `color_voats.py` | The entry point: the version and the command line. |
-| `voats_core.py` | The core: posts, votes, comments, saves, the store file and the feed's order. No GUI. |
-| `voats_gui.py` | The window (`VoatsWindow`, tkinter). Everything it changes goes through the core and is saved at once. |
-| `voats_selftest.py` | The quick checks `--selftest` runs. |
-| `algos.py`, `factory.py` | The algos and the factory that writes `rankers/` (below). |
-| `tests/` | `test_algos.py`, `test_factory.py` and `test_color_voats.py` (the core). |
+| `color_voats.py` | The entry point: `__version__`, the command line and `main()`. |
+| `voats_core.py` | The core, no GUI: records, the store file, posts, votes, comments, saves, color names (`HUES`, `color_name`), `feed_order()` and `load_ranker()`. Start at `feed_order()` and `load_store()`. |
+| `voats_gui.py` | The window, `VoatsWindow` (tkinter): the tabs, the post cards, the scrolling feeds and the `--smoke` report. Start at `VoatsWindow.__init__`, then `make_card` and `refresh_feed`. |
+| `voats_selftest.py` | The quick checks `--selftest` runs (algos, factory, feed, words). |
+| `algos.py` | The scorers (net, wilson, similar, explore) and aggregators (blend, mixer). Start at `mixer()` and `order_by()`. |
+| `factory.py` | Reads a preset and its weights and writes a standalone ranker. Start at `generate()`. |
+| `presets/`, `weights/` | The ranking's TOML files (below). |
+| `rankers/` | The generated rankers, one per preset. Don't edit them. |
+| `tests/test_algos.py` | The palette, OKLab, each scorer and the aggregators on hand-built voat logs. |
+| `tests/test_factory.py` | Each shipped ranker against an independent reference, repeatable output, and the file rules. |
+| `tests/test_color_voats.py` | The core: store, posts, votes, comments, saves and the feed's order; imports the window module without opening it. |
+| `setup.json` | The installer's description for Wizard Maker. |
+| `icon/` | The app icon (see below). |
+
+## Developing
+
+Run everything from this folder (`utilities/color_voats`).
+
+| Task | Command |
+|---|---|
+| Run | `python color_voats.py` |
+| All tests | `python -m unittest discover -s tests` |
+| One suite | `python -m unittest discover -s tests -p test_factory.py` |
+| Self-test | `python color_voats.py --selftest` |
+| Smoke check | `python color_voats.py --smoke report.json` opens the window, votes, saves, comments and posts in memory, writes a JSON report and closes |
+| Rankers up to date? | `python factory.py --check` (exit 1 when one is stale) |
+| Regenerate rankers | `python factory.py` |
+| Package | `wizard-maker.exe build setup.json` with [Wizard Maker](../../company/wizard_maker/README.md); it writes `dist/Generic Company Color Voats-<version>-setup.exe` |
+
+The Dev Console (`tools/dev_console`) runs the same launch and test commands.
+
+Where to add things:
+
+- **A new preset**: add `presets/<name>.toml` naming an existing algo, then `python color_voats.py --preset NAME`. Add it to the presets table below and, if QR Palette should rank with it, a JSON copy in `../qr_palette/presets/`.
+- **A new scorer**: write the function in `algos.py` and add its name to `SCORERS`; in `factory.py` add its keys to `WEIGHT_KEYS`, its helpers to `NEEDS` and the functions to `COPY_ORDER`; add `weights/<name>.toml` and tests in `tests/test_algos.py`. Then run `python factory.py`.
+- **A new thing to do on a post**: the store change goes in `voats_core.py` (changing the store in place, checked in `load_store()`), the button in `VoatsWindow.make_card` in `voats_gui.py`, and the tests in `tests/test_color_voats.py`.
+
+Twins (QR Palette keeps copies; change both, see `../qr_palette/PROVENANCE.md`):
+
+| Here | There |
+|---|---|
+| `algos.py` | `../qr_palette/algos.py`, identical apart from the header |
+| `HUES`, `normalize_hex`, `color_name` in `voats_core.py` | `../qr_palette/swatch.py` |
+| `presets/*.toml`, `weights/*.toml` | `../qr_palette/presets/*.json`, `../qr_palette/weights/*.json`, same values |
+| The `social.json` format | `../qr_palette/votes.py` imports it |
+
+QR Palette's `tests/test_swatch.py` checks the names, the presets and weights, and the top tens against this project when it sits beside it.
+
+Traps the code warns about:
+
+- **Version**: `__version__` in `color_voats.py` and `version` in `setup.json` are bumped together by the Dev Console; keep `__version__` the first such line.
+- **Rankers are generated**: their first line, `# Generated by factory.py - do not edit.`, is what keeps `tools/stamp.py` from stamping them, and `test_factory.py` checks it.
+- **Comments inside `algos.py` functions are copied**: the factory copies each function's text into the rankers, so a docstring or comment edit inside a function makes every ranker stale. Notes go above the `def`, at column 0.
+- **Runs write `rankers/`**: a launch, a preset switch, `--selftest` and the tests all rewrite a stale ranker, so run `python factory.py --check` first after changing `algos.py` or `factory.py`.
+- **Stamps**: each source file ends with a stamp line. `python tools/stamp.py --check`, from the portfolio root, lists files changed since they were stamped.
 
 ## How For you is ranked: the algo aggregation factory
 
@@ -82,9 +145,7 @@ To make a preset, add `presets/<name>.toml` and run it:
 python color_voats.py --preset NAME
 ```
 
-`python factory.py` regenerates every ranker, and `python factory.py --check` exits 1 when one is out of date. The rankers are committed so their code can be read and reviewed; don't edit them by hand.
-
-A launch, a preset switch, `--selftest` and the tests all rewrite a ranker that is missing or out of date, so after changing `algos.py` or `factory.py`, run `python factory.py --check` before anything else to see which rankers it makes stale.
+`python factory.py` regenerates every ranker, and `python factory.py --check` exits 1 when one is out of date. The rankers are committed so their code can be read and reviewed; don't edit them by hand (see Developing for what makes them stale).
 
 ## Porting to another language
 

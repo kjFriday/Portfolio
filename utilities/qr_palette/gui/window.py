@@ -7,7 +7,9 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The QR Palette window: PaletteWindow, with its state, job queue, menus, status lines and smoke run.
+"""The QR Palette window: PaletteWindow, which joins the three tabs and the dialogs.
+
+It owns the window's state, job queue, menus, status lines and smoke run.
 
 PaletteWindow is put together from the tab classes (make_tab.py, read_tab.py, find_tab.py) and the
 dialogs (dialogs.py); their methods share the window's widgets and its state dict through self. Slow
@@ -18,6 +20,21 @@ the class (the taskbar identity and the icon) follow QR Studio's (PROVENANCE.md)
 The tabs use each other through self: Print size… asks the Make tab for chosen_level, saving and
 registering refresh the Find tab's colors in use (refresh_used), the Read tab's Find it searches in the
 Find tab, and Make from a list uses the Make tab's short link choice.
+
+Who calls it: qr_palette.py starts the window with run_gui(). Main flow:
+  1. run() checks the registry opens, writes settings.json's defaults when it is missing, and makes
+     the state dict.
+  2. It builds the menus, the two status lines and the Make, Read and Find tabs, then draws the
+     board, the colors in use and the footer.
+  3. A normal start lists the local models and, shortly after, offers scheduled link changes that
+     are due; --smoke instead writes its report and closes.
+  4. Tk's main loop runs until the window closes; a local page server still running is stopped.
+
+Threading: Tk may only be used from the thread that made the window. A job's work() runs on a
+thread of its own and never touches Tk; it leaves its outcome in state["finished"], which
+poll_job() collects every 100 ms on the window's thread to call done(outcome) there.
+
+Start reading at run(), then start_job().
 """
 
 import base64
@@ -51,7 +68,12 @@ from gui.read_tab import ReadTab
 
 
 def windows_identity():
-    """Own taskbar button (not Python's) and crisp text on scaled displays. Windows only."""
+    """Own taskbar button (not Python's) and crisp text on scaled displays. Windows only.
+
+    The explicit AppUserModelID makes Windows group the window under QR Palette's own taskbar button
+    and icon instead of python.exe's. SetProcessDpiAwareness(1) is PROCESS_SYSTEM_DPI_AWARE: Windows
+    stops stretching the window's bitmap on a scaled display, so text is drawn sharp. Both must run
+    before the first window is made; an older Windows without them is left as it is."""
     if os.name != "nt":
         return
     try:
@@ -63,7 +85,10 @@ def windows_identity():
 
 
 def set_icon(window):
-    """The pixel icon on the window and its dialogs -> True when it was set."""
+    """The pixel icon on the window and its dialogs -> True when it was set.
+
+    iconbitmap(default=...) applies the .ico to this window and every Toplevel made after it. A
+    missing or unreadable icon is not an error: the window keeps Tk's own."""
     if not os.path.isfile(ICON_FILE):
         return False
     try:
@@ -88,6 +113,11 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
     """
 
     def __init__(self, db_path, engine, smoke_path, config, warnings):
+        """Keep what the window needs; nothing is built until run().
+
+        `db_path` is the registry file; `engine` the ECP engine (ecp.py) for the Ask box; `smoke_path`
+        the --smoke report file, or "" for a normal start; `config` the Settings record of
+        settings.json; `warnings` the settings problems found at start, shown once the window opens."""
         self.db_path = db_path
         self.engine = engine
         self.smoke_path = smoke_path
@@ -95,7 +125,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.warnings = warnings
 
     def run(self):
-        """Open the window and run it until it closes -> exit code (1 when the registry cannot be opened)."""
+        """Open the window and run it until it closes -> exit code (1 when the registry cannot be opened).
+
+        A smoke run never writes settings.json. The window is at most 800 pixels tall, and 80 less than
+        the screen, so it fits a small display with its taskbar."""
         windows_identity()
         opened = registry.connect(self.db_path, False)
         if not opened["ok"]:
@@ -145,6 +178,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.refresh_footer()
         if self.smoke_path == "":
             self.refresh_models()
+            # after the window is up, so the question about due changes appears over it
             self.window.after(600, self.offer_due_changes)
             if len(self.warnings) > 0:
                 messagebox.showwarning("Settings",
@@ -161,6 +195,12 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
 
     # --- Jobs: one slow task at a time, off the window's thread; the rest wait their turn ----------
     def poll_job(self):
+        """Collect finished jobs on the window's thread; call done(outcome) for the running one.
+
+        Each finished entry is (job number, done, outcome). An entry whose number is not the current
+        job's belongs to a cancelled job and is dropped. When the running job has finished, its done()
+        runs and the next waiting job starts; otherwise polling goes on every 100 ms while a job runs.
+        Appending and popping a list are atomic in CPython, so the list needs no lock."""
         while len(self.state["finished"]) > 0:
             number, done, outcome = self.state["finished"].pop(0)
             if number == self.state["job_number"] and self.state["job"] is not None:
@@ -174,7 +214,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
     def start_job(self, label, work, done):
         """Run work() off the window's thread and then done(outcome) on it. Jobs run one at a time, first
         come, first served: one asked for while another runs (Save while a model loads, say) waits for
-        its turn instead of being refused."""
+        its turn instead of being refused.
+
+        `label` names the job in the status line ("Saving"); work() must not touch Tk and returns a
+        Result (an exception becomes a failed one); done(outcome) runs on the window's thread."""
         self.state["queue"].append((label, work, done))
         if self.state["job"] is not None:
             self.status.set(self.state["job_label"] + "…  then " + label.lower() + " (" +
@@ -183,6 +226,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.start_next()
 
     def start_next(self):
+        """Start the first waiting job, unless one is running or none waits.
+
+        Each job gets a new number, so poll_job can tell its outcome from a cancelled job's. The thread
+        is a daemon, so a job still running never keeps the program open after the window closes."""
         if self.state["job"] is not None or len(self.state["queue"]) == 0:
             return
         label, work, done = self.state["queue"].pop(0)
@@ -190,6 +237,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         number = self.state["job_number"]
         self.state["job_label"] = label
 
+        # the job's thread: run work(), turn an exception into a failed Result, hand the outcome back
         def runner():
             try:
                 outcome = work()
@@ -206,7 +254,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.window.after(100, self.poll_job)
 
     def cancel_job(self):
-        """Stop waiting for the running job (its answer is ignored); the jobs waiting behind it go on."""
+        """Stop waiting for the running job (its answer is ignored); the jobs waiting behind it go on.
+
+        Known limitation: Python cannot stop a thread, so the cancelled work runs on to its end in the
+        background (a model call until its timeout, say); only its outcome is dropped."""
         if self.state["job"] is not None:
             self.state["job"] = None
             self.state["job_number"] = self.state["job_number"] + 1
@@ -214,6 +265,9 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             self.start_next()
 
     def save_setting(self, section, key, value):
+        """Save one setting (settings.json `section`.`key` = `value`) as it changes; never in a smoke run.
+
+        A failure to save is shown in the status line and is otherwise harmless."""
         if self.smoke_path != "":
             return
         saved = settings.save(self.config, [(section, key, value)])
@@ -221,6 +275,11 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             self.status.set(saved["error"])
 
     def refresh_footer(self):
+        """Write the footer: how many codes are registered, local inference, the page server and the registry.
+
+        Reads the registry on the window's thread (a count is quick); a registry that cannot be read
+        counts as 0 codes."""
+        # count the registry's records on the open connection
         def read(connection):
             return ok_result(registry.counts(connection))
 
@@ -235,6 +294,9 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
                         "  ·  registry: " + self.db_path)
 
     def swatch_image(self, color):
+        """A 16 x 16 PhotoImage filled with `color` ("#rrggbb"), for rows of the results tables.
+
+        Made once per color and kept in state["swatches"]: Tk drops an image Python no longer holds."""
         if color not in self.state["swatches"]:
             image = tk.PhotoImage(width=16, height=16)
             image.put(color, to=(0, 0, 16, 16))
@@ -242,6 +304,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         return self.state["swatches"][color]
 
     def photo_from_png(self, png):
+        """PNG bytes as a Tk PhotoImage, or None for no bytes.
+
+        Tk's PhotoImage takes in-memory picture data as base64 text, so no temporary file is needed.
+        The caller must keep the image (in state["photos"]) for as long as it is shown."""
         if png == b"":
             return None
         return tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
@@ -260,6 +326,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
                                    command=lambda: self.export_pages("nonlocal"))
         self.file_menu.add_command(label="Publish nonlocal pages…", command=self.publish_pages)
         self.file_menu.add_command(label="Serve local pages", command=self.serve_pages)
+        # remembered so serve_pages can relabel this entry Serve / Stop serving
         self.state["serve_index"] = self.file_menu.index("end")
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Back up the registry…", command=self.back_up)
@@ -274,6 +341,9 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.window.config(menu=menu)
 
     def import_votes(self):
+        """Import Good and Bad votes from Color Voats' social.json, then rank the board again.
+
+        Uses Color Voats' usual file when it is there, else asks for one. Writes the registry's votes."""
         path = color_voats_path()
         if not os.path.isfile(path):
             path = filedialog.askopenfilename(title="Color Voats' social.json", filetypes=[("JSON", "*.json")])
@@ -287,6 +357,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             messagebox.showerror("Import votes", brought["error"])
 
     def show_about(self):
+        """Help → About: the version, what the program does, the icon's credit and the license."""
         messagebox.showinfo("About " + APP_NAME, APP_NAME + " " + __version__ + "\n\n"
                             "Makes QR codes in recommended colors, reads them from pictures, and finds any code "
                             "again by its link or its color, with the path of its picture. Other programs can ask "
@@ -294,6 +365,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
                             ICON_CREDIT + "\n\nCopyright (c) 2026 kjFriday. AGPL-3.0-only.")
 
     def open_settings(self):
+        """Open settings.json in its usual editor (Notepad when none is set), writing it first if missing.
+
+        Away from Windows, or when it still cannot be written, its path is shown instead. Changes are
+        read at the next start only."""
         if self.config["state"] == "missing":
             settings.write_defaults(self.config)
         if os.name != "nt" or not os.path.isfile(self.config["path"]):
@@ -306,6 +381,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.status.set("Settings take effect the next time QR Palette starts")
 
     def export_pages(self, section):
+        """Write the redirect pages of `section` ("local" or "nonlocal") to a folder, as a job.
+
+        The folder offered is the last one used this session, else links.json's export_folder, else
+        the home folder. Short links on other addresses are left out and counted."""
         start = (self.state["export_folders"].get(section) or app_settings.LINKS[section]["export_folder"] or
                  os.path.expanduser("~"))
         folder = filedialog.askdirectory(title="Export the " + section + " redirect pages to", initialdir=start,
@@ -314,6 +393,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             return
         folder = registry.display_path(folder)
 
+        # on the window's thread when the export ends
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Export redirect pages", outcome["error"])
@@ -333,7 +413,13 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.start_job("Exporting redirect pages", lambda: export_redirects(self.db_path, folder, section), done)
 
     def serve_pages(self):
-        """Start or stop serving the local pages from this computer, so local short links work now."""
+        """Start or stop serving the local pages from this computer, so local short links work now.
+
+        Steps:
+          1. When serving, stop the server and relabel the menu entry.
+          2. Check the local base address (shortlinks.serve_address); an address on the network, not
+             only this computer, is served only when the person agrees.
+          3. Export the local pages to their folder as a job, then start the server on them."""
         if self.state["server"] is not None:
             shortlinks.stop_server(self.state["server"])
             self.state["server"] = None
@@ -355,6 +441,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             network = True
         folder = local_pages_folder()
 
+        # on the window's thread once the pages are written: start the server
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Serve local pages", outcome["error"])
@@ -380,6 +467,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
                        lambda outcome: None)
 
     def back_up(self):
+        """Back the registry up to a file chosen by the person, as a job (registry.backup checks the copy).
+
+        The local key is not part of the backup; the status line says so when there is one, since
+        masked codes and ID tags need it (localkey.py)."""
         suggested = default_backup_path()
         try:
             os.makedirs(os.path.dirname(suggested), exist_ok=True)
@@ -392,6 +483,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             return
         target = registry.display_path(target)
 
+        # on the window's thread when the backup ends
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Back up the registry", outcome["error"])
@@ -404,6 +496,9 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.start_job("Backing up the registry", lambda: registry.backup(self.db_path, target), done)
 
     def export_table(self):
+        """Export the registry as CSV (one row per code) or JSON (everything), as a job.
+
+        The format follows the file name's extension (registry_export.export_registry)."""
         path = filedialog.asksaveasfilename(title="Export the registry", initialfile="qr-palette.csv",
                                             defaultextension=".csv",
                                             filetypes=[("CSV, one row per code (spreadsheets)", "*.csv"),
@@ -412,6 +507,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             return
         path = registry.display_path(path)
 
+        # on the window's thread when the export ends
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Export the registry", outcome["error"])
@@ -423,7 +519,11 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
 
     def publish_pages(self):
         """Publish the nonlocal pages: first what would change, with nothing touched; then, if the person
-        says so, write them, and for a Git folder commit and push."""
+        says so, write them, and for a Git folder commit and push.
+
+        Two jobs in a row: publish_plan (a dry run listing pages to add, change and remove, up to five
+        of each shown) and, after a yes, publish_now. A push that fails leaves the commit in place and
+        says so. Side effects of the second job: files in the publish folder, a Git commit and push."""
         target = app_settings.LINKS["nonlocal"]["publish"]
         if target["kind"] == "":
             messagebox.showinfo("Publish nonlocal pages", "Say where to publish first: nonlocal.publish in links.json. "
@@ -431,6 +531,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
                                 "folder (a folder something else syncs), and its folder is where. README.md shows how.")
             return
 
+        # after the dry run: show what would change and ask before publishing
         def planned(outcome):
             if not outcome["ok"]:
                 self.status.set("Nothing published")
@@ -458,6 +559,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
                 return
             self.start_job("Publishing the pages", lambda: publish_now(self.db_path), published)
 
+        # after publishing: report the changes and, for Git, the commit and the push
         def published(outcome):
             if not outcome["ok"]:
                 self.status.set("Not published")
@@ -482,7 +584,10 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
         self.start_job("Checking what would change", lambda: publish_plan(self.db_path), planned)
 
     def import_scans_file(self):
-        """Scan counts from an analytics report or a server log. Only counts are kept."""
+        """Scan counts from an analytics report or a server log. Only counts are kept.
+
+        Runs short_link_ops.import_scan_file as a job; when results are shown in the Find tab, it
+        searches again so their scan columns are current."""
         path = filedialog.askopenfilename(title="An analytics report or a server log",
                                           filetypes=[("Reports and logs", "*.csv *.log *.txt *.gz"),
                                                      ("All files", "*.*")])
@@ -490,6 +595,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             return
         path = registry.display_path(path)
 
+        # on the window's thread when the import ends
         def done(outcome):
             if not outcome["ok"]:
                 self.status.set("No scans imported")
@@ -511,6 +617,18 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
 
     # --- Smoke run (--smoke) --------------------------------------------------------------------
     def write_smoke_report(self):
+        """--smoke: use the built window once, write a JSON report to smoke_path and close the window.
+
+        Runs on the window's thread, without jobs, 800 ms after start. Steps:
+          1. Record the app id, version, title, icon, tab names and how many tiles the board drew.
+          2. Pick the best color, preview a test link, and make and register a code for it in a
+             temporary folder (codec_ok says whether it was read back).
+          3. Search by that color and count the registry's records.
+          4. When an inference endpoint is set, list its models.
+          5. Remove the temporary folder, write the report and close the window.
+
+        The registry is the scratch one --smoke was given; the report's keys are what the smoke test
+        checks."""
         report = {"app_id": APP_ID, "version": __version__, "title": self.window.title(), "icon_set": self.icon_set,
                   "tabs": [], "tiles": len(self.tiles.find_all()), "records": 0, "codec_ok": False,
                   "found_by_color": 0, "inference": {"reachable": False, "models": 0}}
@@ -528,6 +646,7 @@ class PaletteWindow(MakeTab, ReadTab, FindTab, Dialogs):
             if found["ok"]:
                 report["found_by_color"] = len(found["value"])
 
+            # count the registry's records on the open connection
             def read(connection):
                 return ok_result(registry.counts(connection)["records"])
 

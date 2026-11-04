@@ -1,7 +1,16 @@
 # Mostly colors like your upvoats, some new ground, a little of the raw voat count.
+# A Color Voats preset: factory.py reads it with the weights of each algo in uses and writes
+# rankers/ranker_balanced.py. Pick it in the window's Ranking list or with --preset balanced.
+
+# blend: each scorer's scores are scaled to 0..1 and summed with the weights below.
 algo = "blend"
 
+# The scorers to blend and how much each counts. The weights need not add up to 1: only their
+# ratios change the order. Each scorer's own settings are in weights/<scorer>.toml.
 [uses]
+# colors near your voats in OKLab rise (upvoats) or sink (downvoats)
 similar = 0.6
+# colors far from everything you voated on rise
 explore = 0.3
+# upvoats minus downvoats on the color itself
 net = 0.1

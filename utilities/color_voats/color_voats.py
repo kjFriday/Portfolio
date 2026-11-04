@@ -6,9 +6,9 @@
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
-"""Generic Company Color Voats: a social feed of colors, ranked for you by your Good and Bad votes.
+"""Generic Company Color Voats: a feed of colors ranked by your Good and Bad votes.
 
-Every post is a color: the 216 colors of the 6x6x6 cube that come with the program, plus colors you
+It works like a social feed. Every post is a color: the 216 colors of the 6x6x6 cube that come with the program, plus colors you
 post yourself. A post shows its color, hex code, when it was posted and a caption, with Good, Bad and
 Save buttons and a comment section. The Feed tab is sorted For you, by a ranker that factory.py
 generates from a preset and its algos' weights, or by New. The Saved tab holds the posts you saved,
@@ -30,6 +30,12 @@ Usage
 
 Exit codes: 0 done (or every self-check passed), 1 the preset's ranker could not be made or loaded (or a
 self-check failed), 2 --preset, --data or --smoke without its value.
+
+Main flow of main()
+  1. --version and --selftest answer at once, before anything touches the store or tkinter.
+  2. The option values are read; a flag given without its value is exit code 2.
+  3. load_ranker() makes sure the preset's ranker is current (writing it if not) and loads it.
+  4. voats_gui is imported only now and run_gui() opens the window until it closes.
 """
 
 import sys
@@ -37,12 +43,17 @@ import sys
 from voats_core import DEFAULT_PRESET, data_path, load_ranker
 from voats_selftest import selftest
 
+# the Dev Console bumps this line together with setup.json's version; keep it the first such line
 __version__ = "0.2.0"
-APP_NAME = "Generic Company Color Voats"
+APP_NAME = "Generic Company Color Voats"  # printed by --version
 
 
 def option_value(arguments, name):
-    """The value after `name` in the argument list, "" when absent, None when the value is missing."""
+    """The value after `name` in the argument list, "" when absent, None when the value is missing.
+
+    Only the first occurrence of `name` counts. The value is taken as is, so "--preset --data"
+    reads "--data" as the preset's name.
+    """
     index = 0
     while index < len(arguments):
         if arguments[index] == name:

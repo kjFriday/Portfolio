@@ -35,3 +35,9 @@ How work is done in the Generic Company Inc. portfolio.
 
 ## Programs
 18. Each project is a self-contained desktop program: it opens its own window with its own icon and version, and installs and uninstalls itself per user.
+19. New programs go in `company/` when they use the shared database, and in `utilities/` when they stand alone.
+
+## Style and documentation
+20. Go code is `gofmt`-formatted, and Rust code `rustfmt`-formatted (`cargo fmt`, with the crate's `rustfmt.toml`).
+21. Every file and every definition carries a doc comment to the annotation standard in `docs/DEVELOPING.md`: teaching level, and a file doc whose first sentence is at most 90 characters.
+22. Twin files change together: a change to one copy goes to the other in the same session (see the twins table in `docs/DEVELOPING.md`).

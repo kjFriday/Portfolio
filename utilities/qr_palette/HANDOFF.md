@@ -4,10 +4,15 @@ Ten proposed features, written so that another session or developer can pick any
 conversation. Features 1-5 (serving local pages, backup and CSV/JSON export, the print-size advisor, bulk
 actions in Find, the audit log viewer with an outside anchor) are built and on main; see the LOG.
 
-**All ten are built,** on branch `worktree-qr-palette-6-15`, not yet on main; see the LOG. What is left of them: feature
-6's `bridge.db` source, which waits for Data Bridge to be merged, and trying the new kinds of code, logos and
-printed sheets with real phones and a real printer. The text below is kept as the plan they were built from. Where
-the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the LOG says so and why.
+**All ten are built and on main;** see the LOG. What is left of them: feature 6's `bridge.db` source, which waits
+for Data Bridge (not in this repository yet), and trying the new kinds of code, logos and printed sheets with real
+phones and a real printer. The text below is kept as the plan they were built from. Where the build departs from it
+(the `scans` key, a keyed hash for Wi-Fi codes), the LOG says so and why.
+
+Since then the code has been split into modules. `qr_codec.py` is now the `qr_codec/` package (one module per
+chapter), and the window that was `gui.py` is now the `gui/` package: `window.py` (`PaletteWindow`, its jobs and
+menus), `make_tab.py`, `read_tab.py`, `find_tab.py` and `dialogs.py`. The plan below names the new places where it mentions the old ones.
+README.md's "How it works", "Code map" and "Developing" are the map.
 
 ## What to read first
 
@@ -18,19 +23,21 @@ the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the L
 | `qr_palette.py` | Identity (name, id, icon, version), where the files live, the ECP engine for a run (`make_engine`), CLI (`main`) |
 | `app_settings.py` | `apply_settings` and the values it puts in place (`LINKS`, `LINK_SECTION`, `DEFAULT_SCALE`, ...), read as `app_settings.NAME` |
 | `common.py`, `making.py`, `short_link_ops.py`, `batches.py`, `registry_export.py`, `votes.py`, `finding.py`, `print_advice.py` | The core: make, redraw, register, short links, lists, export, votes, find, print advice |
-| `selftest.py`, `gui.py` | `--selftest`; the window (`run_gui`) |
-| `qr_codec/` | QR encoder and decoder, PNG/SVG writers and readers, the caption font (`GLYPHS`) |
-| `registry.py` | SQLite schema (version 2: `colors`, `links`, `qr_codes`, `short_links`, `votes`), the read-only rail |
+| `selftest.py` | `--selftest` |
+| `gui/` | The window: `run_gui` and `PaletteWindow` in `window.py`; the tabs in `make_tab.py`, `read_tab.py`, `find_tab.py`; the larger dialogs in `dialogs.py` |
+| `qr_codec/` | QR encoder and decoder, PNG/SVG writers and readers, the caption font (`GLYPHS` in `captions.py`), logos, robustness; `__init__.py` lists its modules |
+| `registry.py` | SQLite schema (version 3: `colors`, `links`, `qr_codes`, `short_links`, `short_link_changes`, `scheduled_changes`, `scans`, `votes`), the read-only rail |
 | `shortlinks.py` | Short-link IDs (digits + Damm check digit), `links.json` (sections `local` and `nonlocal`), redirect pages |
 | `ecp.py`, `mcp_server.py`, `local_inference.py`, `audit.py` | ECP's engine, MCP server, Ollama client, hash-chained audit log |
 | `swatch.py`, `ranking.py`, `algos.py`, `presets/`, `weights/` | Colors: names, families, contrast, OKLab, ranking |
 | `settings.py` | `settings.json`: every setting, its default, its check |
+| `tests/` | One `test_<module>.py` per part, and `test_qr_palette.py` for the program's own modules and command line |
 
 ## Rules that hold for every feature
 
 - **Python 3.10+, standard library only.** No packages. Plain functions and dict records, `Result` records
   `{"ok", "error", "value"}`, explicit loops, no argparse (`option_value`). Keep the core free of tkinter: only
-  `gui.py` loads it.
+  the `gui/` package loads it.
 - **The window runs slow work as jobs** (`start_job(label, work, done)`): one at a time, queued first come,
   first served. Never block the window's thread on disk, network or decoding.
 - **Settings are human-readable JSON** with an `about` text per section. New settings go into `settings.py`
@@ -43,7 +50,7 @@ the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the L
 - **ECP stays read-only.** Nothing reachable over MCP writes the registry. New record or plan fields are
   additive; update `mcp_server.TOOLS` output schemas, `planner.json` if planning changes, and `ECP.md`.
 - **The registry's marks.** `application_id` 0x51525041 stays in every schema (the user's decision). Data
-  Bridge (branch `claude/heuristic-burnell-ac6b9d`, not yet merged) reads versions 1, 2 and 3 and refuses others.
+  Bridge (not in this repository yet) reads versions 1, 2 and 3 and refuses others.
   Its version 3 support was built from a description, before QR Palette's version 3 existed: it reads the same
   columns as version 2, and leaves out codes that hold no http(s) link. Keep those columns, or change both programs
   together, and make the one schema bump for all the features below that need it (8, 9 and possibly 11).
@@ -126,7 +133,7 @@ the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the L
 
 - **Behavior:** *Logo…* in the Make tab picks a small PNG; it covers at most about 15% of the modules (well under
   level H's 30% recovery), with a white margin, and forces level H. A code that does not read back is refused.
-- **Core:** in `qr_codec.py`, blank the logo's modules in the matrix, decode that (the honest test), and draw the
+- **Core:** in the codec (now `qr_codec/logos.py`), blank the logo's modules in the matrix, decode that (the honest test), and draw the
   logo over the blanked area in PNG and as squares in SVG (after the code's first path, which the SVG reader
   reads).
 - **Tests:** read-back with a logo for a sample of usable colors; refusal when the logo is too big.
@@ -152,7 +159,8 @@ the build departs from it (the `scans` key, a keyed hash for Wi-Fi codes), the L
 
 - **Core:** from the rendered picture (`qr_codec` Image record): shrink (50%, 33%), blur (3×3, 5×5), noise
   (a fixed seed), a small rotation, lower contrast, and a covered block; decode each with
-  `qr_codec.decode_image`. Score = passed / tried, with the failures named.
+  `qr_codec.decode_image`. Score = passed / tried, with the failures named. (Now `qr_codec/robustness.py`, with the
+  wear in `qr_codec/distort.py`.)
 - **Window:** *Test robustness* in the Make tab, as a job: "8 of 10 passed; failed: shrunk to a third, heavy
   blur".
 - **Tests:** deterministic results for a fixed code; a code with more error correction scores at least as well.
@@ -201,7 +209,7 @@ Suggested order: 6, then 7 (together they handle a whole print run); 15; 12; 8 a
 version 3); 10; 11; 13; 14.
 
 Features that touch mostly separate files can be built side by side, each in its own worktree: 12
-(`qr_codec.py`), 15 (`ecp.py`, `mcp_server.py`, `planner.json`), 7 (a new module plus a menu item), 13
-(`shortlinks.py` plus a menu item). All of them add a little to `qr_palette.py`'s window code, so merge them
-one at a time. Features 8, 9 and 11 change the schema: do them in one pass, and check the result against Data
+(the codec, now `qr_codec/`), 15 (`ecp.py`, `mcp_server.py`, `planner.json`), 7 (a new module plus a menu item), 13
+(`shortlinks.py` plus a menu item). All of them add a little to the window code (then in `qr_palette.py`, now the
+`gui/` package), so merge them one at a time. Features 8, 9 and 11 change the schema: do them in one pass, and check the result against Data
 Bridge, whose version 3 support has not yet met a real version 3 file.

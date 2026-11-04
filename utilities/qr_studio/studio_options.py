@@ -16,7 +16,12 @@ window.
 
 
 def option_value(arguments, name):
-    """The value after `name` in the argument list, "" when absent, None when the value is missing."""
+    """Return the value after `name` in the argument list, "" when absent, None when the value is missing.
+
+    The first `name` wins. The value is taken as is, even when it looks like another flag, so
+    ["--read", "--smoke"] gives "--smoke". Callers treat None as a usage error (exit code 2) and ""
+    as "option not given"; an empty value typed on purpose ("--read" "") therefore counts as absent.
+    """
     index = 0
     while index < len(arguments):
         if arguments[index] == name:

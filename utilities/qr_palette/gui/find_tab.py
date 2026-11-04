@@ -7,10 +7,26 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The Find tab: find codes by QR code, color or picture, ask a local model, and act on the results
-(open, copy, change destination, redraw, forget, print a sheet, short link history).
+"""The Find tab: find registered codes, ask a local model, and act on the results.
+
+Codes are found by QR code (link or path), by color or by picture; the actions are open, copy, change
+destination, redraw, forget, print a sheet and short link history.
 
 FindTab is part of PaletteWindow (window.py). Its Ask box uses the same ECP engine as the MCP server.
+
+Main flow:
+  1. run_search() (or find_from_picture(), or ask()) runs a job that returns Shown rows
+     (finding.py's record of a code as the window shows it).
+  2. show_results() fills the table, keeping the rows in state["results"]; a row's iid is its index
+     there.
+  3. Selecting rows shows the first in the detail pane (show_detail); the buttons below act on the
+     selected rows, most of them as jobs, and search again to show the change.
+
+The Ask box goes through ecp.py like an MCP client: refresh_models() lists the local models,
+choose_model() pins one by its digest, and ask() sends the question; each call is audited and the plan
+the model made is shown above the table.
+
+Start reading at run_search(), then show_detail().
 """
 
 import json
@@ -45,7 +61,10 @@ class FindTab:
     """The Find tab's widgets and actions (a part of PaletteWindow)."""
 
     def build_find_tab(self):
-        """Create the Find tab's widgets and bind them."""
+        """Create the Find tab's widgets and bind them.
+
+        The rows for finding by QR code and by color share one place; show_selector() packs the one
+        chosen. client_info is how the window names itself in ECP's audit log."""
         self.find_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.find_tab, text="Find")
         self.selector = tk.StringVar(value="qr_code")
@@ -144,6 +163,7 @@ class FindTab:
         self.show_selector()
 
     def show_selector(self):
+        """Show the QR code row or the color row, by the Find by choice, right under the choice."""
         self.qr_row.pack_forget()
         self.color_row.pack_forget()
         if self.selector.get() == "qr_code":
@@ -152,6 +172,11 @@ class FindTab:
             self.color_row.pack(fill="x", pady=4, after=self.selector_row)
 
     def show_results(self, shown_list, note):
+        """Fill the results table with `shown_list` ([Shown]) and put `note` in the status line.
+
+        Each row shows the color, hex, where the code sends people (with its short link), its scans
+        as "total (recent)" and whether the picture file is still there ("?" when unknown). The
+        detail pane is cleared."""
         self.state["results"] = shown_list
         for item in self.results.get_children():
             self.results.delete(item)
@@ -174,7 +199,10 @@ class FindTab:
 
     def run_search(self, note=""):
         """Find by QR code or color. `note`, when given, is shown instead of the count, so a change
-        that searches again to show its result keeps its own message."""
+        that searches again to show its result keeps its own message.
+
+        By color, a typed color wins over the family box; "near" also finds colors close to it. Runs
+        finding.search as a job, up to registry.MAX_LIMIT results."""
         by = self.selector.get()
         if by == "qr_code":
             value = self.find_text.get()
@@ -183,6 +211,7 @@ class FindTab:
             value = self.color_text.get().strip() or self.family_box.get()
             near = self.near_choice.get()
 
+        # on the window's thread when the search ends
         def done(outcome):
             if not outcome["ok"]:
                 self.show_results([], outcome["error"])
@@ -193,6 +222,9 @@ class FindTab:
         self.start_job("Searching", lambda: search(self.db_path, by, value, near, registry.MAX_LIMIT), done)
 
     def pick_used(self, event):
+        """A click on the colors in use: find by that color.
+
+        Each swatch rectangle carries its hex as its first canvas tag, which is how the click finds it."""
         for item in self.used_canvas.find_overlapping(event.x, event.y, event.x, event.y):
             color = self.used_canvas.gettags(item)
             if len(color) > 0 and color[0].startswith("#"):
@@ -204,6 +236,10 @@ class FindTab:
                 return
 
     def refresh_used(self):
+        """Draw the colors in use (up to 30 swatches of 20 pixels, 24 apart) after the "In use:" label.
+
+        Reads the registry on the window's thread; a registry that cannot be read leaves the row empty."""
+        # the registry's colors in use, on the open connection
         def read(connection):
             return ok_result(registry.colors_in_use(connection))
 
@@ -220,12 +256,19 @@ class FindTab:
             left = left + 24
 
     def selected_shown(self):
+        """The first selected result (a Shown), or None when nothing is selected."""
         chosen = self.results.selection()
         if len(chosen) == 0:
             return None
         return self.state["results"][int(chosen[0])]
 
     def show_detail(self, event=None):
+        """Show the first selected result in the detail pane: its code drawn again, and what it holds.
+
+        The preview is drawn from the registry's record (making.preview_png), so a logo is not in it
+        and a masked code, kept without its password, cannot be drawn at all. A short link's detail
+        adds its destination, printed address, scans and history; with several selected, it says the
+        change buttons act on all of them."""
         shown = self.selected_shown()
         self.detail_preview.delete("all")
         if shown is None:
@@ -240,6 +283,8 @@ class FindTab:
                                                     caption))
         self.state["photos"]["detail"] = photo
         if photo is not None:
+            # shrink by a whole factor (all Tk's subsample can do) to fit the 170-pixel canvas inside
+            # its border; the image is centered at 86, 86
             factor = 1
             while photo.width() // factor > 168:
                 factor = factor + 1
@@ -268,7 +313,10 @@ class FindTab:
                                  note + more)
 
     def history_note(self, shown):
-        """A short link's scans, last change and next scheduled change, as lines for the detail."""
+        """A short link's scans, last change and next scheduled change, as lines for the detail.
+
+        Each line starts with a newline, so the result is appended as is; "" when there is nothing to
+        say. Reads the registry on the window's thread; destinations are cut to 120 characters."""
         lines = ""
         if shown["scans"] is not None:
             lines = ("\nScans: " + str(shown["scans"]["total"]) + " in all, " + str(shown["scans"]["recent"]) +
@@ -285,6 +333,7 @@ class FindTab:
         return lines
 
     def open_shown_picture(self):
+        """Open the selected result's picture file in its usual program (os.startfile, Windows only)."""
         shown = self.selected_shown()
         if shown is None:
             return
@@ -297,6 +346,7 @@ class FindTab:
             self.status.set(str(error))
 
     def reveal_shown(self):
+        """Show the selected result's file in Explorer, selected (finding.reveal_command_line). Windows only."""
         shown = self.selected_shown()
         if shown is None:
             return
@@ -309,6 +359,9 @@ class FindTab:
             self.status.set(str(error))
 
     def copy_shown(self, key):
+        """Copy the selected result's `key` ("path" or "link") to the clipboard.
+
+        "link" copies where the code sends people (a short link's destination), not the printed address."""
         shown = self.selected_shown()
         if shown is None:
             return
@@ -320,6 +373,7 @@ class FindTab:
         self.status.set("Copied the " + key)
 
     def open_shown_link(self):
+        """Open where the selected code sends people in the browser, only for http(s) and after asking."""
         shown = self.selected_shown()
         if shown is None:
             return
@@ -338,7 +392,12 @@ class FindTab:
         return chosen
 
     def change_destination(self):
-        """Send the selected short links somewhere else (all of them to the same place)."""
+        """Send the selected short links somewhere else (all of them to the same place).
+
+        Selected codes without a short link are skipped, and a short link selected twice is changed
+        once. The printed codes stay valid: only the redirect page changes, which must be exported
+        again to reach the web. Runs short_link_ops.retarget_link for each as one job, stopping at the
+        first failure."""
         codes = []
         first = None
         for shown in self.selected_all():
@@ -358,6 +417,7 @@ class FindTab:
         if link is None:
             return
 
+        # the job: change each short link in turn
         def work():
             for code in codes:
                 changed = retarget_link(self.db_path, code, link)
@@ -365,6 +425,7 @@ class FindTab:
                     return changed
             return ok_result(len(codes))
 
+        # on the window's thread: search again to show the change, and update served pages
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Change destination", outcome["error"])
@@ -376,7 +437,11 @@ class FindTab:
         self.start_job("Changing the destination", work, done)
 
     def redraw_shown(self):
-        """Draw the selected codes again, in another color or size, over their own files."""
+        """Draw the selected codes again, in another color or size, over their own files.
+
+        Asks for one color for all (empty keeps each code's own) and the pixels per module (1-40),
+        then runs making.redraw_record for each as one job. A failure skips that code and goes on;
+        the first problem is reported with the count."""
         chosen = self.selected_all()
         if len(chosen) == 0:
             return
@@ -394,6 +459,7 @@ class FindTab:
         for shown in chosen:
             jobs.append((shown["id"], color.strip() or shown["hex"]))
 
+        # the job: redraw each code, counting successes and keeping the problems
         def work():
             redrawn = 0
             problems = []
@@ -405,6 +471,7 @@ class FindTab:
                     problems.append(outcome["error"])
             return ok_result({"redrawn": redrawn, "problems": problems})
 
+        # on the window's thread: report, search again and redraw the colors in use
         def done(outcome):
             message = "Redrew " + str(outcome["value"]["redrawn"]) + " picture(s), each read back first"
             if len(outcome["value"]["problems"]) > 0:
@@ -415,6 +482,10 @@ class FindTab:
         self.start_job("Redrawing", work, done)
 
     def forget_shown(self):
+        """Remove the selected records from the registry after asking; their picture files are kept.
+
+        Runs making.forget_record for each as one job, stopping at the first failure, then drops the
+        removed rows from the table without searching again."""
         chosen = self.selected_all()
         if len(chosen) == 0:
             return
@@ -428,6 +499,7 @@ class FindTab:
         for shown in chosen:
             numbers.append(shown["id"])
 
+        # the job: forget each record, counting the ones that were there
         def work():
             removed = 0
             for number in numbers:
@@ -438,6 +510,7 @@ class FindTab:
                     removed = removed + 1
             return ok_result(removed)
 
+        # on the window's thread: show the rows that are left and refresh the counts
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Forget record", outcome["error"])
@@ -453,7 +526,12 @@ class FindTab:
         self.start_job("Forgetting", work, done)
 
     def show_history(self):
-        """A short link's history, with Undo last change, and its changes to come, with Schedule a change."""
+        """A short link's history, with Undo last change, and its changes to come, with Schedule a change.
+
+        Opens a dialog for the first selected result. Its tables are filled by a job (link_history)
+        and filled again after each change. A change made from the dialog also refreshes served pages
+        and the Find results. The dialog may be closed while a job runs, so every callback checks it
+        still exists (alive) before touching it."""
         shown = self.selected_shown()
         if shown is None or shown["short_code"] == "":
             self.status.set("Pick a code with a short link: a code that holds its link itself has no history")
@@ -486,11 +564,14 @@ class FindTab:
         past.pack(fill="both", expand=True)
         buttons = ttk.Frame(body)
         buttons.pack(anchor="e", pady=(8, 0))
+        # what the dialog knows now: the current destination and the past changes, newest first
         record = {"target": shown["target"], "changes": []}
 
+        # whether the dialog is still open
         def alive():
             return dialog.winfo_exists()
 
+        # fill both tables from a link_history outcome; the newest change gives the current destination
         def fill(outcome):
             self.status.set("Ready")
             if not alive():
@@ -510,9 +591,11 @@ class FindTab:
                 record["target"] = record["changes"][0]["new_target"]
             now_text.set("Sends people to " + record["target"])
 
+        # read the history as a job
         def load():
             self.start_job("Reading the history", lambda: link_history(self.db_path, code), fill)
 
+        # after a change: report it, update served pages and results, and read the history again
         def changed(outcome, message):
             if not outcome["ok"]:
                 messagebox.showerror("Short link history", outcome["error"], parent=dialog if alive() else self.window)
@@ -525,6 +608,7 @@ class FindTab:
             if alive():
                 load()
 
+        # Undo last change: send the link back to where it went before its newest change
         def undo():
             if len(record["changes"]) == 0:
                 self.status.set("This short link has not been changed yet")
@@ -537,6 +621,7 @@ class FindTab:
                            lambda outcome: changed(outcome, "Sent back to " + back +
                                                    "  ·  export the redirect pages again to publish it"))
 
+        # Schedule a change: ask for a day (YYYY-MM-DD) and a destination from that day on
         def schedule():
             day = simpledialog.askstring("Schedule a change", "From which day? (YYYY-MM-DD)", parent=dialog)
             if day is None:
@@ -554,6 +639,7 @@ class FindTab:
                            lambda outcome: changed(outcome, "From " + day + " it sends people to " + link.strip() +
                                                    "  ·  exports from that day on use it"))
 
+        # Cancel the scheduled change selected in the upper table (its iid is the change's id)
         def cancel():
             chosen = coming.selection()
             if len(chosen) == 0:
@@ -570,7 +656,10 @@ class FindTab:
         load()
 
     def offer_due_changes(self):
-        """On start: changes scheduled for a day that has come are offered, never made unasked."""
+        """On start: changes scheduled for a day that has come are offered, never made unasked.
+
+        Up to eight are listed. Exports already follow a due change whether or not it is applied;
+        applying (a job) writes it into the registry and the link's history."""
         today = registry.today_text()
         due = due_link_changes(self.db_path, today)
         if not due["ok"] or len(due["value"]) == 0:
@@ -584,6 +673,7 @@ class FindTab:
                                    "already use them; applying writes them into the registry and each link's history."):
             return
 
+        # on the window's thread when the changes are applied
         def done(outcome):
             if not outcome["ok"]:
                 messagebox.showerror("Scheduled changes", outcome["error"])
@@ -595,7 +685,12 @@ class FindTab:
         self.start_job("Applying the scheduled changes", lambda: apply_due_changes(self.db_path, today), done)
 
     def print_shown(self):
-        """The selected codes on a sheet of labels or as posters (sheets.json), as a PDF or SVG."""
+        """The selected codes on a sheet of labels or as posters (sheets.json), as a PDF or SVG.
+
+        A dialog offers the layouts from sheets.json, saying how many codes fit a page and how many
+        pages it takes. The sheet is made as a job (sheets.print_sheet) and opened when done; the
+        status line warns about codes left out, logos dropped and modules smaller than MIN_MODULE_MM.
+        A sheets.json that could not be fully used shows its first warning."""
         chosen = self.selected_all()
         if len(chosen) == 0:
             self.status.set("Select the codes to print first (Ctrl+click or Shift+click picks several)")
@@ -618,12 +713,14 @@ class FindTab:
         ttk.Label(body, textvariable=about, wraplength=420, justify="left", foreground="#555555").grid(row=2, column=0,
                                                                                                        sticky="w")
 
+        # describe the chosen layout: its own text, codes per page and pages needed
         def show_about_layout(event=None):
             layout = layouts[chooser.get()]
             per_page = layout["columns"] * layout["rows"]
             pages = sheets.page_count(layout, len(chosen))
             about.set(layout["about"] + " " + str(per_page) + " per page: " + str(pages) + " page(s).")
 
+        # Make the sheet…: ask where to save, close the dialog and print as a job
         def make():
             layout = layouts[chooser.get()]
             path = filedialog.asksaveasfilename(title="Save the sheet", initialfile="qr-sheet.pdf",
@@ -637,6 +734,7 @@ class FindTab:
             for shown in chosen:
                 numbers.append(shown["id"])
 
+            # on the window's thread: report the sheet and open its first file
             def done(outcome):
                 if not outcome["ok"]:
                     messagebox.showerror("Print sheet", outcome["error"])
@@ -669,6 +767,10 @@ class FindTab:
             self.status.set(loaded["warnings"][0])
 
     def find_from_picture(self, paste):
+        """Find the codes holding the same text as the QR code in a picture (pasted when `paste`).
+
+        A job decodes the picture and runs finding.matches_for_text; a pasted picture, a temporary
+        file, is never matched by its path. The text read goes into the Link or path box."""
         if paste:
             temporary = os.path.join(tempfile.gettempdir(), "qr_palette_clipboard.png")
             if os.path.isfile(temporary):
@@ -685,6 +787,7 @@ class FindTab:
                 return
             path = registry.display_path(path)
 
+        # the job: decode the picture, then find the records with its text
         def work():
             picture = qr_codec.read_qr_file(path)
             if not picture["ok"]:
@@ -697,6 +800,7 @@ class FindTab:
                 return matches
             return ok_result({"text": picture["value"]["reading"]["text"], "matches": matches["value"]})
 
+        # on the window's thread when reading ends
         def done(outcome):
             if not outcome["ok"]:
                 self.show_results([], outcome["error"])
@@ -709,6 +813,13 @@ class FindTab:
         self.start_job("Reading the picture", work, done)
 
     def refresh_models(self):
+        """List the local models for the Ask box, as a job (ecp.list_models, audited).
+
+        ECP answers with an Outcome: {"ok", "value"} or {"kind", "detail"} for a failure. Without local
+        inference, finding by QR code or color still works. The footer notes when Ollama's cloud
+        features are on (Ask then refuses to plan, ECP.md section 9). The model chosen last time is
+        selected again when it is still there."""
+        # on the window's thread when the list arrives
         def done(result):
             if not result["ok"]:
                 self.state["inference"] = "not available"
@@ -738,10 +849,15 @@ class FindTab:
                                                ecp.new_call("window_list_models", self.client_info, None)), done)
 
     def choose_model(self, event=None):
+        """Select the model in the box through ecp.select_model, as a job: it checks the model is local,
+        pins its digest (state["model_id"] is NAME@DIGEST) and loads it.
+
+        The model's name is saved in settings.json for the next start."""
         name = self.model_box.get()
         if name == "":
             return
 
+        # on the window's thread when the model is loaded, or refused
         def done(result):
             if not result["ok"]:
                 self.state["model_id"] = ""
@@ -762,6 +878,11 @@ class FindTab:
                        done)
 
     def ask(self):
+        """Ask the selected model a question in plain English, as a job (ecp.query).
+
+        The model only writes a plan (ecp.PLAN_FIELDS); ECP grounds it, runs it on the read-only rail
+        and audits the call. The plan used, what grounding changed and the audit line are shown above
+        the results."""
         text = self.question.get().strip()
         if text == "":
             return
@@ -769,6 +890,7 @@ class FindTab:
             self.plan_text.set("Pick a local model first.")
             return
 
+        # on the window's thread when the answer arrives
         def done(result):
             if not result["ok"]:
                 self.show_results([], result["kind"] + ": " + result["detail"])
@@ -794,6 +916,7 @@ class FindTab:
                                          ecp.new_call("window_ask", self.client_info, None)), done)
 
     def pick_family(self, event=None):
+        """A color family was chosen: clear the typed color (which would win) and search by the family."""
         self.color_text.set("")
         self.run_search()
 

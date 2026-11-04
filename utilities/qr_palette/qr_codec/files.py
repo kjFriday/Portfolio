@@ -11,6 +11,18 @@
 
 save_matrix writes a .png or .svg in a color, with an optional caption and logo; read_qr_file reads a
 PNG, PGM/PPM or one of this codec's own SVG drawings, and never raises.
+
+Callers: the app's GUI tabs (make, read, find), the short-link and print code and the MCP server go
+through the package's re-exports. This module glues together the writers (images.py, logos.py,
+svg.py) and the readers (images.py loaders, locate.py for pictures, svg.py for drawings, decode.py).
+
+Main flow of read_qr_file:
+1. An .svg file is parsed back into its module grid and decoded directly; no picture search is needed.
+2. Anything else is loaded as a picture and searched for a code (locate.decode_image).
+3. The result also carries the code's dark color, so a redraw can keep it.
+
+Records: a Picture is {"reading", "format", "color", "image"}; a Reading is decode_matrix's value plus
+"corners" (where the code was found in the picture; empty for an SVG).
 """
 
 import os
@@ -26,6 +38,7 @@ from .svg import INK, matrix_to_svg, read_svg_matrix, svg_color
 
 
 def is_link(text):
+    """True when text, ignoring case and surrounding spaces, starts with http:// or https://."""
     lowered = text.strip().lower()
     return lowered.startswith("http://") or lowered.startswith("https://")
 
@@ -49,12 +62,19 @@ def picture_bytes(matrix, scale, color, kind, caption="", logo=None):
 
 def save_matrix(matrix, path, scale, color=INK, caption="", logo=None):
     """Write a .png or .svg file in `color` -> Result path. It is written next to the target first
-    and then moved into place, so a failed save never leaves half a picture behind."""
+    and then moved into place, so a failed save never leaves half a picture behind.
+
+    scale is pixels per module for a PNG (an SVG ignores it). Side effects: creates path + ".part",
+    then replaces path with it.
+    """
     temporary = path + ".part"
     try:
         handle = open(temporary, "wb")
+        # Known limitation: if write fails the handle stays open until garbage collection, so on Windows
+        # the os.remove below can fail and leave the .part file behind (the target is still untouched).
         handle.write(picture_bytes(matrix, scale, color, file_kind(path), caption, logo))
         handle.close()
+        # os.replace is atomic on one volume and overwrites an existing file on Windows too
         os.replace(temporary, path)
     except OSError as error:
         try:
@@ -74,6 +94,7 @@ def dark_color(image):
     counts = {}
     for i in range(len(gray)):
         if gray[i] <= threshold:
+            # a gray-only picture (PGM) has rgb None; rgb is otherwise 3 bytes per pixel
             if rgb is None:
                 key = (gray[i], gray[i], gray[i])
             else:
@@ -81,6 +102,7 @@ def dark_color(image):
             counts[key] = counts.get(key, 0) + 1
     best = (0, 0, 0)
     best_count = 0
+    # sorted, so a tie always picks the same (lowest) color whatever the dict order
     for key in sorted(counts):
         if counts[key] > best_count:
             best = key
@@ -94,6 +116,7 @@ def read_qr_file(path):
     Never raises: a damaged, huge or unreadable file is a failed Result."""
     try:
         if file_kind(path) == "svg":
+            # the same size cap as pictures, checked before reading the text into memory
             if os.path.getsize(path) > images.MAX_FILE_BYTES:
                 return fail("the drawing is too big")
             handle = open(path, "r", encoding="utf-8")
@@ -119,11 +142,13 @@ def read_qr_file(path):
             kind = "png"
         return ok_result({"reading": reading["value"], "format": kind, "color": dark_color(loaded["value"]),
                           "image": loaded["value"]})
+    # the broad catch is the "never raises" promise: a malformed file may trip any parser error
     except Exception as error:
         return fail("cannot read " + os.path.basename(path) + " (" + type(error).__name__ + ")")
 
 
 def describe(reading):
+    """One line for a Reading, e.g. "version 2, level M, mask 3, 0 codeword(s) corrected"."""
     return ("version " + str(reading["version"]) + ", level " + reading["level"] + ", mask " +
             str(reading["mask"]) + ", " + str(reading["corrected"]) + " codeword(s) corrected")
 

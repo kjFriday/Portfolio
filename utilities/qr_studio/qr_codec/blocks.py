@@ -9,6 +9,21 @@
 """Blocks: data codewords split into Reed-Solomon blocks and interleaved, and back again.
 
 The short blocks come first; each long block holds one more data codeword (ISO/IEC 18004 table 9).
+
+Why blocks: a large symbol's codewords are cut into several Reed-Solomon blocks, each with its own
+error correction codewords, and the blocks are interleaved byte by byte before placement. A smudge
+that wipes out a run of neighbouring modules then damages a few codewords in many blocks instead of
+many codewords in one block, so each block stays within what its EC codewords can repair.
+
+Callers: encode.py calls add_error_correction after the data codewords are padded; decode.py calls
+split_blocks on the codewords read from the grid, corrects each block, and joins the data parts.
+Block counts and EC codewords per block come from tables.py.
+
+Main flow of add_error_correction:
+1. Work out each block's data length (block_data_lengths).
+2. Cut the data into those blocks and compute each block's EC codewords.
+3. Emit data codeword 0 of every block, then codeword 1, and so on (short blocks drop out at the end).
+4. Emit the EC codewords the same way; every block has the same EC count.
 """
 
 from .reed_solomon import rs_remainder
@@ -16,6 +31,11 @@ from .tables import BLOCK_COUNT, ECC_PER_BLOCK, level_index, raw_data_modules
 
 
 def block_data_lengths(version, level):
+    """Data codewords per block, in block order, for a version (1..40) and EC level letter.
+
+    The symbol holds raw total codewords; split across the blocks, raw % blocks of them get one extra
+    codeword, and those long blocks come last.
+    """
     index = level_index(level)
     blocks = BLOCK_COUNT[index][version]
     ecc = ECC_PER_BLOCK[index][version]
@@ -32,7 +52,10 @@ def block_data_lengths(version, level):
 
 
 def add_error_correction(data, version, level):
-    """Data codewords -> every codeword in transmission order (data interleaved, then EC interleaved)."""
+    """Data codewords -> every codeword in transmission order (data interleaved, then EC interleaved).
+
+    data must already be padded to the full data capacity of version and level.
+    """
     ecc = ECC_PER_BLOCK[level_index(level)][version]
     lengths = block_data_lengths(version, level)
     data_blocks = []
@@ -44,6 +67,7 @@ def add_error_correction(data, version, level):
         ec_blocks.append(rs_remainder(block, ecc))
         start = start + length
     result = []
+    # the last block is a long one when any exist, so its length bounds every column
     longest = lengths[len(lengths) - 1]
     for i in range(longest):
         for block in data_blocks:
@@ -56,7 +80,11 @@ def add_error_correction(data, version, level):
 
 
 def split_blocks(codewords, version, level):
-    """Inverse of add_error_correction -> list of blocks, each data then EC codewords."""
+    """Inverse of add_error_correction -> list of blocks, each data then EC codewords.
+
+    codewords must hold at least the symbol's total codeword count; reading walks the same column
+    order the encoder wrote.
+    """
     ecc = ECC_PER_BLOCK[level_index(level)][version]
     lengths = block_data_lengths(version, level)
     blocks = []

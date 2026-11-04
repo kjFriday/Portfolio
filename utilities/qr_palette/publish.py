@@ -7,8 +7,11 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""Publishing the nonlocal redirect pages: writing them into a folder a web host serves, without copying files
-by hand. links.json's nonlocal.publish says where:
+"""Publishing the nonlocal redirect pages into a folder a web host serves.
+
+A nonlocal short link is a static page at <base>/<ID>/index.html that sends the browser on to the
+link's destination; publishing writes those pages without copying files by hand. links.json's
+nonlocal.publish says where:
   kind "git"     a folder in a Git repository, such as one GitHub Pages serves. CNAME (the base's host) and
                  .nojekyll are written too, and the pages are committed and pushed.
   kind "folder"  a folder something else syncs. The pages are written there, and that is all.
@@ -19,10 +22,19 @@ page whose short link is gone is removed, but only ID-named folders' index.html,
 A commit holds only the pages it made, even if other work is staged in that repository, and a push is never
 forced: a rejected push is reported, and the commit stays.
 
+Callers: short_link_ops.py (publish_plan and publish_now) calls plan_pages and publish with the
+registry's short-link rows, the nonlocal base address and the scan tags. The pages themselves come
+from shortlinks.export_pages; Git runs as a child process (git).
+
+Main flow of publish:
+1. apply_pages: plan in a scratch folder (plan_pages), write the pages into the folder, and remove the
+   ID pages whose short link is gone.
+2. For kind "git": stage and commit exactly those paths (commit_pages), then push (push_pages).
+
 Records
-  Result   {"ok": bool, "error": str, "value": any}
-  Changes  {"folder", "added": [paths], "changed": [paths], "removed": [paths], "skipped": [IDs]}  paths use /
-  Pushed   {"committed": bool, "commit": str, "pushed": bool, "push_error": str}
+  Result     {"ok": bool, "error": str, "value": any}
+  Changes    {"folder", "added": [paths], "changed": [paths], "removed": [paths], "skipped": [IDs]}  paths use /
+  Published  {"changes": Changes, "commit": str, "pushed": bool, "push_error": str}  what publish returns
 """
 
 import hashlib
@@ -33,6 +45,10 @@ import tempfile
 
 import shortlinks
 
+# The publish kinds links.json may name ("" is not set up). ROOT_PAGES are the files at the top of the
+# folder this program writes and compares. CNAME tells GitHub Pages the custom domain; .nojekyll turns
+# off its Jekyll build, which would otherwise process the folder. Timeouts are in seconds; a push talks
+# to a remote, so it gets longer.
 KINDS = ("", "git", "folder")
 ROOT_PAGES = ("index.html", "404.html", "robots.txt", "CNAME", ".nojekyll")
 GIT_TIMEOUT = 60
@@ -40,10 +56,12 @@ PUSH_TIMEOUT = 180
 
 
 def ok_result(value):
+    """A successful Result holding value."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with a message for the user."""
     return {"ok": False, "error": error, "value": None}
 
 
@@ -54,7 +72,11 @@ def is_id_page(relative):
 
 
 def page_digest(path):
-    """A file's hash with its line ends made the same, since Git may hand back pages with CRLF."""
+    """A file's hash with its line ends made the same, since Git may hand back pages with CRLF.
+
+    SHA-256 hex digest of the bytes with CRLF turned into LF; core.autocrlf can check pages out with
+    CRLF, and they should still compare equal to freshly written ones.
+    """
     handle = open(path, "rb")
     try:
         return hashlib.sha256(handle.read().replace(b"\r\n", b"\n")).hexdigest()
@@ -67,6 +89,7 @@ def pages_in(folder):
     other file is not ours and is not looked at; a repository's own .git folder is not even entered."""
     found = {}
     for root, folders, files in os.walk(folder):
+        # removing a name from folders in place stops os.walk from descending into it
         if ".git" in folders:
             folders.remove(".git")
         for name in files:
@@ -79,13 +102,18 @@ def pages_in(folder):
 def cname_of(base):
     """The host a CNAME file names, in lower case, without a port; "" for a host GitHub gives itself."""
     host = shortlinks.host_of(base).split(":")[0].lower()
+    # a <user>.github.io address needs no CNAME; writing one would claim it as a custom domain
     if host.endswith(".github.io"):
         return ""
     return host
 
 
 def write_pages(folder, kind, rows, base, tags):
-    """The pages and, for Git, CNAME and .nojekyll -> Result of shortlinks.export_pages."""
+    """The pages and, for Git, CNAME and .nojekyll -> Result of shortlinks.export_pages.
+
+    Side effect: writes files under folder. rows are the registry's short-link rows; base is the
+    nonlocal address the pages live under; tags are links.json's tracking tags added to each destination.
+    """
     written = shortlinks.export_pages(folder, rows, base, tags)
     if not written["ok"]:
         return written
@@ -101,7 +129,11 @@ def write_pages(folder, kind, rows, base, tags):
 
 
 def check_target(folder, kind, base):
-    """"" when pages can be published to this folder from this base, else what is wrong."""
+    """"" when pages can be published to this folder from this base, else what is wrong.
+
+    For Git the folder must already exist inside a work tree (checked by running git rev-parse); a
+    plain folder is not checked here, and writing it shows any problem.
+    """
     if kind not in ("git", "folder"):
         return "set nonlocal.publish in links.json first: its kind (git or folder) and its folder"
     if folder == "":
@@ -113,6 +145,7 @@ def check_target(folder, kind, base):
             return folder + " is not there: clone the repository first"
         inside = git(folder, ["rev-parse", "--is-inside-work-tree"], GIT_TIMEOUT)
         if not inside["ok"]:
+            # "git was not found" is more useful than "not in a repository"
             if "not found" in inside["error"]:
                 return inside["error"]
             return folder + " is not in a Git repository"
@@ -121,7 +154,10 @@ def check_target(folder, kind, base):
 
 def compare(old, new):
     """Two {path: hash} tables -> what going from one to the other would do. Only an ID's page is ever
-    removed: the pages at the top are always written, and a CNAME left there may be someone's."""
+    removed: the pages at the top are always written, and a CNAME left there may be someone's.
+
+    Returns (added, changed, removed), each a sorted list of relative paths.
+    """
     added = []
     changed = []
     removed = []
@@ -137,7 +173,14 @@ def compare(old, new):
 
 
 def plan_pages(folder, kind, rows, base, tags):
-    """What publishing would change, with nothing touched -> Result Changes."""
+    """What publishing would change, with nothing touched -> Result Changes.
+
+    Steps:
+    1. Check the target (check_target).
+    2. Export every page into a fresh temporary folder.
+    3. Hash this program's pages in the target and in the scratch folder, and compare them.
+    4. Delete the scratch folder, whatever happened.
+    """
     problem = check_target(folder, kind, base)
     if problem != "":
         return fail(problem)
@@ -159,7 +202,11 @@ def plan_pages(folder, kind, rows, base, tags):
 
 
 def apply_pages(folder, kind, rows, base, tags):
-    """Write the pages into the folder and remove those whose short link is gone -> Result Changes."""
+    """Write the pages into the folder and remove those whose short link is gone -> Result Changes.
+
+    Every page is rewritten, changed or not; the returned Changes is the plan made just before. An
+    ID folder left empty by a removal is removed too, never the target folder itself.
+    """
     plan = plan_pages(folder, kind, rows, base, tags)
     if not plan["ok"]:
         return plan
@@ -182,10 +229,16 @@ def apply_pages(folder, kind, rows, base, tags):
 
 def git(folder, arguments, timeout):
     """Run git in a folder -> Result its output. It never waits for a person: with no credentials to
-    hand it fails, and says so. No console window opens."""
+    hand it fails, and says so. No console window opens.
+
+    timeout is in seconds. A failed run returns the exit code as the Result's value and git's own
+    message (stderr, else stdout) as its error.
+    """
     environment = dict(os.environ)
+    # GIT_TERMINAL_PROMPT=0 makes git fail instead of asking for a user name or password
     environment["GIT_TERMINAL_PROMPT"] = "0"
     try:
+        # CREATE_NO_WINDOW exists only on Windows; 0 elsewhere means no flags
         done = subprocess.run(["git"] + arguments, cwd=folder, env=environment, capture_output=True, timeout=timeout,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except FileNotFoundError:
@@ -202,16 +255,26 @@ def git(folder, arguments, timeout):
 
 
 def commit_message(changes):
+    """The commit's one-line message, counting the pages added, changed and removed."""
     return ("QR Palette: redirect pages: " + str(len(changes["added"])) + " added, " + str(len(changes["changed"])) +
             " changed, " + str(len(changes["removed"])) + " removed")
 
 
 def commit_pages(folder, changes):
     """Commit exactly the pages that changed -> Result the new commit's hash, "" when Git sees nothing
-    new. Whatever else is staged in the repository stays staged and out of this commit."""
+    new. Whatever else is staged in the repository stays staged and out of this commit.
+
+    Steps:
+    1. git add -A on the paths (stages new, changed and deleted pages alike).
+    2. git diff --cached --quiet on the paths: success means nothing really changed (only line ends).
+    3. git commit with a pathspec, which commits only those paths and leaves other staged work alone.
+    4. Read the short hash of the new HEAD.
+    Paths are relative to folder, which is the commands' working directory.
+    """
     paths = changes["added"] + changes["changed"] + changes["removed"]
     if len(paths) == 0:
         return ok_result("")
+    # "--" ends the options, so a path can never be read as one
     added = git(folder, ["add", "-A", "--"] + paths, GIT_TIMEOUT)
     if not added["ok"]:
         return fail("cannot stage the pages: " + added["error"])
@@ -229,11 +292,15 @@ def commit_pages(folder, changes):
 
 def push_pages(folder):
     """Push the branch to its remote. Never forced: if the remote has moved on, this fails, and says so
-    -> Result True."""
+    -> Result True.
+
+    Plain "git push" uses the branch's configured upstream; credentials come from git's own helpers.
+    """
     pushed = git(folder, ["push"], PUSH_TIMEOUT)
     if pushed["ok"]:
         return ok_result(True)
     said = pushed["error"]
+    # the phrases git prints when the remote branch is ahead
     if "rejected" in said or "fetch first" in said or "non-fast-forward" in said:
         return fail("the remote has commits this folder does not; pull them in your Git client, then publish again")
     return fail(said)
@@ -241,7 +308,11 @@ def push_pages(folder):
 
 def publish(folder, kind, rows, base, tags):
     """Write the pages, and for Git commit and push them -> Result {"changes": Changes, "commit": str, "pushed":
-    bool, "push_error": str}. A failed push leaves the commit in place."""
+    bool, "push_error": str}. A failed push leaves the commit in place.
+
+    A push is tried only when a new commit was made; a failed push is still an ok Result, with pushed
+    False and the reason in push_error.
+    """
     applied = apply_pages(folder, kind, rows, base, tags)
     if not applied["ok"]:
         return applied

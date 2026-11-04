@@ -7,7 +7,9 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The built-in checks: `python qr_palette.py --selftest` runs selftest() (the full suite is in tests/).
+"""The quick built-in checks that `python qr_palette.py --selftest` runs.
+
+qr_palette.main calls selftest() for --selftest; the full suite is in tests/.
 
 A quick pass over the core, on a scratch registry in a temporary folder: colors; making and reading back
 codes, with a logo too; robustness; a print sheet; a list; a Wi-Fi code; finding; votes; short links, their
@@ -17,6 +19,8 @@ It runs on the default settings: --selftest never reads settings.json.
 
 qr_palette.main imports this module only for --selftest, because it takes the version and option_value
 from qr_palette.py.
+
+Start reading at selftest(): each check() is one behavior, and its message says what it proves.
 """
 
 import os
@@ -44,6 +48,7 @@ from votes import board, vote_color
 
 
 def check(condition, message, failures):
+    """Print one "ok" or "FAIL" line for a check, and add a failed check's message to `failures`."""
     if condition:
         print("  ok   " + message)
     else:
@@ -52,6 +57,18 @@ def check(condition, message, failures):
 
 
 def selftest():
+    """Run every quick check on a scratch registry in a new temporary folder -> the exit code: 0 when
+    every check passed, else 1. Prints as it goes; the folder is removed at the end, whatever happens.
+
+    Steps:
+    1. colors: the usable set, the order with no votes, and a color's name.
+    2. codes: make, read back and register codes; refuse a light color; robustness; a logo; a print
+       sheet; a list; a Wi-Fi code; finding; votes; short links, their tags, history and publishing;
+       scans.
+    3. ecp and mcp: no query before a model is chosen, loopback only, a plan run on a snapshot, the
+       MCP handshake and its tool list, and option_value.
+    4. Print the last line and return the exit code.
+    """
     failures = []
     folder = tempfile.mkdtemp(prefix="qr_palette_selftest_")
     try:
@@ -68,11 +85,13 @@ def selftest():
         check(made_svg["ok"], "a green SVG code is made, read back and registered", failures)
         check(not make_qr(db_path, "x", "#ffff00", "M", os.path.join(folder, "b.png"), 4)["ok"],
               "a color too light to scan is refused", failures)
+        # upper case fits QR's alphanumeric mode, which has no lower-case letters
         sample = "HTTPS://GO.EXAMPLE.COM/12345678"
         worn = qr_codec.robustness(qr_codec.picture_image(qr_codec.encode_text(sample, "H", 1, -1)["value"], 4,
                                                           "#000000"), sample)
         check(worn["ok"] and worn["value"]["passed"] == 9, "a code's robustness is scored (9 of 10 for this one)",
               failures)
+        # a flat gray 16 x 16 picture stands in for a logo; a logo always makes the code level H
         logo = make_qr(db_path, "https://example.com/logo", "#663399", "M", os.path.join(folder, "logo.png"), 4, None,
                        qr_codec.make_image(16, 16, 40))
         check(logo["ok"] and logo["value"]["level"] == "H", "a code with a logo in the middle is level H and reads back",
@@ -80,6 +99,7 @@ def selftest():
         printed = sheets.print_sheet(db_path, [made["value"]["id"], made_svg["value"]["id"]],
                                      sheets.DEFAULT_SHEETS["layouts"]["A4 poster"], os.path.join(folder, "sheet.pdf"))
         check(printed["ok"] and printed["value"]["pages"] == 2, "codes are printed on a sheet as a PDF", failures)
+        # the second row's #ffff00 is too light to scan, so the list skips it and says so
         run = make_batch(db_path, [{"row": 2, "link": "https://example.com/list", "color": "#660099", "label": "x",
                                     "file": "", "problem": ""},
                                    {"row": 3, "link": "https://example.com/list", "color": "#ffff00", "label": "y",
@@ -87,6 +107,7 @@ def selftest():
                          None, "selftest")
         check(run["ok"] and run["value"]["made"] == 1 and run["value"]["skipped"] == 1 and
               os.path.isfile(run["value"]["report"]), "a list makes its codes and reports the row it skipped", failures)
+        # the registry keeps the Wi-Fi text with its password masked; scanning the real text still finds it
         wifi = payloads.build("wifi", {"ssid": "Cafe", "password": "selftest-secret"})["value"]
         joined = make_qr(db_path, wifi["text"], "#663399", "M", os.path.join(folder, "wifi.png"), 4, None, None, True)
         found = matches_for_text(db_path, wifi["text"], "")
@@ -113,7 +134,8 @@ def selftest():
               "the local section's redirect page is exported, and only that one", failures)
         code = local["value"]["short_code"]
         retarget_link(db_path, code, "https://example.com/later-still")
-        schedule_link_change(db_path, code, "https://example.com/next-year", "2099-01-01")
+        schedule_link_change(db_path, code, "https://example.com/next-year", "2099-01-01")  # stays to come
+        # "exampie" (i for l) only looks like the nonlocal base GO.EXAMPLE.COM, so it is called out
         tagged = fresh_code(db_path, 7)
         key = localkey.read_key(localkey.key_path(db_path))
         check(shortlinks.is_valid_code(tagged) and shortlinks.has_valid_tag(tagged, key) and
@@ -135,13 +157,14 @@ def selftest():
         handle = open(report, "w", encoding="utf-8")
         handle.write("date,utm_content,count\n2026-10-28," + code + "-006633,5\n")
         handle.close()
-        import_scan_file(db_path, report)
+        import_scan_file(db_path, report)  # twice on purpose: a source's day is replaced, not added to
         imported = import_scan_file(db_path, report)
-        shown = search(db_path, "qr_code", code, False, 20, "2026-10-29")
+        shown = search(db_path, "qr_code", code, False, 20, "2026-10-29")  # a fixed today: the 28th is recent
         check(imported["ok"] and shown["ok"] and shown["value"][0]["scans"] == {"total": 5, "recent": 5},
               "scans are imported per short link, and importing again changes nothing", failures)
 
         print("ecp and mcp")
+        # port 1: nothing listens there, so no model can be chosen or asked
         engine = ecp.new_engine(db_path, "http://127.0.0.1:1", 1.0, __version__)
         asked = ecp.query(engine, "blue", "", ecp.new_call("selftest", {}, None))
         check(not asked["ok"] and asked["kind"] == "args_invalid", "no query before a local model is chosen", failures)
@@ -155,6 +178,8 @@ def selftest():
         check(ran is not None and len(ran["records"]) == 1 and ran["records"][0]["section"] == "local" and
               ecp.ground(dict(ecp.empty_plan(), section="local"), "every code")[0]["section"] == "",
               "ECP finds the local short links only when the question names the section", failures)
+        # the MCP handshake: initialize, then the initialized notification (no id, so no answer), then
+        # tools/list
         server = mcp_server.new_server(engine)
         mcp_server.handle(server, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                                    "params": {"protocolVersion": "2025-11-25"}})

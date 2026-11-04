@@ -7,7 +7,24 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""Tests for swatch and ranking: the cube, names and families, contrast, and the JSON presets and weights."""
+"""Tests for swatch and ranking: cube, names, contrast, and the JSON presets and weights.
+
+Names include each color's family, the last word of its name.
+
+swatch.py holds the 216-color cube, OKLab names and families, WCAG contrast on white (which decides
+the colors a code may be drawn in) and the ranking of colors by presets. ranking.py reads the presets/
+and weights/ JSON files, which mirror Color Voats' TOML files. Many expected values here were worked
+out with Color Voats itself, so the two programs rank and name colors the same.
+
+What the classes pin:
+  1. CubeTests: the 216 colors, their indexes, hex parsing, nearest cube and usable colors.
+  2. ContrastTests: WCAG contrast, the 118 usable colors at 3:1, and the exact line.
+  3. NameTests: names and families as Color Voats gives them, and words people type.
+  4. RankingTests: every shipped preset, Color Voats' rankings, the scans algo, and JSON = TOML.
+  5. RankingFileTests: edited presets and weights apply at once, and mistakes are named.
+
+Run with the rest of the suite: python -m unittest discover -s tests, in the program folder.
+"""
 
 import json
 import os
@@ -19,7 +36,7 @@ import ranking
 import swatch
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the program folder, above tests/
-COLOR_VOATS = os.path.join(HERE, "..", "color_voats")
+COLOR_VOATS = os.path.join(HERE, "..", "color_voats")  # the Color Voats project beside this one, if present
 
 # Color Voats' voats-sample.json, oldest first (two colors are upvoated twice).
 SAMPLE = [{"color": "#3366cc", "voat": 1}, {"color": "#3399cc", "voat": 1}, {"color": "#33cccc", "voat": 1},
@@ -45,12 +62,14 @@ NAMES = {"#ff0000": "Red", "#660000": "Dark red", "#ff9900": "Orange", "#996633"
 
 
 def write_json(path, data):
+    """Write `data` to `path` as indented JSON."""
     handle = open(path, "w", encoding="utf-8")
     handle.write(json.dumps(data, indent=2))
     handle.close()
 
 
 def read_json(path):
+    """The parsed JSON of a UTF-8 file."""
     handle = open(path, encoding="utf-8")
     data = json.load(handle)
     handle.close()
@@ -58,7 +77,12 @@ def read_json(path):
 
 
 class CubeTests(unittest.TestCase):
+    """The 6 x 6 x 6 color cube and the helpers around it."""
+
     def test_216_colors_from_black_to_white(self):
+        """palette() lists 216 different colors, red slowest, from #000000 to #ffffff.
+
+        Index 200 is 5 * 36 + 3 * 6 + 2 in base 6, so red ff, green 99, blue 66."""
         colors = swatch.palette()
         self.assertEqual(len(colors), 216)
         self.assertEqual(len(set(colors)), 216)
@@ -67,6 +91,7 @@ class CubeTests(unittest.TestCase):
         self.assertEqual(colors[215], "#ffffff")
 
     def test_cube_index_is_the_place_in_the_palette(self):
+        """cube_index is each color's place in palette(); a channel that is no multiple of 51 gives -1."""
         colors = swatch.palette()
         for index in range(len(colors)):
             self.assertEqual(swatch.cube_index(colors[index]), index)
@@ -74,12 +99,14 @@ class CubeTests(unittest.TestCase):
         self.assertEqual(swatch.cube_index("#330001"), -1)
 
     def test_normalize_hex(self):
+        """Hex in either case, with or without # and spaces, becomes "#rrggbb"; wrong lengths, bad digits and non-text give ""."""
         self.assertEqual(swatch.normalize_hex("#3366CC"), "#3366cc")
         self.assertEqual(swatch.normalize_hex(" 3366cc "), "#3366cc")
         for bad in ("#3366c", "#3366ccc", "#zz66cc", "", None, 336699):
             self.assertEqual(swatch.normalize_hex(bad), "")
 
     def test_nearest_cube_color(self):
+        """#3467cb is nearest #3366cc and near it; every cube color is its own nearest; a far color is not near."""
         self.assertEqual(swatch.nearest_cube("#3467cb"), "#3366cc")
         for color in swatch.palette():
             self.assertEqual(swatch.nearest_cube(color), color)
@@ -87,6 +114,9 @@ class CubeTests(unittest.TestCase):
         self.assertFalse(swatch.is_near("#3366cc", "#cc6633"))
 
     def test_nearest_usable_color(self):
+        """For colors too light to scan, nearest_usable gives a usable color no farther in OKLab than any other usable one.
+
+        A usable color is its own nearest."""
         for color in ("#ffff00", "#ffffff", "#99ccff", "#ffeecc"):
             self.assertFalse(swatch.usable(color))
             near = swatch.nearest_usable(color)
@@ -98,15 +128,22 @@ class CubeTests(unittest.TestCase):
 
 
 class ContrastTests(unittest.TestCase):
+    """WCAG 2.x contrast against white, which decides the usable colors."""
+
     def test_black_on_white_is_21_and_symmetric(self):
+        """Black on white is 21:1 either way round, the most WCAG contrast gives; a color on itself is 1:1."""
         self.assertAlmostEqual(swatch.contrast("#000000", "#ffffff"), 21.0, places=9)
         self.assertAlmostEqual(swatch.contrast("#ffffff", "#000000"), 21.0, places=9)
         self.assertAlmostEqual(swatch.contrast("#3366cc", "#3366cc"), 1.0, places=9)
 
     def test_118_cube_colors_are_usable(self):
+        """At the default 3:1, 118 of the 216 cube colors are usable."""
         self.assertEqual(len(swatch.usable_colors()), 118)
 
     def test_the_line_is_compared_exactly(self):
+        """Contrast is compared unrounded: #0099ff at 2.9998 is out, #6699cc at 3.003 is in.
+
+        Rounding to one decimal would let #0099ff through as 3.0."""
         self.assertLess(swatch.contrast("#0099ff", swatch.WHITE), 3.0)  # 2.9998
         self.assertFalse(swatch.usable("#0099ff"))
         self.assertGreater(swatch.contrast("#6699cc", swatch.WHITE), 3.0)  # 3.003
@@ -116,6 +153,7 @@ class ContrastTests(unittest.TestCase):
         self.assertFalse(swatch.usable(swatch.WHITE))
 
     def test_the_line_follows_the_setting(self):
+        """Raising MIN_CONTRAST to 4.5 (settings.json's colors.minimum_contrast) leaves 77 usable colors; it is put back after."""
         saved = swatch.MIN_CONTRAST
         try:
             swatch.MIN_CONTRAST = 4.5
@@ -125,11 +163,15 @@ class ContrastTests(unittest.TestCase):
 
 
 class NameTests(unittest.TestCase):
+    """Color names and families."""
+
     def test_names_match_color_voats(self):
+        """Every color in NAMES gets the name Color Voats 0.2.0 gives it (#cc0066 really is "Red" there)."""
         for color in NAMES:
             self.assertEqual(swatch.color_name(color), NAMES[color], color)
 
     def test_the_family_is_the_last_word(self):
+        """A family is the last word of the name, and every cube color's family is one of FAMILIES."""
         self.assertEqual(swatch.family("#006666"), "teal")
         self.assertEqual(swatch.family("#cccccc"), "grey")
         self.assertEqual(swatch.family("#663300"), "brown")
@@ -137,6 +179,9 @@ class NameTests(unittest.TestCase):
             self.assertIn(swatch.family(color), swatch.FAMILIES, color)
 
     def test_words_people_type(self):
+        """family_of_word takes any case, plurals and FAMILY_WORDS (gray, navy, cyan, magenta); other words give "".
+
+        "s" alone is no plural of anything."""
         cases = {"blue": "blue", "Blues": "blue", "GRAY": "grey", "greys": "grey", "navy": "blue",
                  "cyan": "teal", "magenta": "pink", "violets": "purple", "chartreuse": "", "": "", "s": ""}
         for word in cases:
@@ -144,7 +189,10 @@ class NameTests(unittest.TestCase):
 
 
 class RankingTests(unittest.TestCase):
+    """rank_colors over the shipped presets and weights."""
+
     def test_the_shipped_presets(self):
+        """The five shipped presets are found, in name order, and each reads with an "about" text."""
         self.assertEqual(swatch.presets(), ["balanced", "discover", "mixer", "popular", "scans"])
         for name in swatch.presets():
             preset = ranking.read_preset(swatch.RANKING_ROOT, name)
@@ -152,20 +200,26 @@ class RankingTests(unittest.TestCase):
             self.assertNotEqual(preset["value"]["about"], "")
 
     def test_every_preset_ranks_every_color_once(self):
+        """Every preset's ranking is a permutation of the 216 cube colors."""
         for name in swatch.presets():
             ranked = swatch.rank_colors(name, SAMPLE)
             self.assertTrue(ranked["ok"], ranked["error"])
             self.assertEqual(sorted(ranked["value"]), sorted(swatch.palette()))
 
     def test_no_votes_is_discovery_order(self):
+        """With no votes every preset falls back to the same discovery order Color Voats shows."""
         for name in swatch.presets():
             self.assertEqual(" ".join(swatch.rank_colors(name, [])["value"][:10]), NO_VOTES_TOP, name)
 
     def test_the_sample_matches_color_voats(self):
+        """With Color Voats' sample votes, each preset's top ten is Color Voats' own."""
         for name in SAMPLE_TOP:
             self.assertEqual(" ".join(swatch.rank_colors(name, SAMPLE)["value"][:10]), SAMPLE_TOP[name], name)
 
     def test_scans_lift_a_color_only_when_they_are_given(self):
+        """The scans preset follows scans when they are given, and is the discovery order without them (None or {}).
+
+        Presets that do not use the scans algo (mixer, balanced) rank the same with or without scans."""
         scans = {"#3366cc": {"scans": 400, "links": 2}, "#006633": {"scans": 10, "links": 1}}
         without = swatch.rank_colors("scans", [])["value"]
         self.assertEqual(" ".join(without[:10]), NO_VOTES_TOP)
@@ -177,12 +231,20 @@ class RankingTests(unittest.TestCase):
             self.assertEqual(swatch.rank_colors(name, SAMPLE, scans)["value"], swatch.rank_colors(name, SAMPLE)["value"])
 
     def test_one_lucky_code_does_not_outrank_a_proven_color(self):
+        """scans_scores divides scans by links plus 2 prior links (at a prior rate of 0), so many links outweigh one lucky code.
+
+        30 scans on 1 link score 30 / 3 = 10; 80 scans on 4 links score 80 / 6, about 13.3, and win;
+        a color with no scans scores 0."""
         colors = ["#111111", "#222222", "#333333"]
         scores = ranking.scans_scores(colors, {"#111111": {"scans": 30, "links": 1},
                                                "#222222": {"scans": 80, "links": 4}}, 2, 0)
         self.assertEqual(scores, [10.0, 80 / 6.0, 0.0])
 
     def test_the_mixer_keeps_its_own_chain(self):
+        """A mixer preset may not use scans: the error points to a blend instead.
+
+        The preset is written into a scratch copy of the ranking folders, so the shipped files are
+        never touched."""
         root = tempfile.mkdtemp(prefix="qr_palette_mixer_")
         try:
             shutil.copytree(os.path.join(HERE, "weights"), os.path.join(root, "weights"))
@@ -195,10 +257,12 @@ class RankingTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
     def test_unknown_presets(self):
+        """A missing preset names its file; a name that climbs out of presets/ is refused."""
         self.assertIn("missing presets/loudest.json", swatch.rank_colors("loudest", [])["error"])
         self.assertFalse(swatch.rank_colors("../algos", [])["ok"])
 
     def test_board_and_places(self):
+        """The board keeps the 118 usable colors in ranked order; places number all 216 from 1."""
         order = swatch.rank_colors("mixer", SAMPLE)["value"]
         board = swatch.usable_board(order)
         self.assertEqual(len(board), 118)
@@ -208,6 +272,10 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(places[order[215]], 216)
 
     def test_the_json_matches_color_voats_toml(self):
+        """Every preset and weight JSON file holds the same data as Color Voats' TOML file of that name, "about" aside.
+
+        Skipped on a Python without tomllib (before 3.11) or without Color Voats beside this project;
+        scans.json is QR Palette's own."""
         try:
             import tomllib
         except ImportError:
@@ -220,6 +288,7 @@ class RankingTests(unittest.TestCase):
                     continue  # QR Palette's own: Color Voats has no scans
                 mine = read_json(os.path.join(HERE, folder, name))
                 del mine["about"]
+                # name[:-5] drops ".json"
                 handle = open(os.path.join(COLOR_VOATS, folder, name[:-5] + ".toml"), "rb")
                 theirs = tomllib.load(handle)
                 handle.close()
@@ -227,7 +296,10 @@ class RankingTests(unittest.TestCase):
 
 
 class RankingFileTests(unittest.TestCase):
+    """Ranking from an editable copy of presets/ and weights/, pointed to by swatch.RANKING_ROOT."""
+
     def setUp(self):
+        """Copy the shipped presets and weights into a temporary root and point swatch at it."""
         self.root = tempfile.mkdtemp(prefix="qr_palette_ranking_")
         shutil.copytree(os.path.join(HERE, "presets"), os.path.join(self.root, "presets"))
         shutil.copytree(os.path.join(HERE, "weights"), os.path.join(self.root, "weights"))
@@ -235,23 +307,30 @@ class RankingFileTests(unittest.TestCase):
         swatch.RANKING_ROOT = self.root
 
     def tearDown(self):
+        """Point swatch back at the shipped folders and remove the copy."""
         swatch.RANKING_ROOT = self.saved
         shutil.rmtree(self.root, ignore_errors=True)
 
     def change(self, folder, name, data):
+        """Replace `folder`/`name`.json in the copy with `data`."""
         write_json(os.path.join(self.root, folder, name + ".json"), data)
 
     def reset(self):
+        """Copy the shipped presets and weights over the copy again."""
         for folder in ("presets", "weights"):
             shutil.rmtree(os.path.join(self.root, folder), ignore_errors=True)
             shutil.copytree(os.path.join(HERE, folder), os.path.join(self.root, folder))
 
     def error(self, name):
+        """Read preset `name` from the copy, which must fail -> its error."""
         result = ranking.read_preset(self.root, name)
         self.assertFalse(result["ok"])
         return result["error"]
 
     def test_an_edit_applies_at_once(self):
+        """An edited weight file and preset change the next ranking with no restart; a preset without "about" reads as "".
+
+        With downvoats counting ten times, the two downvoated sample colors sink to the end."""
         before = swatch.rank_colors("mixer", SAMPLE)["value"]
         self.change("weights", "net", {"about": "downvoats count ten times", "up": 1.0, "down": 10.0})
         self.change("presets", "mixer", {"algo": "net"})
@@ -261,11 +340,16 @@ class RankingFileTests(unittest.TestCase):
         self.assertEqual(ranking.read_preset(self.root, "mixer")["value"]["about"], "")
 
     def test_a_new_preset_is_found(self):
+        """A new file in presets/ is a new preset at once; Wilson score alone puts #3366cc first."""
         self.change("presets", "only_wilson", {"about": "Wilson score alone", "algo": "wilson"})
         self.assertIn("only_wilson", swatch.presets())
         self.assertEqual(swatch.rank_colors("only_wilson", SAMPLE)["value"][0], "#3366cc")
 
     def test_mistakes_name_the_file_and_the_problem(self):
+        """Each mistake in a weight or preset file gives an error naming the problem; a file that is not JSON names its path.
+
+        The copy is reset before each case, and a broken weight file is reached through a mixer
+        preset that uses that algo alone."""
         cases = (
             ("weights", "net", {"up": 1.0}, "missing weight 'down'"),
             ("weights", "net", {"up": 1.0, "down": "x"}, "must be a number"),

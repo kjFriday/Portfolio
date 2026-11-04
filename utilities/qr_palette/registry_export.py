@@ -7,12 +7,19 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The registry exported: CSV with one row per code (for spreadsheets), or JSON with everything.
+"""Registry export: a CSV file with one row per code, or a JSON file with everything.
+
+The CSV is for spreadsheets. The JSON also holds the short links with their history, schedules and
+scans, and the votes.
 
 The registry is read on the read-only rail, and the file is written next to its place first and then moved
 into it. The JSON names the program and its version, which qr_palette.py holds; qr_palette.py never
 imports this module, so the two do not import each other. A Wi-Fi password is never in an export: the
 registry only has it masked.
+
+Called by the window's export command (gui/window.py). It calls registry (read-only), app_settings and
+shortlinks.section_of for each short link's section, and common.safe_cell for every CSV cell.
+Start reading at export_registry().
 """
 
 import csv
@@ -25,6 +32,8 @@ import shortlinks
 from common import fail, ok_result, safe_cell
 from qr_palette import APP_NAME, __version__
 
+# The CSV's header, in order. Each is a key of the rows export_registry builds; the JSON's codes use the
+# same keys.
 CSV_COLUMNS = ("id", "color", "color_name", "family", "link", "destination", "short_id", "section", "path", "format",
                "ec_level", "version", "origin", "created", "scans_total", "scans_30_days", "password_masked", "has_logo")
 
@@ -33,7 +42,14 @@ def export_registry(db_path, path, today=""):
     """The registry as CSV (one row per QR code, for spreadsheets) or JSON (codes, short links with
     their history, schedules and scans, and votes), by `path`'s extension -> Result {"path", "codes",
     "short_links"}. Scans up to `today` ("" for today). Read on the read-only rail, and written next to
-    its place first. A Wi-Fi password is never here: the registry only has it masked."""
+    its place first. A Wi-Fi password is never here: the registry only has it masked.
+
+    Steps:
+    1. Choose CSV or JSON by the extension.
+    2. Read everything in one read-only visit, then close the registry.
+    3. Build one flat row per code, with its short link's section and scan counts.
+    4. Write PATH.part, then move it into place; a failed write removes PATH.part.
+    """
     kind = os.path.splitext(path)[1].lower()
     if kind not in (".csv", ".json"):
         return fail("export to a .csv or a .json file")
@@ -55,6 +71,7 @@ def export_registry(db_path, path, today=""):
         section = ""
         if row["short_code"] != "":
             section = shortlinks.section_of(app_settings.LINKS, row["link"])
+        # scans: blank for a code without a short link, 0 for a short link never scanned
         scanned = totals.get(row["short_code"], {"total": "", "recent": ""})
         if row["short_code"] != "" and row["short_code"] not in totals:
             scanned = {"total": 0, "recent": 0}
@@ -68,6 +85,8 @@ def export_registry(db_path, path, today=""):
     temporary = path + ".part"
     try:
         if kind == ".csv":
+            # utf-8-sig starts the file with a byte-order mark, which tells Excel it is UTF-8; newline=""
+            # lets the csv module write its own line ends
             handle = open(temporary, "w", encoding="utf-8-sig", newline="")
             try:
                 writer = csv.writer(handle)
@@ -75,7 +94,7 @@ def export_registry(db_path, path, today=""):
                 for row in rows:
                     cells = []
                     for key in CSV_COLUMNS:
-                        cells.append(safe_cell(row[key]))
+                        cells.append(safe_cell(row[key]))  # text starting with = + - @ is never a formula
                     writer.writerow(cells)
             finally:
                 handle.close()

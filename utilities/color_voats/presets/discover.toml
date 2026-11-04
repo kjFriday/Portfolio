@@ -1,6 +1,13 @@
 # New ground first: colors far from everything voated, nudged toward colors like your upvoats.
+# A Color Voats preset: factory.py reads it with the weights of each algo in uses and writes
+# rankers/ranker_discover.py. Pick it in the window's Ranking list or with --preset discover.
+
+# blend: each scorer's scores are scaled to 0..1 and summed with the weights below.
 algo = "blend"
 
+# The scorers to blend and how much each counts; only the ratio of the weights matters.
 [uses]
+# colors far from everything you voated on rise
 explore = 0.7
+# colors near your upvoats rise and colors near your downvoats sink
 similar = 0.3

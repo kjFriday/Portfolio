@@ -1,3 +1,7 @@
 # Net voats: a color scores its upvoats x up minus its downvoats x down.
+# Read by factory.py for every preset that uses net.
+
+# up: what one upvoat adds
 up = 1.0
+# down: what one downvoat takes away (a positive number; it is subtracted)
 down = 1.0

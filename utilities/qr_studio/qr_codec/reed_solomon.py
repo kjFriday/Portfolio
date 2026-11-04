@@ -11,6 +11,18 @@
 A block is a list of codewords, highest power first. The generator's roots are alpha**0 ..
 alpha**(degree-1). rs_correct finds the errors with Berlekamp-Massey, a Chien search and Forney's
 formula, then checks the syndromes again, so a wrong correction is refused rather than returned.
+
+The idea (ISO/IEC 18004 section 7.5): treat a block of n codewords as a polynomial over GF(256)
+(gf.py), the first codeword the coefficient of x^(n-1). The encoder appends the remainder of
+data * x^degree divided by the generator, which makes the whole block a multiple of the generator, so
+it is zero at each of the generator's roots. A reader evaluates the block at those roots (the
+syndromes): all zero means no error; otherwise the syndromes carry enough to find and fix up to
+degree // 2 wrong codewords.
+
+Callers: blocks.py (rs_remainder, when encoding), decode.py (rs_correct, per block) and the tests,
+through the package's re-exports.
+
+Start reading at rs_remainder, then rs_correct.
 """
 
 from .records import fail, ok_result
@@ -43,6 +55,13 @@ def rs_remainder(data, degree):
 
 
 def rs_syndromes(block, ec_count):
+    """The ec_count syndromes of a block: the block, read as a polynomial, evaluated at alpha**0 ..
+    alpha**(ec_count-1).
+
+    Each value is computed by Horner's rule (multiply the running value by x, add the next codeword),
+    highest power first. A block that left the encoder intact gives all zeros, because those points
+    are the generator's roots.
+    """
     syndromes = []
     for i in range(ec_count):
         value = 0
@@ -54,6 +73,7 @@ def rs_syndromes(block, ec_count):
 
 
 def all_zero(values):
+    """True when every item of values is 0 (and for an empty list)."""
     for value in values:
         if value != 0:
             return False
@@ -61,7 +81,23 @@ def all_zero(values):
 
 
 def rs_correct(block, ec_count):
-    """Fix up to ec_count // 2 wrong codewords -> Result {"block": [int], "errors": int}."""
+    """Fix up to ec_count // 2 wrong codewords -> Result {"block": [int], "errors": int}.
+
+    block is the whole block, data then error-correction codewords; ec_count is how many of the latter
+    it has. "errors" counts the codewords changed. Fails with "too many errors" when the damage is
+    beyond repair or the repair does not check out. The input list is not changed.
+
+    Steps:
+    1. Syndromes: all zero means nothing to fix.
+    2. Berlekamp-Massey builds the shortest error-locator polynomial whose roots mark the wrong
+       positions, one syndrome at a time; more than ec_count // 2 errors cannot be located.
+    3. Chien search tries every position: a root at alpha**-e means the codeword at power e (counted
+       from the block's end) is wrong. The roots found must match the locator's degree.
+    4. Forney's formula gives each error's value from the error evaluator (syndromes times locator,
+       cut to ec_count terms) and the locator's formal derivative (in GF(2^8) only the odd terms
+       survive differentiation). XOR the value into the codeword.
+    5. Recompute the syndromes; anything but zeros means the block was beyond repair.
+    """
     n = len(block)
     syndromes = rs_syndromes(block, ec_count)
     if all_zero(syndromes):

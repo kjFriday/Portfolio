@@ -89,30 +89,36 @@ class CodecPackage(types.ModuleType):
     """The qr_codec package object: a name in SETTING_HOMES is read, set and deleted in its home."""
 
     def __getattr__(self, name):
+        """Value of a forwarded setting from its home module; AttributeError for any other unknown name."""
         # Python calls this only for a name the package itself does not hold.
         if name in SETTING_HOMES:
             return getattr(SETTING_HOMES[name], name)
         raise AttributeError("module '" + self.__name__ + "' has no attribute '" + name + "'")
 
     def __setattr__(self, name, value):
+        """Set a forwarded setting in its home module; any other name is set on the package as usual."""
         if name in SETTING_HOMES:
             setattr(SETTING_HOMES[name], name, value)
         else:
             types.ModuleType.__setattr__(self, name, value)
 
     def __delattr__(self, name):
+        """Delete a forwarded setting in its home module; any other name is deleted from the package."""
         if name in SETTING_HOMES:
             delattr(SETTING_HOMES[name], name)
         else:
             types.ModuleType.__delattr__(self, name)
 
     def __dir__(self):
+        """The package's own names plus the forwarded settings, so dir() and completion list them."""
         names = types.ModuleType.__dir__(self)
         for name in SETTING_HOMES:
             names.append(name)
         return names
 
 
+# swapping the class of the live module object (allowed since Python 3.5) keeps every existing
+# reference to the package and adds the forwarding above
 sys.modules[__name__].__class__ = CodecPackage
 
 # ==== stamp v1 | author=kjFriday | hmac-sha256=7c621a567e4dfc5e691408bab8114131c21d0d26d10bd14f1db60acfef3a922c ====

@@ -29,6 +29,170 @@ The tests are in `tests/`; run them from this folder (one file: `python -m unitt
 scratch registry, makes and finds a code, writes a JSON report and closes. `--export-redirects DIR` writes the
 redirect pages of the short-link section in use (or `--section local|nonlocal`) into `DIR` and exits.
 
+## How it works
+
+1. `qr_palette.py` starts in `main`. `--version` and `--selftest` (`selftest.py`) answer at once. Otherwise it reads
+   the options with `option_value`, loads `settings.json` with `settings.load`, and `app_settings.apply_settings` puts
+   its values in place for every module. The registry is `--db`, else the `registry` setting, else `palette.db` in
+   the data folder. A `--smoke` run uses a scratch folder instead, for the registry, settings and audit log.
+2. `--export-redirects DIR` calls `export_redirects` (`short_link_ops.py`, pages from `shortlinks.py`) and exits.
+3. `--mcp` (or `--ecp`) builds the ECP engine with `make_engine` (`ecp.new_engine`) and serves it with
+   `mcp_server.serve_stdio`. A question is planned by a local model (`local_inference.py`), checked against the
+   question's words (`ecp.py`), and run on a read-only connection (`registry.py`); `audit.py` logs every call.
+4. Otherwise `main` imports `gui` (only now is tkinter loaded) and calls `run_gui` (`gui/window.py`).
+   `PaletteWindow.run` checks the registry opens, writes `settings.json` when it is missing, and builds the menus and
+   the Make, Read and Find tabs. Slow work goes through `start_job`: it runs off the window's thread, and `poll_job`
+   collects the outcome every 100 ms.
+5. **Make** (`gui/make_tab.py`): `redraw_board` ranks the usable colors (`votes.board`, `swatch.py`, `ranking.py`,
+   `algos.py`); `refresh_preview` builds the text (`payloads.build` for other kinds, a short link from
+   `short_link_ops.py`) and encodes it with `qr_codec.encode_text`; `save_as` runs `making.make_qr`, which draws the
+   file, reads it back with `qr_codec.read_qr_file` and registers it.
+6. **Read** (`gui/read_tab.py`): `qr_codec.read_qr_file` decodes a picture; `finding.matches_for_text` finds the
+   records that hold the same text, and `short_link_ops.tamper_verdict` says whether the code looks like yours.
+7. **Find** (`gui/find_tab.py`): `run_search` calls `finding.search`, and each answer gives the color, the link
+   and the path. Its actions call `making.py`, `short_link_ops.py`, `sheets.py` and the registry.
+
+Where state lives (the data folder is `%LOCALAPPDATA%\Generic Company Inc\GenericCompany.QRPalette`):
+
+| What | Where |
+|---|---|
+| Codes, links, short links, history, schedules, scans, votes | `palette.db` (SQLite) in the data folder, or `--db`; only `registry.py` reads and writes it |
+| Settings | `settings.json` in the data folder, or `--settings`; `settings.py` reads it, `app_settings.py` holds the values in force |
+| Tag and Wi-Fi hash key | `qr_palette.key` beside the registry (`localkey.py`) |
+| Audit log | `audit.jsonl` and `audit.jsonl.anchor` in the data folder (`audit.py`) |
+| Backups and local pages | `backups\` and `local pages\` in the data folder |
+| Rankings, planning, short links, print sheets | `presets/`, `weights/`, `planner.json`, `links.json` and `sheets.json` beside the program, read each time |
+| Color Voats' votes | read from Color Voats' `social.json` (`votes.import_color_voats`), never written |
+| Pictures | where you save them; by default `QR Palette` in your Pictures folder |
+| Version | `__version__` in `qr_palette.py` and `"version"` in `setup.json` |
+
+Nothing is kept in the Windows registry.
+
+## Code map
+
+In reading order, entry point first.
+
+| File | What it holds |
+|---|---|
+| `qr_palette.py` | The entry point: name, id, icon and version, the data folder's paths, `make_engine`, `option_value` and `main` |
+| `app_settings.py` | The settings in force: `apply_settings` puts `settings.json`'s values in place, in this module and in the others |
+| `common.py` | The Result record, and `with_registry`, which opens the registry for one piece of work |
+| `making.py` | Making a code (read back before it is registered), drawing one again, registering a picture made elsewhere, previews and robustness scores |
+| `short_link_ops.py` | Short links in the registry: the one a new code prints, where each goes now and later, scans, redirect pages, publishing, and whether a scanned address is yours |
+| `batches.py` | A whole print run from a list, with its report |
+| `registry_export.py` | The registry as CSV or JSON |
+| `votes.py` | Good and Bad votes, Color Voats' votes, and the ranked board |
+| `finding.py` | Finding codes again by QR code or by color |
+| `print_advice.py` | How big to print a code |
+| `qr_codec/__init__.py` | The codec's map: its chapters, its records and every name `import qr_codec` gives |
+| `qr_codec/records.py` | Result records |
+| `qr_codec/gf.py` | GF(256) arithmetic |
+| `qr_codec/reed_solomon.py` | Reed-Solomon codewords and corrections |
+| `qr_codec/tables.py` | Levels, version tables, function patterns, data order, masks |
+| `qr_codec/blocks.py` | Data split into blocks and interleaved, and back |
+| `qr_codec/encode.py` | Text -> Matrix: `encode_text` |
+| `qr_codec/decode.py` | Matrix -> text |
+| `qr_codec/captions.py` | The caption font (`GLYPHS`) and its layout |
+| `qr_codec/images.py` | The Image record, PNG and PGM/PPM reading within limits, PNG writing |
+| `qr_codec/binarize.py` | Gray -> dark and light |
+| `qr_codec/locate.py` | Finding a code in a picture: `decode_image` |
+| `qr_codec/distort.py` | Picture changes: the tests' harder pictures and the robustness score's wear |
+| `qr_codec/logos.py` | A logo in the middle of a code |
+| `qr_codec/svg.py` | SVG drawings, and reading them back |
+| `qr_codec/files.py` | Links, picture files and their color: `save_matrix`, `read_qr_file` |
+| `qr_codec/robustness.py` | How much wear a code survives |
+| `swatch.py` | Colors: names, families, contrast, cube index, ranking by preset |
+| `algos.py` | Color Voats' scorers and aggregators |
+| `ranking.py` | Presets and weights (`presets/`, `weights/`), and `rank` |
+| `registry.py` | The SQLite registry, its schema and its read-only rail |
+| `shortlinks.py` | Short-link IDs (with tag and check digits), `links.json`, redirect pages |
+| `payloads.py` | The kinds of code: Wi-Fi, contact, event, place, email, phone, text |
+| `sheets.py` | Print sheets as PDF or SVG |
+| `scans.py` | Scan reports and access logs |
+| `publish.py` | Publishing the nonlocal pages to a Git repository or a folder |
+| `localkey.py` | The local key, tags and the keyed hash |
+| `settings.py` | `settings.json`: every setting, its default (`DEFAULTS`) and its check (`SPEC`) |
+| `textsafe.py` | Cleaning typed text |
+| `local_inference.py` | The Ollama client, loopback only |
+| `ecp.py` | ECP's engine: plans, grounding, queries |
+| `mcp_server.py` | The MCP server on stdin/stdout, and its three tools |
+| `audit.py` | The hash-chained audit log and its anchor |
+| `selftest.py` | The checks `--selftest` runs |
+| `gui/__init__.py` | The window package; it exports `run_gui` |
+| `gui/window.py` | `PaletteWindow`: state, job queue, menus, status lines, the `--smoke` run, and `run_gui` |
+| `gui/make_tab.py` | The Make tab: kind, link, board, preview, saving, logos, robustness |
+| `gui/read_tab.py` | The Read tab: open or paste a picture, what it holds, whether it is yours |
+| `gui/find_tab.py` | The Find tab: search, Ask, and the actions on results |
+| `gui/dialogs.py` | The larger dialogs: audit log, print size, make from a list, templates |
+| `tests/test_qr_codec.py` | The codec: Reed-Solomon, tables, matrices, pictures, the 118 colors, files, limits, logos, robustness |
+| `tests/test_swatch.py` | Colors and `ranking.py`, and the presets and weights against Color Voats' TOML |
+| `tests/test_registry.py` | The schema, its upgrades and the read-only rail |
+| `tests/test_shortlinks.py`, `test_payloads.py`, `test_sheets.py`, `test_scans.py`, `test_publish.py` | Short-link IDs and pages, kinds of code, print sheets, scans, publishing |
+| `tests/test_settings.py`, `test_textsafe.py` | `settings.json` and `settings.example.json`, and text cleaning |
+| `tests/test_local_inference.py`, `test_ecp.py`, `test_mcp_server.py`, `test_audit.py` | ECP: the Ollama client (with a fake server), planning and queries, the MCP server, the audit log |
+| `tests/test_qr_palette.py` | The program's own modules and its command line, run as a real process |
+| `planner.json`, `links.json`, `sheets.json`, `settings.example.json` | Planning, short links, print layouts, and the default settings |
+| `presets/`, `weights/` | How colors are ranked |
+| `setup.json` | The install wizard's description: files, icon, shortcut, the data folder to purge |
+| `icon/` | The icon and its sizes (see [icon/README.md](icon/README.md)) |
+
+## Developing
+
+Run these in this folder (`utilities/qr_palette`).
+
+| Step | Command |
+|---|---|
+| Run | `python qr_palette.py` |
+| Test | `python -m unittest discover -s tests` (382 tests; several minutes, most of it decoding pictures) |
+| One test file | `python -m unittest discover -s tests -p test_ecp.py` |
+| Quick check | `python qr_palette.py --selftest` (no tkinter needed) |
+| Smoke check | `python qr_palette.py --smoke report.json` opens the window on a scratch registry and default settings, writes a JSON report (version, title, tabs, tiles, records, `codec_ok`, `found_by_color`, inference) and closes |
+| MCP server | `python qr_palette.py --mcp` |
+| Build the setup | `..\..\company\wizard_maker\wizard-maker.exe build setup.json` writes `dist\Generic Company QR Palette-<version>-setup.exe` |
+
+There is nothing to compile; the program runs from source.
+
+Where to add a typical feature:
+
+- **A new setting:** add it to `DEFAULTS` and `SPEC` in `settings.py`, put it in place in
+  `app_settings.apply_settings`, write `settings.example.json` again from `settings.example_text()`, and add a row to
+  the settings table below.
+- **A new kind of code:** add it to `KINDS`, `TITLES` and `FIELDS` in `payloads.py`, with a `build_*` function in
+  `BUILDERS` (and `kind_of` if the Read tab should name it). The Make tab builds its form from `FIELDS`
+  (`gui/make_tab.py`). Test it in `tests/test_payloads.py`.
+- **A new File menu item:** add it in `PaletteWindow.build_menu` (`gui/window.py`) with its handler in the tab or
+  dialog it belongs to. Keep the work in a core module, run it with `start_job`, and test it in `tests/`.
+- **A new module:** add it to the `files` list in `setup.json`, or the installed program will not find it.
+
+Twins (change both):
+
+- The `qr_codec` package and QR Studio's (`utilities/qr_studio/qr_codec`): every module both have, except
+  `images.py` and `distort.py`, holds the same code, so a fix to one belongs in both.
+- `algos.py` is Color Voats' `algos.py` (`utilities/color_voats`), and `presets/` and `weights/` hold the same values
+  as its TOML files; `tests/test_swatch.py` checks them when Color Voats is beside this project.
+- `textsafe.py` is the CRUD hub's (`company/crud_hub/textsafe.py`).
+
+Traps the code warns about:
+
+- **Version lines:** `__version__` in `qr_palette.py` and `"version"` in `setup.json` change together, and
+  `tests/test_qr_palette.py` checks the `--version` line.
+- **App id:** `APP_ID` in `qr_palette.py` names the data folder and the taskbar identity, and must match `id`,
+  `appUserModelId` and `purge` in `setup.json`.
+- **Pinned files:** `settings.example.json` is exactly `settings.example_text()` and `links.json` exactly
+  `shortlinks.links_text(DEFAULT_LINKS)`; tests check both. `icon/app-*.png`, `app.ico` and `app.res` are made from
+  `qr-palette-16.png` by `tools/pixel_icons.py`.
+- **Schema marks:** `APPLICATION_ID` and `SCHEMA_VERSION` in `registry.py` are checked by other programs too: raise
+  the version only together with them.
+- **Import order:** `gui/`, `selftest.py` and `registry_export.py` import from `qr_palette.py`, so `main` imports
+  `gui` and `selftest` only when needed, and `__main__` registers the running file as `qr_palette`. Each codec module
+  imports only modules above it in the `qr_codec/__init__.py` list.
+- **Codec limits:** `MAX_FILE_BYTES` lives in `qr_codec/images.py` and `LOGO_SHARES` in `qr_codec/logos.py`; the
+  package forwards `qr_codec.NAME` to them, so do not copy them into `__init__.py`.
+- **Thread rule:** a job's `work()` never touches Tk; only `poll_job` and `done` run on the window's thread.
+- **The core never loads tkinter:** only `gui/` does, so `--mcp`, `--selftest` and the tests run without it.
+- **Stamps:** each source file ends with a stamp line. After editing one, run
+  `python tools/stamp.py --restamp <path>` from the portfolio root; `python tools/stamp.py --check` verifies them.
+
 ## What it does
 
 | Tab | What |
@@ -426,45 +590,21 @@ Local inference means Ollama on this computer:
 Answers do leave this program: whatever an MCP client receives (links, paths, colors) goes to the model that client
 runs, which may be remote. ECP keeps its own inference local; it cannot decide where its answers go next.
 
-## The code
-
-`qr_palette.py` starts the program: it holds the program's name, id, icon and version, where it keeps its files, the
-ECP engine for a run, and the command line. The modules beside it:
-
-| Module | What it holds |
-|---|---|
-| `app_settings.py` | The settings in force: `apply_settings` puts `settings.json`'s values in place, in this module and in the others |
-| `common.py` | The Result record, and `with_registry`, which opens the registry for one piece of work |
-| `making.py` | Making a code (read back before it is registered), drawing one again, registering a picture made elsewhere, previews and robustness scores |
-| `short_link_ops.py` | Short links in the registry: the one a new code prints, where each goes now and later, scans, redirect pages, publishing, and whether a scanned address is yours |
-| `batches.py` | A whole print run from a list, with its report |
-| `registry_export.py` | The registry as CSV or JSON |
-| `votes.py` | Good and Bad votes, Color Voats' votes, and the ranked board |
-| `finding.py` | Finding codes again by QR code or by color |
-| `print_advice.py` | How big to print a code |
-| `qr_codec/` | The QR codec (from QR Studio), with colored PNG and SVG pictures |
-| `swatch.py`, `ranking.py`, `algos.py` | Colors: names, families, contrast, ranking (`presets/`, `weights/`) |
-| `registry.py` | The SQLite registry and its read-only rail |
-| `shortlinks.py`, `payloads.py`, `sheets.py`, `scans.py`, `publish.py`, `localkey.py` | Short-link IDs and pages, kinds of code, print sheets, scan reports, publishing, the local key |
-| `ecp.py`, `mcp_server.py`, `local_inference.py`, `audit.py` | ECP: the engine, the MCP server, the Ollama client, the audit log |
-| `settings.py`, `textsafe.py` | `settings.json`, and cleaning typed text |
-| `selftest.py` | The checks `--selftest` runs |
-| `gui.py` | The window (tkinter); it only calls the modules above |
-| `tests/` | The tests: `test_<module>.py` for the modules they are named after (`test_swatch.py` covers `ranking.py` too), and `test_qr_palette.py` for the program's own modules and its command line |
-
 ## Porting to another language
 
-Same layout as QR Studio and Color Voats:
+Same layout as QR Studio and Color Voats (the files are listed in "Code map" above):
 - **Plain code:** plain functions and records, explicit loops, and failures as Result records.
 - **Separate parts:** each module is its own part: codec, colors, registry, short links, local inference, ECP,
   MCP server, audit log, and the program's own modules on top of them.
-- **The window:** `gui.py` only calls those.
-- **Order:** port `qr_codec/` first, then `swatch.py` and `registry.py`, each with its tests. Then the parts the
-  program's modules use (`shortlinks.py`, `payloads.py`, `localkey.py`, `scans.py`, `publish.py`, `sheets.py`,
-  `settings.py`, `textsafe.py` and ECP's modules), then those modules in the order they import each other:
-  `app_settings.py`, `common.py`, `short_link_ops.py`, `making.py`, then `batches.py`, `registry_export.py` (it
-  takes the program's name and version from `qr_palette.py`), `votes.py`, `finding.py` and `print_advice.py`.
-  `qr_palette.py`, `selftest.py` and `gui.py` come last.
+- **The window:** the `gui/` package (`window.py` with `PaletteWindow`, `make_tab.py`, `read_tab.py`, `find_tab.py`
+  and `dialogs.py`) only calls those. Rewrite it in any toolkit.
+- **Order:** port the `qr_codec/` package first, module by module in the order of its `__init__.py` list, with
+  `tests/test_qr_codec.py`. Then `swatch.py` and `registry.py`, each with its tests. Then the parts the program's
+  modules use (`shortlinks.py`, `payloads.py`, `localkey.py`, `scans.py`, `publish.py`, `sheets.py`, `settings.py`,
+  `textsafe.py` and ECP's modules), then those modules in the order they import each other: `app_settings.py`,
+  `common.py`, `short_link_ops.py`, `making.py`, then `batches.py`, `registry_export.py` (it takes the program's
+  name and version from `qr_palette.py`), `votes.py`, `finding.py` and `print_advice.py`. `qr_palette.py`,
+  `selftest.py` and the `gui/` package come last.
 
 ## Icon
 

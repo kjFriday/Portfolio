@@ -6,8 +6,9 @@
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
-"""Generic Company Storage Manager: organize and clean local drives, and handle network shares.
+"""Generic Company Storage Manager: entry point, name, version and command line.
 
+The program organizes and cleans local drives, and handles network shares.
 Python 3 standard library only. This file starts the program: it holds the program's name, id, icon
 and version, where its settings live, and the command line. The modules beside it do the work:
 
@@ -56,11 +57,17 @@ Usage
   python storage_manager.py --smoke FILE open the window, write a JSON report to FILE, close
   python storage_manager.py --folder PATH [--view KEY]
                                          analyze PATH straight away (KEY: a sidebar entry, e.g. duplicates or map)
+
+Main flow: run as a script, the bottom block sets up the import machinery and calls main, which
+handles --version and --selftest itself and hands everything else to gui.run_gui. main's return
+value is the exit code: 0 ok, 1 a self-test check failed, 2 an option without its value.
 """
 
 import os
 import sys
 
+# The program's identity: version (shown by --version and About), display name, the id the settings
+# folder and the Windows taskbar grouping are named after, the window icon and its licence credit.
 __version__ = "0.4.0"
 APP_NAME = "Generic Company Storage Manager"
 APP_ID = "GenericCompany.Storage"
@@ -70,6 +77,9 @@ ICON_CREDIT = ("Icon: drive_network.png from the Silk icon set by Mark James (fa
 
 
 def settings_path():
+    """Where the settings file lives: %LOCALAPPDATA%\\Generic Company Inc\\<APP_ID>\\settings.json
+    on Windows, ~/.config/Generic Company Inc/<APP_ID>/settings.json where LOCALAPPDATA is not set.
+    Only builds the path; settings.save_settings creates the folder."""
     base = os.environ.get("LOCALAPPDATA", "")
     if base == "":
         base = os.path.join(os.path.expanduser("~"), ".config")
@@ -89,6 +99,13 @@ def option_value(arguments, name):
 
 
 def main(arguments):
+    """Run the program for the command-line arguments (sys.argv without the program) -> exit code.
+
+    Steps:
+      1. --version prints the name and version; --selftest runs selftest.selftest. Both return at once.
+      2. Read --smoke, --folder and --view; any of them given without a value is an error (2).
+      3. Open the window with gui.run_gui and return what it returns.
+    """
     # selftest.py and gui.py import from this module, so each is imported where it is needed, once this
     # module has finished loading, rather than at the top.
     if "--version" in arguments:

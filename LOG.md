@@ -347,6 +347,24 @@ Generic Company Inc. is a fictional company. All data in this ecosystem is mock 
 - The limits are in the README: two digits are right by chance 1 time in 100, so this catches casual swaps and is no cryptographic guarantee. Losing the key makes old tags unverifiable, never invalid.
 - Checked: tests pass on Python 3.14 (twice) and 3.11; `--selftest` and `--smoke` pass. The Read tab was driven on a scratch registry with a code of each standing, with screenshots. `stamp.py --check` is clean.
 
+## 2026-11-03
+
+**Portfolio: regrouped, reformatted, restructured and annotated** (no change in behavior)
+- Merged the QR Palette branch (11 commits) and Storage Manager 0.4.0 into main.
+- Stamps: `stamp.py` now recognizes old, wider stamp headers and drops them on a restamp, which removed the stale duplicate header from about 200 files and fixed their About lines. It moved to `tools/stamp.py` and labels each file with its program folder (`Project: journal`, `Project: qr_palette`).
+- Layout: the seven Generic Company programs are in `company/` (still one git submodule each), the stand-alone programs in `utilities/`, the Dev Console and repo scripts in `tools/`, research and market notes in `docs/`. Every path that named a folder (Dev Console config, `verify.ps1`, `pixel_icons.py`, the hub's mock exporter, launch config, READMEs) follows the new names.
+- Formatting: Go is gofmt-clean everywhere (the Journal and Notify Hub pin `*.go` to LF); the three Rust crates are rustfmt-formatted at 120 columns (`rustfmt.toml`).
+- Restructure, behavior-neutral, each unit checked by an independent reviewer:
+  - Journal and Notify Hub: their desktop and install packages are twins again, file for file; install is split into plan, script, install and wizard files; the Journal's pages and site state have their own files; the Notify Hub's libraries moved under `internal/`.
+  - Wizard Maker: spec, install, win, maker and wizard split by concern; Win32 and PE constants named; shared test fixtures in one file.
+  - Ticket Tracker and Data Dash: legacy "hub" names renamed; Data Dash's HTML escaping in `core/html.rs`.
+  - Dev Console: `main.rs` split into the app state, key handling and one module per view.
+  - CRUD Hub, Doc Pipeline, Color Voats, QR Studio, QR Palette: tests in `tests/`; the CRUD hub's seed constants are named (the seed stays byte-identical).
+  - Storage Manager, QR Studio, Color Voats, QR Palette: one module per topic behind the same entry script, and each window is a class (`StorageWindow`, `StudioWindow`, `VoatsWindow`, `PaletteWindow` in a `gui/` package). The QR codec is a `qr_codec` package laid out by chapter of the standard, the same in QR Studio and QR Palette. Storage Manager and QR Studio turn off byte-code caches so an install still leaves nothing behind.
+- Annotation: every source file and definition has a doc comment to a teaching standard (what it is, how it works step by step, why). Comment-only checks prove no code changed; twin files were updated together.
+- Docs: each project README has "How it works", "Code map" and "Developing"; new `docs/DEVELOPING.md`; new rules in `RULES.md`.
+- Checked: every test suite, self-test and smoke report matches this morning's baseline, plus the end-to-end check (`tools/verify.ps1`). Two QR Palette publish tests fail on one machine whose Git config sets an empty hooks folder; they pass elsewhere.
+
 ## Open
 - cms: writing posts; moving posts into the shared database (a `posts` table in the hub's schema).
 - document_mover_and_changer: stages 2-3 (parsing, chunking) for incoming files.

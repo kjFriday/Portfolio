@@ -7,7 +7,7 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The settings in force for this run, put in place by apply_settings from settings.json's values.
+"""The settings in force for this run, put in place from settings.json by apply_settings.
 
 qr_palette.main loads settings.json (settings.load) and calls apply_settings once, before it serves ECP,
 exports redirect pages or opens the window (--selftest and --version run on the defaults). apply_settings
@@ -38,6 +38,7 @@ import registry
 import shortlinks
 import swatch
 
+# the program folder, where planner.json, links.json, presets/ and weights/ ship
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Set from settings.json and links.json at start by apply_settings (these are the defaults).
@@ -51,14 +52,34 @@ SCANS_VOTE = False  # settings.json's colors.scans_vote: scans feed the ranking'
 
 def apply_settings(values):
     """Put settings.json's values in place across the modules, and load planner.json and links.json
-    -> [warnings]."""
+    -> [warnings].
+
+    `values` is the "values" of settings.load's record: every section and key is there, and what
+    could not be used was already replaced by its default. Each warning is one line for the caller
+    to show (qr_palette.main adds them to settings.load's own).
+
+    Side effects: rewrites module globals in swatch, registry, ecp, mcp_server, local_inference and
+    this module, reads planner.json and links.json from disk, and may change values["colors"]["preset"]
+    in place to the default preset.
+
+    Steps:
+      1. colors: the scans vote, the contrast line, the near distance and the rankings folder; an
+         unknown preset falls back to swatch.DEFAULT_PRESET with a warning.
+      2. queries: registry's limits and time budget, and ecp's question length.
+      3. protocol: ecp's message and result caps, and mcp_server's token bucket.
+      4. inference: the cloud rule, local_inference's timeouts and answer sizes, and the two planning
+         timeouts kept here.
+      5. pictures: the default pixels per module.
+      6. planner.json (settings' planner.file, else the one beside the program) into ecp.
+      7. links.json (settings' links.file, else the one beside the program) and the section to use.
+    """
     global DEFAULT_SCALE, PROTOCOL_TIMEOUT, WINDOW_TIMEOUT, LINKS, LINK_SECTION, SCANS_VOTE
     warnings = []
     colors = values["colors"]
     SCANS_VOTE = colors["scans_vote"]
     swatch.MIN_CONTRAST = colors["minimum_contrast"]
     swatch.NEAR = colors["near_distance"]
-    swatch.RANKING_ROOT = colors["rankings_folder"] or HERE
+    swatch.RANKING_ROOT = colors["rankings_folder"] or HERE  # "" means the presets/ beside the program
     if colors["preset"] not in swatch.presets():
         warnings.append("settings: no preset named " + colors["preset"] + " in " +
                         os.path.join(swatch.RANKING_ROOT, "presets") + "; using " + swatch.DEFAULT_PRESET)
@@ -86,7 +107,7 @@ def apply_settings(values):
     DEFAULT_SCALE = values["pictures"]["pixels_per_module"]
     planner_path = values["planner"]["file"] or os.path.join(HERE, "planner.json")
     loaded = ecp.load_planner(planner_path)
-    ecp.configure_planner(loaded["planner"])
+    ecp.configure_planner(loaded["planner"])  # also replaces swatch.FAMILY_WORDS
     links = shortlinks.load_links(values["links"]["file"] or os.path.join(HERE, "links.json"))
     LINKS = links["links"]
     LINK_SECTION = values["links"]["use"]

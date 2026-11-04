@@ -6,7 +6,7 @@
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
-"""Add a license header and a keyed stamp footer to every tracked source file (standard library only).
+"""Add a license header and a keyed stamp footer to every tracked source file.
 
     python tools/stamp.py --init-key     # once: create the private key outside the repo (back it up)
     python tools/stamp.py                # stamp every source file that has no stamp yet
@@ -14,7 +14,8 @@
     python tools/stamp.py --check        # verify every stamp, exit 1 if any is missing or invalid
     python tools/stamp.py --restamp [PATH ...]   # re-stamp after your own edits (all files if no PATH)
 
-Run it from anywhere: the portfolio root is the folder above tools/. PATHs are relative to that root.
+Standard library only. Run it from anywhere: the portfolio root is the folder above tools/. PATHs
+are relative to that root.
 
 Files come from `git ls-files` in this repo and in each submodule listed in .gitmodules. The header
 names the program and the file inside it, says what the file does (first sentence of its own doc
@@ -23,6 +24,35 @@ holds a setup.json, Cargo.toml or go.mod; anything else belongs to "portfolio". 
 HMAC-SHA256, under a key only the author holds, of the author's name, the file's path from the
 portfolio root and the whole file apart from the footer. Anyone may still change a file (the code is
 AGPL-3.0); --check shows which files no longer match what the author stamped.
+
+What a stamped file looks like (LF endings shown; BOM and CRLF of the original are kept on disk):
+
+    [prelude: shebang, coding cookie, <!DOCTYPE>, @charset - lines that must stay first]
+    header: TITLE line, Project/File, About, Copyright + SPDX, two notice lines, RULE line
+    (one blank line)
+    body: the file as the author wrote it
+    (one blank line)
+    footer: "==== stamp v1 | author=... | hmac-sha256=<64 hex> ====" in the file's comment style
+
+The MAC covers everything above the footer ("the core"), so editing the header, the body or even
+the About line breaks it; moving the file to another path breaks it too, because the path is part
+of the message.
+
+HMAC in brief: HMAC (RFC 2104, FIPS 198-1) hashes the message twice with the secret key mixed in,
+so nobody without the key can produce a matching digest, yet anyone holding the key can recompute
+and compare it. It is a keyed checksum, not a public signature: checking needs the same private key.
+
+Who calls it: the author by hand (README.md describes the stamps under its license section), and
+test_stamp.py, which imports it. It runs git (ls-files, config) and no other program.
+
+Main flow (run):
+1. load_key() reads the 32-byte key from PORTFOLIO_STAMP_KEY or the key file in the home folder.
+2. source_files() lists every tracked file in scope, labelled with its program and inner path.
+3. Each file is decoded (UTF-8 only), skipped if generated, and checked with check_text().
+4. Depending on the mode the file is counted, reported, or rewritten with stamp_text().
+5. A summary line is printed; --check exits 1 when any stamp is missing or INVALID.
+
+Types: Style (one language's comment syntax). Start reading at run(), then split() and stamp_text().
 """
 
 import argparse
@@ -37,6 +67,13 @@ import secrets
 import subprocess
 import sys
 
+# --- settings ----------------------------------------------------------------------------------
+# ROOT: the portfolio root. AUTHOR and SPDX go into every header and into the MAC. KEY_ENV and
+# KEY_FILE: where load_key() looks for the key, in that order. TOP_PROJECT: the project name for
+# files outside any program folder. EXCLUDED_DIRS: folder names whose files are never stamped (copied
+# third-party excerpts, test fixtures, unpacked archives, tool settings). WIDTH: the header's width
+# in characters, without the comment markers. ABOUT_MAX: the longest About text before it is cut
+# with "...". VERSION: the stamp format, written into the footer and the MAC.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the portfolio root, above tools/
 AUTHOR = "kjFriday"
 SPDX = "AGPL-3.0-only"
@@ -51,16 +88,25 @@ VERSION = "v1"
 
 
 class Style:
-    """How one language writes comments: header lines, and the markers used to read its doc comment."""
+    """How one language writes comments: header lines, and the markers used to read its doc comment.
+
+    Fields: language (the name used in fallback About lines), open and close (wrapped around every
+    header and footer line; close is "" for line comments), line_markers (prefixes of a one-line
+    comment, longest first where one is a prefix of another, as in Rust's "///" before "//") and
+    blocks (block-comment opener -> closer).
+    """
 
     def __init__(self, language, open_, close, line_markers, blocks):
+        """Store the comment syntax; open_ has a trailing underscore because open is a builtin."""
         self.language, self.open, self.close = language, open_, close
         self.line_markers, self.blocks = line_markers, blocks
 
     def wrap(self, text):
+        """Return text as one comment line of this style, for example "# text" or "/* text */"."""
         return self.open + text + self.close
 
 
+# file extension -> comment style; only files with one of these extensions are stamped
 STYLES = {
     ".py": Style("Python", "# ", "", ("#",), {}),
     ".ps1": Style("PowerShell", "# ", "", ("#",), {"<#": "#>"}),
@@ -72,6 +118,17 @@ STYLES = {
     ".sql": Style("SQL", "-- ", "", ("--",), {"/*": "*/"}),
 }
 
+# --- patterns ----------------------------------------------------------------------------------
+# TITLE and RULE: the first and last header lines, padded with "=" to WIDTH.
+# FOOTER_RE: the footer, capturing the format version, the author and the 64-hex-digit HMAC.
+# YEAR_RE: the copyright year (or range) of an existing header, kept on restamp.
+# COOKIE_RE: a Python source-encoding declaration (PEP 263), which must stay on line 1 or 2.
+# DIRECTIVE_RE: comment lines that are instructions to a tool, never a description: Go build tags
+#   (go:build, +build), PowerShell #Requires, Emacs "-*-" mode lines, linter and type-checker
+#   pragmas, and "!" (what is left of a shebang or a Rust inner doc after its marker is cut).
+# TITLE_TAG_RE: an HTML page's <title>, its About text. GENERATED_RE: the marker of a tool-written
+#   file (searched in the first 600 characters only). PACKAGE_RE: a Go package clause.
+# ABBREVIATIONS: words ending in "." that do not end a sentence.
 TITLE = "==== Generic Company Inc. portfolio "
 TITLE = TITLE + "=" * (WIDTH - len(TITLE))
 RULE = "=" * WIDTH
@@ -88,7 +145,12 @@ ABBREVIATIONS = {"Inc.", "Ltd.", "Co.", "e.g.", "i.e.", "etc.", "vs.", "cf."}
 # --- reading a file ----------------------------------------------------------------------------
 
 def decode(raw):
-    """(LF text, had BOM, used CRLF) or None if the file is not UTF-8."""
+    """(LF text, had BOM, used CRLF) or None if the file is not UTF-8.
+
+    The text is worked on with LF endings; encode() puts the BOM and CRLF back on write, so a
+    stamp never changes how a file's lines end. A file counts as CRLF when more than half of its
+    line ends are CRLF (each CRLF also holds one LF, hence the doubling).
+    """
     bom = raw.startswith(codecs.BOM_UTF8)
     try:
         text = raw[len(codecs.BOM_UTF8) if bom else 0:].decode("utf-8")
@@ -99,12 +161,21 @@ def decode(raw):
 
 
 def generated(text):
-    """True for files a tool writes ("Code generated ... DO NOT EDIT", "generated by x, do not edit")."""
+    """True for files a tool writes ("Code generated ... DO NOT EDIT", "generated by x, do not edit").
+
+    Only the first 600 characters are searched, where such markers live, so a file that merely
+    mentions the phrase further down (a template string, say) is still stamped.
+    """
     return bool(GENERATED_RE.search(text[:600]))
 
 
 def prelude_count(lines, ext):
-    """Lines that must stay first: shebang, Python coding cookie, HTML doctype, CSS @charset."""
+    """Lines that must stay first: shebang, Python coding cookie, HTML doctype, CSS @charset.
+
+    The header goes after them. A Rust file never has a prelude: "#!" there starts an inner
+    attribute such as #![allow(...)], not a shebang. The coding cookie may follow a shebang, as
+    PEP 263 allows it on line 1 or 2.
+    """
     n = 0
     if lines and lines[0].startswith("#!") and ext != ".rs":
         n = 1
@@ -121,6 +192,12 @@ def strip_footer(text, ext):
     """(core, footer line or None). A stamped file is `core + "\\n" + footer + "\\n"`.
 
     The core is everything the MAC covers: prelude + header + one blank line + body, LF endings.
+
+    Steps:
+    1. Look at the last line (ignoring one final newline).
+    2. If it is a comment in this style holding a stamp footer, the core is everything before it,
+       minus the blank line that separates body and footer.
+    3. Otherwise the whole text is the core and there is no footer.
     """
     if text:
         stripped = text[:-1] if text.endswith("\n") else text
@@ -138,6 +215,9 @@ def header_block(lines, start, style):
     A header is a title line through the next rule line, at most 20 lines on. The title is today's
     TITLE or a legacy one of any width (a rename of the company once made it longer), so headers
     written before a change of TITLE or WIDTH are still found.
+
+    A lone rule-like line in the body is never mistaken for a header, because a header must start
+    with a title line.
     """
     if start >= len(lines):
         return None, 0
@@ -151,10 +231,12 @@ def header_block(lines, start, style):
 
 
 def legacy_title_re(style):
+    """Pattern for a title line of any width and company name, in this style's comment markers."""
     return re.compile("^" + re.escape(style.open) + r"==== .*\bportfolio =+" + re.escape(style.close) + "$")
 
 
 def legacy_rule_re(style):
+    """Pattern for a rule line of 20 or more "=", in this style's comment markers."""
     return re.compile("^" + re.escape(style.open) + r"={20,}" + re.escape(style.close) + "$")
 
 
@@ -163,6 +245,9 @@ def split(text, ext):
 
     Stale header blocks that follow the header (left by earlier stamps whose TITLE differed) are
     dropped, so a restamp leaves exactly one header.
+
+    prelude and body are lists of lines without line ends; header is a list of lines; footer is the
+    footer line. One blank line after each header is consumed with it.
     """
     style = STYLES[ext]
     core, footer = strip_footer(text, ext)
@@ -183,11 +268,23 @@ def split(text, ext):
 
 
 def join(lines):
+    """Join lines into LF text with a final newline; no lines give the empty string."""
     return "\n".join(lines) + "\n" if lines else ""
 
 
 def sentence(text, style):
-    """First sentence of `text`, one line, safe inside the style's comment."""
+    """First sentence of `text`, one line, safe inside the style's comment.
+
+    Steps:
+    1. Collapse all whitespace (line breaks included) to single spaces.
+    2. Cut after the first word ending in ".", "!" or "?" that is followed by a space and is not
+       a known abbreviation such as "Inc.".
+    3. Remove anything that would end the comment early: the closer ("*/", "-->"), and for HTML
+       any "--", which is not allowed inside an HTML comment.
+    4. For SQL, turn ";" into ",", since some tools that split SQL scripts at ";" do not skip
+       comments.
+    5. Cut text over ABOUT_MAX characters at the last whole word and add "...".
+    """
     text = " ".join(text.split())
     for m in re.finditer(r"(\S*[.!?])\s", text):
         if m.group(1) not in ABBREVIATIONS:
@@ -205,7 +302,21 @@ def sentence(text, style):
 
 
 def about(body, ext):
-    """What the file does, from its own docstring or leading comment, or None."""
+    """What the file does, from its own docstring or leading comment, or None.
+
+    Sources, in order: a Python module docstring; an HTML <title>; else the first paragraph of
+    comments at the top of the body (line comments, or a block comment), stopping at the first
+    blank comment line or the first line of code.
+
+    Steps for the comment scan:
+    1. Before any words are found, skip blank lines and Rust attributes (#[...], #![...]).
+    2. Outside a block, a line must start with a block opener (enter the block) or a line marker
+       (strip it); anything else ends the scan.
+    3. Inside a block, cut the line at the closer and drop leading "*" (the " * " column of
+       C-style block comments).
+    4. Skip tool directives (DIRECTIVE_RE) and PowerShell help keywords such as ".SYNOPSIS".
+    5. Join the words found and keep the first sentence (see sentence()).
+    """
     style = STYLES[ext]
     if ext == ".py":
         try:
@@ -251,7 +362,12 @@ def about(body, ext):
 
 
 def fallback(body, ext, project, inner):
-    """A plain description for a file with no doc comment of its own."""
+    """A plain description for a file with no doc comment of its own.
+
+    In order: Go test files and Python test_ files name what they test; other Go files name their
+    package; Rust mod.rs and Python __init__.py name their folder; anything else is "<Language>
+    source for <project>." inner is the file's path inside its project, with "/" separators.
+    """
     name = inner.rsplit("/", 1)[-1]
     pkg = PACKAGE_RE.search(join(body)) if ext == ".go" else None
     if name.endswith("_test.go"):
@@ -270,6 +386,11 @@ def fallback(body, ext, project, inner):
 # --- writing a stamp ---------------------------------------------------------------------------
 
 def header_lines(ext, project, inner, summary, year, provenance):
+    """The header as comment lines in the style of ext.
+
+    summary is the About text; year is the copyright year or range; provenance adds a line
+    pointing at the program's PROVENANCE.md (used when that file exists).
+    """
     style = STYLES[ext]
     text = [
         TITLE,
@@ -286,12 +407,28 @@ def header_lines(ext, project, inner, summary, year, provenance):
 
 
 def mac(key, relkey, core):
+    """HMAC-SHA256 of the stamp version, author, path and core, as 64 lowercase hex digits.
+
+    The four fields are joined with NUL bytes so their boundaries are unambiguous (no field can
+    shift text into its neighbour and keep the same message). relkey is the path from the
+    portfolio root with "/" separators, so the same file checks the same on any system.
+    """
     msg = b"\0".join([VERSION.encode(), AUTHOR.encode(), relkey.encode("utf-8"), core.encode("utf-8")])
     return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
 def stamp_text(text, ext, relkey, project, inner, key, year=None, provenance=False):
-    """Return LF `text` with a fresh header and footer (any old ones are replaced)."""
+    """Return LF `text` with a fresh header and footer (any old ones are replaced).
+
+    Steps:
+    1. Split off any prelude, old header(s) and old footer.
+    2. Keep the old header's copyright year; else use `year`, else this year.
+    3. Build the header with the About text from the body (or a fallback).
+    4. The core is prelude + header + a blank line + body (no blank line for an empty body).
+    5. Append a blank line and the footer holding the core's MAC.
+
+    Stamping an already stamped, unchanged file returns it unchanged.
+    """
     prelude, header, body, _ = split(text, ext)
     old_year = YEAR_RE.search("\n".join(header)) if header else None
     year = old_year.group(1) if old_year else (year or str(datetime.date.today().year))
@@ -303,6 +440,7 @@ def stamp_text(text, ext, relkey, project, inner, key, year=None, provenance=Fal
 
 
 def encode(text, bom, crlf):
+    """LF text back to bytes, restoring CRLF line ends and the UTF-8 BOM when the original had them."""
     if crlf:
         text = text.replace("\n", "\r\n")
     return (codecs.BOM_UTF8 if bom else b"") + text.encode("utf-8")
@@ -311,7 +449,11 @@ def encode(text, bom, crlf):
 # --- checking a stamp --------------------------------------------------------------------------
 
 def check_text(text, ext, relkey, key):
-    """'ok', 'missing' (no footer) or 'INVALID' (footer does not match this file)."""
+    """'ok', 'missing' (no footer) or 'INVALID' (footer does not match this file).
+
+    A footer of another stamp version or author is INVALID without computing the MAC. The digest
+    is compared in constant time (hmac.compare_digest), the usual habit for MAC checks.
+    """
     core, footer = strip_footer(text, ext)
     if footer is None:
         return "missing"
@@ -324,11 +466,22 @@ def check_text(text, ext, relkey, key):
 # --- the repository ----------------------------------------------------------------------------
 
 def git_files(path):
+    """Paths of every file git tracks in the repository at path, relative to it, "/"-separated.
+
+    -z gives NUL-separated, unquoted names, so names with spaces or non-ASCII letters come through
+    as they are. A submodule shows up here as one entry (its folder), which in_scope and the
+    isfile check in source_files() drop. Raises CalledProcessError if path is not a repository.
+    """
     out = subprocess.run(["git", "-C", path, "ls-files", "-z"], capture_output=True, check=True).stdout
     return [f for f in out.decode("utf-8").split("\0") if f]
 
 
 def submodules(root):
+    """The folder of every submodule listed in root/.gitmodules, relative to root; [] if none.
+
+    `git config --get-regexp` prints lines like "submodule.name.path folder"; the folder is the
+    text after the first space.
+    """
     if not os.path.isfile(os.path.join(root, ".gitmodules")):
         return []
     out = subprocess.run(["git", "-C", root, "config", "-f", ".gitmodules", "--get-regexp", r"\.path$"],
@@ -337,6 +490,7 @@ def submodules(root):
 
 
 def in_scope(rel):
+    """True when rel has a stamped extension and none of its folders is in EXCLUDED_DIRS."""
     parts = rel.split("/")
     return os.path.splitext(rel)[1].lower() in STYLES and not EXCLUDED_DIRS.intersection(parts[:-1])
 
@@ -356,6 +510,9 @@ def source_files(root):
 
     relkey is the path from the portfolio root (it is what the MAC covers). A submodule's files belong
     to the submodule; a file of this repo belongs to its program folder, or to "portfolio".
+
+    Files listed by git but missing on disk (deleted, not yet committed) are left out. A submodule
+    that is not checked out contributes nothing.
     """
     found = []
     for rel in git_files(root):
@@ -372,6 +529,11 @@ def source_files(root):
 
 
 def load_key():
+    """The 32-byte stamp key from $PORTFOLIO_STAMP_KEY, else from KEY_FILE.
+
+    The value must be 64 hex digits (surrounding whitespace is ignored). Exits the process with a
+    hint when no valid key is found.
+    """
     value = os.environ.get(KEY_ENV)
     if not value and os.path.isfile(KEY_FILE):
         with open(KEY_FILE, encoding="ascii") as f:
@@ -383,7 +545,15 @@ def load_key():
 
 
 def init_key(root):
+    """Write a new random 32-byte key, as hex, to KEY_FILE.
+
+    Refuses (exits) when KEY_FILE lies inside the repository, where it could be committed, or
+    when a key already exists, so a key is never overwritten. The file is opened with O_EXCL, so
+    it is created only if absent even under a race, and with mode 0o600 (owner only on POSIX;
+    Windows uses only the write bit). The key comes from the secrets module (a CSPRNG).
+    """
     path, root = os.path.abspath(KEY_FILE), os.path.abspath(root)
+    # commonpath raises on paths from different drives, so the drive is compared first
     same_drive = os.path.splitdrive(path)[0].lower() == os.path.splitdrive(root)[0].lower()
     if same_drive and os.path.commonpath([path, root]) == root:
         sys.exit("refusing to write the key inside the repository")
@@ -396,7 +566,25 @@ def init_key(root):
 
 
 def run(root, mode, only=None):
-    """Stamp, re-stamp or check every source file; returns the process exit code."""
+    """Stamp, re-stamp or check every source file; returns the process exit code.
+
+    mode is one of:
+      "stamp"    stamp files with no footer; files already stamped (valid or not) are only counted
+      "dry-run"  like "stamp" but writes nothing ("would stamp")
+      "check"    count every file as ok, missing or INVALID; write nothing
+      "restamp"  stamp every file (or only the paths in `only`), replacing any footer
+    only: paths relative to root ("\\" or "/"); a path that is not a tracked source file is ignored
+    without a message. Files that are not UTF-8 are skipped and listed; generated files are counted
+    and left alone. Prints one line per file written, then problems, then a summary of the counts.
+    Returns 1 only for "check" with any missing or INVALID file, else 0.
+
+    Steps:
+    1. Load the key (exits if there is none).
+    2. For each source file: read the bytes, decode, skip generated files, check the stamp.
+    3. Check, stamp and dry-run count files that need no stamping and move on.
+    4. Otherwise build the new text and (unless dry-run) write it with the original BOM and CRLF.
+    5. Print the problems and the summary; compute the exit code.
+    """
     key = load_key()
     counts, problems = {}, []
     only = {p.replace("\\", "/").strip("/") for p in only} if only else None
@@ -417,11 +605,13 @@ def run(root, mode, only=None):
             counts["generated"] = counts.get("generated", 0) + 1
             continue
         status = check_text(text, ext, relkey, key)
+        # an INVALID file is never restamped by plain "stamp": the author must name it with --restamp
         if mode == "check" or (mode in ("stamp", "dry-run") and status != "missing"):
             counts[status] = counts.get(status, 0) + 1
             if status != "ok":
                 problems.append("%-8s %s" % (status, relkey))
             continue
+        # the program folder ("" for the portfolio itself) decides whether the PROVENANCE.md line appears
         provenance = os.path.isfile(os.path.join(root, folder, "PROVENANCE.md"))
         new = stamp_text(text, ext, relkey, project, inner, key, provenance=provenance)
         if mode != "dry-run":
@@ -439,6 +629,11 @@ def run(root, mode, only=None):
 
 
 def main(argv=None):
+    """Parse the command line and run one mode; returns the exit code.
+
+    The modes are mutually exclusive; with none given the mode is "stamp". --root (hidden from
+    --help) points the tool at another checkout. --restamp with no PATH restamps every file.
+    """
     p = argparse.ArgumentParser(description="Add and check license stamps on tracked source files.")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--check", action="store_true", help="verify every stamp")

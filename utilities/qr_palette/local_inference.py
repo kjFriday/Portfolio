@@ -7,9 +7,11 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette local inference: a client for an Ollama server on this computer, and nothing else.
+"""QR Palette local inference: a client for an Ollama server on this computer only.
 
-Local only, by construction (the rules of the ECP research spec, section 5):
+It talks to nothing else.
+
+Local only, by construction (the rules of ECP.md, section 9, "Local-inference policy"):
   * The endpoint must be http on a loopback IP address (127.0.0.0/8 or ::1), or the exact name
     "localhost", which is sent to 127.0.0.1. Names are never looked up, so DNS cannot point it away.
   * Requests go straight to that address with http.client: no proxy (from the environment or the
@@ -21,6 +23,25 @@ Local only, by construction (the rules of the ECP research spec, section 5):
     refused as egress. Only /api/version, /api/status, /api/tags, /api/show and /api/generate are
     ever called; nothing that pulls, pushes, creates, copies or deletes models.
 A tunnel or another program listening on 127.0.0.1 cannot be told apart from Ollama; ECP.md says so.
+
+Who calls it: ecp.py (the ECP engine behind the MCP server and the window's Ask box) for every model
+call; qr_palette.py and selftest.py check addresses with parse_endpoint; app_settings.py overwrites
+the tunables below from settings.json; window.py lists models in a --smoke run. It calls only the
+standard library.
+
+The Ollama API in brief (JSON over HTTP): GET /api/version and /api/status describe the daemon;
+GET /api/tags lists installed models with their digests; POST /api/show describes one model
+(capabilities such as "completion" or "thinking"); POST /api/generate runs a prompt, or with no
+prompt only loads the model. Durations in its answers are nanoseconds, and "done_reason" says why
+generation stopped ("stop" for a finished answer, "length" for the token limit, "load" for a load).
+
+Main flow (driven by ecp.py):
+  1. parse_endpoint() checks the configured address once.
+  2. list_models() and cloud_disabled() back ecp_list_models.
+  3. show() and warm() back ecp_select_model (check the model, then load it).
+  4. generate_json() asks for a plan as one JSON object; request() is the one way out for all of them.
+
+Start reading at request(), then generate_json().
 
 Records
   Result      {"ok": bool, "error": str, "value": any, "kind": str}   kind names the failure for ECP
@@ -38,12 +59,21 @@ import socket
 import time
 import urllib.parse
 
+# Fixed limits. 11434 is Ollama's own default port; answers over MAX_ANSWER_BYTES (1 MiB, the
+# policy's limit) are refused; CLOUD_SUFFIXES are the name endings Ollama uses for models it runs
+# on its own servers.
 DEFAULT_URL = "http://127.0.0.1:11434"
 DEFAULT_PORT = 11434
 MAX_ANSWER_BYTES = 1024 * 1024
 CLOUD_SUFFIXES = (":cloud", "-cloud")
 
 # Set from settings.json at start (these are the defaults).
+# LIST_TIMEOUT and PING_TIMEOUT are seconds for listing and for the quick status calls. KEEP_ALIVE
+# is how long Ollama keeps a model in memory after its last use (an Ollama duration string).
+# PLAN_OPTIONS are Ollama generation options chosen for repeatable plans: temperature 0 and top_k 1
+# always take the likeliest token, and a fixed seed pins what little randomness is left;
+# num_predict caps the answer in tokens and num_ctx is the context window in tokens.
+# RETRY_ANSWER_TOKENS is the larger cap ecp.py uses when a first plan was cut off.
 LIST_TIMEOUT = 3.0
 PING_TIMEOUT = 2.0
 KEEP_ALIVE = "10m"
@@ -52,19 +82,33 @@ RETRY_ANSWER_TOKENS = 512
 
 
 def ok_result(value):
+    """A successful Result carrying `value`, of kind "ok"."""
     return {"ok": True, "error": "", "value": value, "kind": "ok"}
 
 
 def fail(error):
+    """A failed Result of kind "inference_unavailable", the ECP kind for most failures here."""
     return {"ok": False, "error": error, "value": None, "kind": "inference_unavailable"}
 
 
 def fail_kind(kind, error):
+    """A failed Result of the ECP failure `kind` (ECP.md section 11), such as "egress_detected"."""
     return {"ok": False, "error": error, "value": None, "kind": kind}
 
 
 def parse_endpoint(url):
-    """An inference URL -> Result Endpoint, or a failure when it is not plain http on loopback."""
+    """An inference URL -> Result Endpoint, or a failure when it is not plain http on loopback.
+
+    Steps:
+      1. Split the URL; refuse any scheme but http, any user name or password, and any path,
+         query or fragment.
+      2. Default the port to 11434 and turn the exact name "localhost" into 127.0.0.1.
+      3. Refuse an IPv6 zone ("%eth0") and anything that is not an IP literal: names are never
+         looked up, so DNS cannot point the client elsewhere.
+      4. Unwrap an IPv4-mapped IPv6 address (::ffff:127.0.0.1) and require a loopback address.
+      5. Build the canonical URL, with IPv6 hosts in brackets as URLs require.
+
+    Never touches the network."""
     if not isinstance(url, str) or url.strip() == "":
         return fail("no inference address")
     try:
@@ -105,7 +149,19 @@ def request(endpoint, method, path, body, timeout):
     """One JSON request to the endpoint -> Result parsed JSON answer. Redirects are failures; the
     Host header is the literal address. Not connecting in time is "inference_unavailable" (Windows
     retries a closed loopback port for about two seconds before refusing); connecting and then not
-    being answered in time is "inference_timeout"."""
+    being answered in time is "inference_timeout".
+
+    `method` is "GET" or "POST", `path` one of the allowed /api/ routes, `body` a JSON-ready value
+    or None, `timeout` seconds for the connect and for each read. An HTTP error status is a failure
+    whose value is the status; 404 is "model_not_local" (Ollama's answer for an unknown model).
+
+    Steps:
+      1. Connect with http.client straight to the literal address: unlike urllib, it never reads
+         proxy settings, and it never follows redirects.
+      2. Send the request and read at most one byte past the size limit, so an oversized answer
+         is detected without reading all of it.
+      3. Refuse a 3xx answer, an oversized one, and one that is not JSON.
+      4. Map a 4xx/5xx status to its failure kind, keeping the server's own "error" text."""
     connection = None
     try:
         connection = http.client.HTTPConnection(endpoint["host"], endpoint["port"], timeout=timeout)
@@ -150,6 +206,7 @@ def request(endpoint, method, path, body, timeout):
 
 
 def reachable(endpoint):
+    """True when the daemon at `endpoint` answers /api/version in time; False for no endpoint."""
     if endpoint is None:
         return False
     return request(endpoint, "GET", "/api/version", None, PING_TIMEOUT)["ok"]
@@ -203,12 +260,20 @@ def is_remote(row):
 
 
 def text_of(value):
+    """`value` when it is a string, else "" (answers from the daemon are not trusted to be well typed)."""
     if isinstance(value, str):
         return value
     return ""
 
 
 def local_model(row, capabilities, default_name):
+    """One /api/tags row as a LocalModel record.
+
+    `capabilities` are the model's capability strings; `default_name` is the configured default
+    model, which sets is_default. model_id is NAME@DIGEST, so a model replaced under the same name
+    gets a new id. The note warns about base models (not tuned to follow instructions), thinking
+    models (they reason at length before answering) and models that report no capabilities. A size
+    that is not a plain int (bool is an int in Python, hence the extra check) becomes 0."""
     details = row.get("details")
     if not isinstance(details, dict):
         details = {}
@@ -244,7 +309,17 @@ def capabilities_of(endpoint, row, timeout):
 
 def list_models(endpoint, timeout, default_name):
     """The models this computer can run -> Result [LocalModel], by name. Cloud, remote and
-    embedding-only models are left out."""
+    embedding-only models are left out.
+
+    `timeout` is seconds per request; `default_name` marks the configured default (see local_model).
+
+    Steps:
+      1. GET /api/tags and skip rows without a name.
+      2. Skip cloud and remote models (is_remote).
+      3. Find each model's capabilities (capabilities_of, one /api/show per model when /api/tags
+         does not list them) and skip models that report capabilities without "completion", such
+         as embedding models; a model that reports none is kept with a note.
+      4. Sort by name."""
     tags = request(endpoint, "GET", "/api/tags", None, timeout)
     if not tags["ok"]:
         return tags
@@ -269,6 +344,7 @@ def list_models(endpoint, timeout, default_name):
 
 
 def model_name(model):
+    """A LocalModel's name: the sort key of list_models."""
     return model["name"]
 
 
@@ -299,7 +375,12 @@ def stamped_remote(answer):
 def warm(endpoint, name, timeout):
     """Load the model so the first question is quick -> Result {"loaded": bool, "load_duration_ns": int}.
     It is loaded with the planning context size, or the first plan would load it again. A daemon that
-    does not say how long loading took is timed from here."""
+    does not say how long loading took is timed from here.
+
+    A /api/generate call with no prompt only loads the model; its answer has done_reason "load".
+    The model is named NAME:local so a remote manifest cannot serve it, and keep_alive holds it in
+    memory for KEEP_ALIVE afterwards. An answer stamped with remote_host or remote_model is the
+    failure "egress_detected"."""
     started = time.monotonic()
     answered = request(endpoint, "POST", "/api/generate", {"model": name + ":local", "keep_alive": KEEP_ALIVE,
                                                            "options": {"num_ctx": PLAN_OPTIONS["num_ctx"]}}, timeout)
@@ -321,7 +402,19 @@ def warm(endpoint, name, timeout):
 def generate_json(endpoint, model, system, prompt, schema, timeout, answer_tokens):
     """Ask a local model for one JSON object following `schema`, via /api/generate on NAME:local
     -> Result Planned. Deterministic settings; "think" is turned off only for models that think.
-    A cut-off answer is a failure of kind "plan_truncated"; a stamped one is "egress_detected"."""
+    A cut-off answer is a failure of kind "plan_truncated"; a stamped one is "egress_detected".
+
+    `model` is a LocalModel, `system` the system prompt, `prompt` the question, `schema` a JSON
+    Schema passed as Ollama's "format" (structured output: the model's tokens are constrained to
+    text that fits it), `timeout` seconds, `answer_tokens` the num_predict cap for this try.
+
+    Steps:
+      1. Copy PLAN_OPTIONS and set the token cap.
+      2. Ask without streaming, so the answer is one JSON object.
+      3. Refuse an answer that is not an object or that another host stamped.
+      4. done_reason "length" means the cap cut the answer off; anything but "stop" with a text
+         response is unparseable.
+      5. Keep the daemon's timings (nanoseconds) and token count where it gave them as ints."""
     options = {}
     for key in PLAN_OPTIONS:
         options[key] = PLAN_OPTIONS[key]

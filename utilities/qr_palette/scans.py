@@ -7,8 +7,9 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette scan counts: how often each short link was opened, read from an analytics export or a web
-server's access log.
+"""QR Palette scan counts: how often each short link was opened, from reports or logs.
+
+The counts are read from an analytics export or from a web server's access log.
 
 Only counts are taken: a short link's ID, a day and a number. Addresses, user agents and everything
 else in a log are never kept, not even in memory past the line being read. Two kinds of file:
@@ -20,6 +21,22 @@ else in a log are never kept, not even in memory past the line being read. Two k
     first request, so a log that grew, or was rotated, imports over itself rather than adding to it.
 
 An ID must pass its check digit here; the registry then keeps only those that are its own.
+
+Called by short_link_ops.import_scan_file, which hands the counts to registry.import_scans. It calls
+shortlinks.is_valid_code for the check digit.
+
+Flow (read_file)
+  1. Read the first line that is neither empty nor a comment. When it parses as an access-log line,
+     the file is a log, read line by line (gzipped or not) by read_log().
+  2. Otherwise read it whole (at most MAX_CSV_BYTES), as UTF-8 or else Latin-1, and parse it with
+     read_analytics().
+
+A Common Log Format line holds: host, identity, user, [day/Mon/year:hh:mm:ss zone], "METHOD target
+protocol", status and size; the Combined format adds the referrer and the user agent after them. Only
+the date, method, target and status are read. The zone is ignored: a request counts on the day the log
+wrote, in the server's own time.
+
+Start reading at read_file().
 
 Records
   Result    {"ok": bool, "error": str, "value": any}
@@ -37,10 +54,15 @@ import urllib.parse
 
 import shortlinks
 
-MAX_CSV_BYTES = 50 * 1024 * 1024
+MAX_CSV_BYTES = 50 * 1024 * 1024  # a report is read whole into memory; a log is read a line at a time
+# Groups: 1 day, 2 month name, 3 year, 4 time, 5 method, 6 target, 7 status. The size and anything
+# after it (referrer, user agent) are never matched.
 LOG_LINE = re.compile(r'^\S+ \S+ .*?\[(\d{2})/([A-Za-z]{3})/(\d{4}):(\d{2}:\d{2}:\d{2}) [^\]]*\] "(\S+) (\S+)[^"]*" (\d{3}) ')
+# The log's English month names, matched lower-cased.
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10,
           "nov": 11, "dec": 12}
+# Header names (lower-cased) for the three columns of a report, each tried in order: the first found
+# wins. They cover the names analytics tools give the date, the utm_content tag and a count.
 DATE_HEADERS = ("date", "day")
 TAG_HEADERS = ("utm_content", "content", "session manual ad content", "manual ad content", "session ad content",
                "ad content", "campaign content", "id", "code")
@@ -49,10 +71,12 @@ COUNT_HEADERS = ("count", "scans", "sessions", "clicks", "views", "page views", 
 
 
 def ok_result(value):
+    """A successful Result holding `value`."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with the short error phrase `error` and the value None."""
     return {"ok": False, "error": error, "value": None}
 
 
@@ -96,7 +120,15 @@ def column_of(headers, names):
 
 def read_analytics(text):
     """An analytics CSV's text -> Result ScanFile. Rows of one day and ID add up, because a report may
-    split them by another column."""
+    split them by another column.
+
+    Steps:
+    1. Drop comment lines, and pick the separator from the first line: ";" or a tab when it has no
+       comma (spreadsheets write ";" where the comma is the decimal mark).
+    2. The first non-empty row is the header: find the date, tag and count columns, or fail.
+    3. Every later row gives a day, an ID and a count; a row lacking any of them is counted as ignored.
+    4. Add each count to its (ID, day).
+    """
     lines = []
     for line in text.splitlines():
         if not line.startswith("#"):
@@ -189,9 +221,11 @@ def read_log(lines):
         if parts is None:
             ignored = ignored + 1
             continue
+        # the first request's time names the source, so the same log imported again replaces its own counts
         if source == "":
             source = "server log from " + parts[0] + "T" + parts[1]
         code = code_in_path(parts[3])
+        # 2xx or 3xx: the redirect page was served (a 304 Not Modified counts too)
         if parts[2] != "GET" or not 200 <= parts[4] < 400 or code == "":
             ignored = ignored + 1
             continue
@@ -202,7 +236,7 @@ def read_log(lines):
 def text_lines(handle):
     """Lines of a binary file as text: a log's bytes may be anything, and only ASCII parts are read."""
     for raw in handle:
-        yield raw.decode("latin-1")
+        yield raw.decode("latin-1")  # Latin-1 maps every byte to a character, so it never fails
 
 
 def first_line(handle):
@@ -215,7 +249,13 @@ def first_line(handle):
 
 
 def read_file(path):
-    """A scan file of either kind, told apart by its first line -> Result ScanFile."""
+    """A scan file of either kind, told apart by its first line -> Result ScanFile.
+
+    Steps:
+    1. Open it (gzip.open for .gz) and test its first line against LOG_LINE.
+    2. A log: open it again and stream its lines through read_log().
+    3. A report: refuse it above MAX_CSV_BYTES, read it whole, decode it and pass it to read_analytics().
+    """
     name = os.path.basename(path)
     opener = open
     if path.lower().endswith(".gz"):
@@ -232,6 +272,8 @@ def read_file(path):
                 return ok_result(read_log(text_lines(handle)))
             finally:
                 handle.close()
+        # a .gz file's size on disk is its compressed size: the read below, one byte past the cap,
+        # catches a big one instead
         if opener is open and os.path.getsize(path) > MAX_CSV_BYTES:
             return fail(name + " is too big for a report, and is not a server log")
         handle = opener(path, "rb")
@@ -239,12 +281,13 @@ def read_file(path):
             data = handle.read(MAX_CSV_BYTES + 1)
         finally:
             handle.close()
+    # a damaged gzip raises BadGzipFile (an OSError) or, when cut short, EOFError
     except (OSError, EOFError, ValueError) as error:
         return fail("cannot read " + name + ": " + str(error))
     if len(data) > MAX_CSV_BYTES:
         return fail(name + " is too big for a report, and is not a server log")
     try:
-        text = data.decode("utf-8-sig")
+        text = data.decode("utf-8-sig")  # utf-8-sig drops a byte-order mark if there is one
     except UnicodeDecodeError:
         text = data.decode("latin-1")
     read = read_analytics(text)

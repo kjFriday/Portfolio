@@ -39,8 +39,14 @@ Records
   Matrix   {"size": int, "dark": [[bool]] (row, column), "version": int, "level": str, "mask": int}
   Reading  {"text": str, "version": int, "level": str, "mask": int, "corrected": int,
             "corners": [[x, y]] finder centres top-left, top-right, bottom-left in image pixels}
+
+Who imports it: qr_studio.py, studio_history.py, studio_clipboard.py, studio_selftest.py, studio_gui.py
+and the tests, all by the names below. Start reading the codec at encode.encode_text for making a code
+and locate.decode_image for reading one.
 """
 
+# the public names, listed in the same chapter order as the layout above; the tests also reach the
+# tables and blocks through these names
 from .records import fail, ok_result
 from .reed_solomon import rs_correct, rs_remainder
 from .tables import (ECC_PER_BLOCK, EC_LEVELS, data_codeword_count, data_positions, format_bits,

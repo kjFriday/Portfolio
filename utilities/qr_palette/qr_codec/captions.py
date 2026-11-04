@@ -12,6 +12,17 @@
 GLYPHS is a 5 x 7 pixel font drawn for this program. A caption's lines are centred, 7 font pixels
 tall with 2 between them, one character every 6 font pixels. The picture writers (images, logos, svg)
 draw captions with these functions.
+
+Units: a "font pixel" is one dot of a glyph; `pixel` is its size in output pixels (or SVG grid units),
+and `scale` is the size of one QR module in the same units. Characters missing from GLYPHS (lower
+case among them) draw as a space, so a caption is expected in capitals, as short links are written.
+
+Main flow for a picture writer:
+1. caption_layout picks one or two lines and the font pixel size for the code's width.
+2. caption_size gives the band to add under the code.
+3. caption_pixels lists the top-left corner of every dark font pixel to paint.
+
+Callers: images.py, logos.py and svg.py in this package; sheets.py and print_advice.py in the app.
 """
 
 
@@ -65,11 +76,16 @@ def caption_layout(text, width, scale):
     """How a caption fits under a code `width` pixels wide at `scale` pixels per module -> (lines,
     pixel). Font pixels are at most half a module. It is one line while that allows a quarter of a
     module per font pixel, else two lines split after the last "/". Never less than 1 pixel."""
+    # one module of margin on each side
     usable = width - 2 * scale
     largest = max(1, scale // 2)
     smallest = max(1, scale // 4)
 
     def fit(lines):
+        """Largest font pixel (capped at `largest`) at which the longest line fits in `usable`.
+
+        A line of n characters is 6 * n - 1 font pixels wide: 5 per glyph plus 1 between glyphs.
+        """
         longest = 0
         for line in lines:
             longest = max(longest, len(line))
@@ -77,6 +93,7 @@ def caption_layout(text, width, scale):
 
     lines = [text]
     pixel = fit(lines)
+    # a trailing "/" is ignored when choosing the cut so the second line is never empty
     if pixel < smallest and "/" in text.rstrip("/"):
         cut = text.rstrip("/").rindex("/") + 1
         lines = [text[:cut], text[cut:]]
@@ -94,11 +111,16 @@ def caption_size(lines, pixel, scale):
 
 
 def caption_pixels(lines, pixel, width, top):
-    """The top-left corner of every font pixel of a caption, each line centred in `width`."""
+    """The top-left corner of every font pixel of a caption, each line centred in `width`.
+
+    top is the y of the first line, usually the bottom edge of the code; only dark ("#") font pixels
+    are listed, as (x, y) tuples in the caller's units.
+    """
     corners = []
     for index in range(len(lines)):
         line = lines[index]
         left = (width - (6 * len(line) - 1) * pixel) // 2
+        # 9 = 7 rows of glyph + 2 rows of gap between lines
         line_top = top + index * 9 * pixel
         for place in range(len(line)):
             glyph = GLYPHS.get(line[place], GLYPHS[" "])

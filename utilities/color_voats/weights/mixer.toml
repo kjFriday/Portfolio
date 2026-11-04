@@ -1,7 +1,13 @@
-# The mixer runs its preset's chain of algos and hands on whenever one stalls:
-# tie     scores (scaled to 0..1) closer than this count as tied; the next algo sorts them
-# streak  this many downvoats in a row hand the lead to the next algo in the chain
-# budget  an algo that needs more steps than this for the color set is skipped
+# The mixer runs its preset's chain of algos and hands on whenever one stalls. Read by
+# factory.py for every preset whose algo is mixer; all three values must be above 0.
+
+# tie: each algo's scores are scaled to 0..1 and cut into steps this wide; colors in one step
+# count as tied and the next algo sorts them. The steps have fixed edges, so two scores
+# closer than this can still fall either side of one.
 tie = 0.001
+# streak: this many downvoats in a row hand the lead to the next algo in the chain
 streak = 3
+# budget: an algo that needs more steps than this for the color set is skipped. similar and
+# explore cost colors x voats, net and wilson colors + voats; with 217 colors this budget
+# skips nothing until the log holds over 4600 voats.
 budget = 1000000

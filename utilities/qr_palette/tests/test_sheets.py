@@ -7,8 +7,22 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""Tests for print sheets: sheets.json, where codes go on a page, the SVG drawings, the hand-written
-PDF (its cross-reference table, trailer and content), and reading codes from the registry."""
+"""Tests for print sheets: sheets.json, placement, SVG, the hand-written PDF, registry codes.
+
+sheets.py lays QR codes out on label sheets or posters and writes them as SVG pages or one PDF it
+builds itself (PDF 1.4: objects, a cross-reference table of byte offsets, and a trailer). The PDF test
+walks that structure byte by byte, and the placement test decodes a placed code again, so a layout
+bug that would print an unreadable code fails here.
+
+What the classes pin:
+  1. SheetsFileTests: the shipped sheets.json, layout checks, and falling back to the built-in layouts.
+  2. PlacementTests: cell positions on every built-in layout, the 5160 label pitch, and a code that
+     fills its cell and still decodes.
+  3. OutputTests: the PDF's structure, identical bytes for identical input, and the files written.
+  4. RegistryTests: codes drawn again from registry records, and the module-size and logo notes.
+
+Run with the rest of the suite: python -m unittest discover -s tests, in the program folder.
+"""
 
 import json
 import os
@@ -24,14 +38,17 @@ import sheets
 import shortlinks
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the program folder, above tests/
+# a short link as printed: capitals, so it fits QR's alphanumeric mode, and a caption under the code
 SHORT = "HTTPS://GO.EXAMPLE.COM/12345678"
 
 
 def code(text, color, caption):
+    """A sheets Code: `text` encoded at level M (version 1 up, mask -1 = the best of the eight), in `color`."""
     return {"matrix": qr_codec.encode_text(text, "M", 1, -1)["value"], "color": color, "caption": caption}
 
 
 def codes(count):
+    """`count` different #3366cc codes without captions, one per product page."""
     found = []
     for index in range(count):
         found.append(code("https://shop.example.com/p/" + str(index), "#3366cc", ""))
@@ -39,11 +56,20 @@ def codes(count):
 
 
 def layout(name):
+    """A built-in layout by name, from sheets.DEFAULT_SHEETS."""
     return sheets.DEFAULT_SHEETS["layouts"][name]
 
 
 def grid_of(shape, size):
-    """The module grid drawn by a Shape (the code's own runs, not its label) -> dark[row][column]."""
+    """The module grid drawn by a Shape (the code's own runs, not its label) -> dark[row][column].
+
+    Steps:
+    1. The module size is the tallest rectangle: a module run is one module high, a label's font
+       pixel is a fraction of one.
+    2. Find the code's top-left corner from its module runs. The finder pattern makes row 0 and
+       column 0 dark, so the smallest left and top belong to module (0, 0); taking BORDER modules
+       off them gives the outer corner of the quiet zone, the origin code_shape measures from.
+    3. Turn each module run back into the grid cells it covers."""
     module = None
     for rect in shape["rects"]:
         if module is None or rect[3] > module:
@@ -52,6 +78,7 @@ def grid_of(shape, size):
     top = min(rect[1] for rect in shape["rects"] if rect[3] == module) - sheets.BORDER * module
     dark = qr_codec.blank_grid(size, False)
     for rect in shape["rects"]:
+        # label runs are shorter than a module: skip them (1e-9 absorbs floating-point noise)
         if abs(rect[3] - module) > 1e-9:
             continue
         row = int(round((rect[1] - top) / module)) - sheets.BORDER
@@ -62,19 +89,25 @@ def grid_of(shape, size):
 
 
 class SheetsFileTests(unittest.TestCase):
+    """load_sheets and check_layout, on sheets.json files written into a temporary folder."""
+
     def setUp(self):
+        """Make the folder and name sheets.json in it."""
         self.folder = tempfile.mkdtemp(prefix="qr_palette_sheets_")
         self.path = os.path.join(self.folder, "sheets.json")
 
     def tearDown(self):
+        """Remove the folder."""
         shutil.rmtree(self.folder, ignore_errors=True)
 
     def write(self, data):
+        """Write `data` as the test's sheets.json."""
         handle = open(self.path, "w", encoding="utf-8")
         handle.write(json.dumps(data))
         handle.close()
 
     def test_the_shipped_sheets_file_shows_the_defaults(self):
+        """The sheets.json beside the program is exactly sheets_text(DEFAULT_SHEETS) and loads without warnings."""
         handle = open(os.path.join(HERE, "sheets.json"), encoding="utf-8")
         shipped = handle.read()
         handle.close()
@@ -84,6 +117,10 @@ class SheetsFileTests(unittest.TestCase):
         self.assertEqual(sorted(loaded["sheets"]["layouts"]), sorted(sheets.DEFAULT_SHEETS["layouts"]))
 
     def test_layouts_that_cannot_be_used_are_left_out(self):
+        """Of four layouts only the good one is kept, with a warning for each of the other three.
+
+        "too wide" puts two 170 mm cells on a 210 mm page; "odd" has label "yes" (not a bool); "tiny"
+        has 2 mm cells, under the 5 mm check_layout allows."""
         good = dict(layout("A4 poster"))
         too_wide = dict(good, columns=2)
         self.write({"layouts": {"mine": good, "too wide": too_wide, "odd": dict(good, label="yes"),
@@ -94,6 +131,7 @@ class SheetsFileTests(unittest.TestCase):
         self.assertIn("do not fit", " ".join(loaded["warnings"]))
 
     def test_a_missing_or_broken_file_means_the_built_in_layouts(self):
+        """A missing file, broken JSON, and a file whose only layout is unusable all mean the built-in layouts, with a warning."""
         for content in (None, "[1, 2", json.dumps({"layouts": {"bad": {}}})):
             if content is not None:
                 handle = open(self.path, "w", encoding="utf-8")
@@ -104,6 +142,11 @@ class SheetsFileTests(unittest.TestCase):
             self.assertGreater(len(loaded["warnings"]), 0)
 
     def test_checks(self):
+        """check_layout accepts a built-in layout and refuses each single fault in it.
+
+        The faults: a page with one size, a negative margin, no columns, a bool for rows, cells that
+        no longer fit (8 rows of 38 mm plus the margin is 304.5 mm on a 297 mm page), a gutter as
+        text, and no label setting."""
         good = layout("A4 labels 3 x 8 (70 x 37 mm)")
         self.assertEqual(sheets.check_layout(good), "")
         for change in ({"page_mm": [210]}, {"margins_mm": [-1, 0]}, {"columns": 0}, {"rows": True},
@@ -112,7 +155,14 @@ class SheetsFileTests(unittest.TestCase):
 
 
 class PlacementTests(unittest.TestCase):
+    """place(), page_count() and code_shape()."""
+
     def test_cells_for_every_layout(self):
+        """On every built-in layout, one code more than a page holds makes two pages, and every cell stays on its page.
+
+        The first cell sits at the margins, the last of page 0 one pitch (cell plus gutter) per
+        column and row further, and the extra code starts page 1 where the first did. 0.01 mm of
+        slack covers floating-point sums of decimal millimetres."""
         for name in sheets.DEFAULT_SHEETS["layouts"]:
             chosen = layout(name)
             per_page = chosen["columns"] * chosen["rows"]
@@ -134,12 +184,21 @@ class PlacementTests(unittest.TestCase):
                 self.assertLessEqual(cell["top"] + cell["height"], chosen["page_mm"][1] + 0.01, name)
 
     def test_the_5160_labels(self):
+        """The US Letter 3 x 10 layout matches the 5160 label sheet in inches.
+
+        Labels repeat every 2 3/4 inch across (2 5/8 label plus 1/8 gutter) and every inch down, and
+        the last row ends half an inch (12.7 mm) above the bottom of the 11-inch (279.4 mm) page."""
         cells = sheets.place(layout("US Letter labels 3 x 10 (2 5/8 x 1 in)"), 30)
         self.assertAlmostEqual(cells[1]["left"] - cells[0]["left"], 2.75 * 25.4, 6)  # 2 3/4 inch pitch across
         self.assertAlmostEqual(cells[3]["top"] - cells[0]["top"], 25.4, 6)
         self.assertAlmostEqual(cells[29]["top"] + cells[29]["height"], 279.4 - 12.7, 6)
 
     def test_a_code_fills_its_cell_and_still_reads(self):
+        """A labelled code stays inside its 70 x 37 mm cell and decodes to its text; without the label its modules are no smaller.
+
+        The 1e-9 slack is for floating-point rounding. The unlabelled shape has fewer rectangles (no
+        font pixels), and its module, which no longer shares the cell's height with a label, is at
+        least as big."""
         cell = {"page": 0, "left": 10.0, "top": 20.0, "width": 70.0, "height": 37.0}
         placed = code(SHORT, "#006633", shortlinks.caption(SHORT))
         shape = sheets.code_shape(placed, cell, True)
@@ -158,17 +217,33 @@ class PlacementTests(unittest.TestCase):
 
 
 class OutputTests(unittest.TestCase):
+    """sheet_pdf, sheet_svg and write_sheet."""
+
     def setUp(self):
+        """Make the temporary folder for written sheets."""
         self.folder = tempfile.mkdtemp(prefix="qr_palette_sheet_out_")
 
     def tearDown(self):
+        """Remove the folder."""
         shutil.rmtree(self.folder, ignore_errors=True)
 
     def test_the_pdf_is_well_formed(self):
+        """25 codes on 24-label A4 sheets make a valid two-page PDF 1.4 whose every offset and length is right.
+
+        Steps:
+        1. The file starts with the PDF 1.4 header and ends with %%EOF.
+        2. startxref names the byte where the "xref" table starts; its first line gives the count.
+        3. Entry 0 is the free entry; every other 20-byte entry points at "N 0 obj" for its number.
+        4. The trailer gives /Size and the catalog (object 1) as /Root.
+        5. Each content stream's /Length is exact (endstream follows at once) and it inflates to
+           drawing operators: the fill color of #3366cc (51/255 = 0.2, 102/255 = 0.4, 204/255 = 0.8),
+           rectangles, a final fill, and no text.
+        595.276 x 841.89 points is A4 (210 x 297 mm at 72 points to 25.4 mm)."""
         chosen = layout("A4 labels 3 x 8 (70 x 37 mm)")
         data = sheets.sheet_pdf(chosen, codes(25))
         self.assertTrue(data.startswith(b"%PDF-1.4\n"))
         self.assertTrue(data.endswith(b"%%EOF\n"))
+        # the number between "startxref\n" (10 bytes) and the final "\n%%EOF"
         table = int(data[data.rindex(b"startxref\n") + 10:data.rindex(b"\n%%EOF")])
         self.assertEqual(data[table:table + 5], b"xref\n")
         header = data[table:].split(b"\n")[1].split(b" ")
@@ -200,12 +275,17 @@ class OutputTests(unittest.TestCase):
         self.assertNotIn(b"/Image", data)
 
     def test_the_same_codes_give_the_same_bytes(self):
+        """The same codes give byte-identical PDF and SVG output (no dates or IDs), labels included."""
         chosen = layout("US Letter labels 3 x 10 (2 5/8 x 1 in)")
         labelled = [code(SHORT, "#663399", shortlinks.caption(SHORT))] + codes(3)
         self.assertEqual(sheets.sheet_pdf(chosen, labelled), sheets.sheet_pdf(chosen, labelled))
         self.assertEqual(sheets.sheet_svg(chosen, labelled), sheets.sheet_svg(chosen, labelled))
 
     def test_files(self):
+        """write_sheet writes one SVG per page (labels.svg, labels-2.svg) or one PDF, and refuses other types and no codes.
+
+        30 codes on 24 labels leave 6 for page 2, so it holds six #3366cc paths. The refusals write
+        nothing, and no .part file is left behind."""
         chosen = layout("A4 labels 3 x 8 (70 x 37 mm)")
         written = sheets.write_sheet(os.path.join(self.folder, "labels.svg"), chosen, codes(30))
         self.assertTrue(written["ok"], written["error"])
@@ -225,7 +305,13 @@ class OutputTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.TestCase):
+    """codes_from_registry and print_sheet against a small registry."""
+
     def setUp(self):
+        """A registry with two level-Q, version-3 codes: a plain link in green, then a short link in blue.
+
+        The picture files are never written: the codes are drawn again from the registry's text.
+        "12345678" is only digits; the registry does not check the Damm digit."""
         self.folder = tempfile.mkdtemp(prefix="qr_palette_sheet_db_")
         self.db = os.path.join(self.folder, "palette.db")
         opened = registry.connect(self.db, False)
@@ -240,9 +326,13 @@ class RegistryTests(unittest.TestCase):
         registry.close(opened["value"])
 
     def tearDown(self):
+        """Remove the folder and the registry in it."""
         shutil.rmtree(self.folder, ignore_errors=True)
 
     def test_codes_are_drawn_again_from_the_registry(self):
+        """Records come back in the order asked, at their own level and version, with the short address as caption.
+
+        Record 999 does not exist and is skipped with a note; a missing registry fails."""
         found = sheets.codes_from_registry(self.db, list(reversed(self.numbers)) + [999])
         self.assertTrue(found["ok"], found["error"])
         drawn = found["value"]["codes"]
@@ -254,6 +344,11 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(sheets.codes_from_registry(os.path.join(self.folder, "none.db"), self.numbers)["ok"])
 
     def test_a_sheet_says_how_small_its_modules_are(self):
+        """print_sheet reports the smallest module and how many codes print without their logo.
+
+        A poster gives modules over 3 mm; an 800-character link on a one-inch label gives modules
+        under 0.4 mm, the case the window warns about. Marking both records has_logo makes without_logo 2,
+        since the registry keeps no logo to draw."""
         path = os.path.join(self.folder, "sheet.pdf")
         printed = sheets.print_sheet(self.db, self.numbers, layout("A4 poster"), path)
         self.assertGreater(printed["value"]["smallest_module_mm"], 3)
@@ -267,6 +362,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(sheets.print_sheet(self.db, self.numbers, layout("A4 poster"), path)["value"]["without_logo"], 2)
 
     def test_a_sheet_of_registered_codes(self):
+        """Two records and a missing one print as one PDF page of two codes, one skipped; a sheet left with no codes fails."""
         path = os.path.join(self.folder, "sheet.pdf")
         printed = sheets.print_sheet(self.db, self.numbers + [999], layout("A4 labels 3 x 8 (70 x 37 mm)"), path)
         self.assertTrue(printed["ok"], printed["error"])

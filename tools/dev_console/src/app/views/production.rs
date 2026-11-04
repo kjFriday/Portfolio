@@ -6,8 +6,20 @@
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 // ========================================================================
 
-//! The live-production view: a program's live site, started and stopped from its production command, opened
-//! in the browser, and checked.
+//! The live-production view: start, stop, open and check a program's live site.
+//!
+//! A program has a live site when programs.ini gives it a `production` command, a `production_url`, or both.
+//! The frame loop in app/views.rs draws this view in the central panel when its tab is picked. The buttons
+//! call the actions in app.rs (`start_production`, `stop_job`, `check_production`); the checks themselves
+//! are in production.rs.
+//!
+//! What the view shows, top to bottom:
+//! 1. A row of program names to pick from, when more than one has a site.
+//! 2. A grid: program, command, address, and the server's state (starting, running with uptime and PID, or
+//!    how its last run ended).
+//! 3. Start, Stop, Open in browser, Check now and the Keep checking box.
+//! 4. A note, such as a port already in use.
+//! 5. The checks: how many passed, how long ago and at which URL, then one row per check.
 
 use std::time::Duration;
 
@@ -17,7 +29,22 @@ use super::{GREEN, RED, status_text};
 use crate::app::App;
 use crate::production;
 
+// The view's body, drawn as part of App.
 impl App {
+    /// Draw the live-production view; `ctx` is passed on to the actions the buttons start.
+    ///
+    /// Steps:
+    /// 1. List the programs with a site; with none, say how to add one and stop.
+    /// 2. Keep the picked program if it still has a site, else take the first, and store the choice so the
+    ///    timer in `tick` checks the same one.
+    /// 3. The grid's labels and values sit in two columns (`egui::Grid`), so the values line up whatever the
+    ///    label widths. The Server row reads `waiting` and the job's process to say whether it is starting,
+    ///    running (uptime and PID) or not running.
+    /// 4. Start is enabled with a command, a root, and no site running; Stop only once the job has a process
+    ///    id to kill. Open in browser and Check now need a URL; Check now also waits for a running check.
+    /// 5. The note, in green or red.
+    /// 6. The Checks heading with a spinner while a check runs, then the summary and a striped four-column
+    ///    grid (mark, check, detail, time); striping helps the eye follow a row across.
     pub(super) fn production_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let sites: Vec<usize> = (0..self.programs.len())
             .filter(|&i| self.programs[i].has_production())
@@ -176,6 +203,9 @@ impl App {
 }
 
 /// 75 s -> "1 m 15 s".
+///
+/// A duration in its two largest units: seconds under a minute, minutes and seconds under an hour, then hours
+/// and minutes. Used for the uptime and for how long ago the checks ran.
 fn ago(d: Duration) -> String {
     let s = d.as_secs();
     match s {
@@ -185,6 +215,7 @@ fn ago(d: Duration) -> String {
     }
 }
 
+/// Tests for the view's table entry, its default key and the time text.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +223,8 @@ mod tests {
     use crate::app::keys::sc_text;
     use crate::config;
 
+    /// The view is in View::ALL as live-production with the view_production key, which defaults to Ctrl+4,
+    /// and `ago` writes seconds, minutes and hours as expected.
     #[test]
     fn live_production_is_a_view_with_keys() {
         let (_, label, key, _) = View::ALL.iter().find(|(v, ..)| *v == View::Production).unwrap();

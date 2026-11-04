@@ -7,7 +7,17 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette audit log: one JSON line per ECP tool call, each holding the SHA-256 of the line before.
+"""The audit log: one JSON line per ECP call, each holding the SHA-256 of the line before.
+
+QR Palette's audit log is a hash chain. Every record has "prev_sha256", the SHA-256 of the exact
+bytes of the line before it (64 zeros, GENESIS, for the first line), and "audit_id", its line number
+counted from 1. Change one byte of line 5 and line 6's prev_sha256 no longer matches; delete line 5
+and line 6 no longer follows line 4, and the audit_ids skip. The chain needs no key: it does not stop
+someone who rewrites every line after the change, it only makes a quiet edit impossible.
+
+Who calls it: ecp.write_audit appends a line for every MCP tool call and every ECP call from the
+window's Ask row (listing, choosing and asking a model); the window's Audit log dialog
+(gui/dialogs.py) reads, verifies and fingerprints the log; the tests pin the chain's behavior.
 
 The chain makes any edit or deletion visible: verify() recomputes it from the first line. A line
 records what was asked and how it was answered (hashes of the prompt, the planner's rules and the plan
@@ -23,6 +33,15 @@ check_fingerprint(): whoever can rewrite the folder can rewrite the anchor too.
 Records
   Result       {"ok": bool, "error": str, "value": any}
   Fingerprint  {"audit_id": int, "line_sha256": str}         the last line of a log, or a kept copy
+
+Main flow of append:
+  1. Make the log's folder if it is not there.
+  2. Take the lock file (take_lock), waiting up to LOCK_SECONDS.
+  3. Read the last line, and number the new record one past its audit_id.
+  4. Write the record as one ASCII JSON line with the previous line's SHA-256, flush and fsync it.
+  5. Write the anchor beside the log, then let the lock go.
+
+Start reading at append, then chain.
 """
 
 import hashlib
@@ -30,28 +49,42 @@ import json
 import os
 import time
 
+# LOCK_SECONDS: how long a writer waits for another writer's lock before it gives up (the tests
+# shorten it). GENESIS: the prev_sha256 of the first line, which has no line before it.
 LOCK_SECONDS = 2.0
 GENESIS = "0" * 64
 
 
 def ok_result(value):
+    """A successful Result holding `value` (this module keeps its own copy, so it imports nothing
+    of the program's)."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with a short error phrase."""
     return {"ok": False, "error": error, "value": None}
 
 
 def sha256_text(text):
+    """The SHA-256 of `text`'s UTF-8 bytes, as 64 lowercase hex digits."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def utc_now():
+    """The time now in UTC as ISO 8601 to the second, such as "2026-11-03T14:05:09Z"."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def last_line(path):
-    """The last non-empty line of the file, or "" (reads only the end of a long file)."""
+    """The last non-empty line of the file, or "" (reads only the end of a long file).
+
+    Steps:
+      1. "" when there is no file.
+      2. Read the last 64 KiB; while that holds no whole line (no newline besides the trailing
+         ones) and the file has more, start 64 KiB earlier and read to the end again.
+      3. Split what was read at newlines and decode the last line as UTF-8.
+    """
     if not os.path.isfile(path):
         return ""
     handle = open(path, "rb")
@@ -73,6 +106,13 @@ def last_line(path):
 
 
 def take_lock(path):
+    """Take the log's lock file (LOG.lock) -> Result the lock's path, which the caller removes.
+
+    The lock is a file made with O_CREAT | O_EXCL, which the operating system makes atomic: of two
+    writers, exactly one creates it and the other gets FileExistsError. A waiting writer tries again
+    every 10 ms. After LOCK_SECONDS it gives up ("busy"), unless the lock file is more than 30
+    seconds old: no append takes that long, so its writer must have died, and the lock is removed
+    and taken again. Works across processes (the window and an MCP server), not only threads."""
     lock = path + ".lock"
     deadline = time.monotonic() + LOCK_SECONDS
     while True:
@@ -95,7 +135,15 @@ def take_lock(path):
 
 
 def append(path, fields):
-    """Add one record -> Result audit_id. `fields` is a flat object of the call's facts."""
+    """Add one record -> Result audit_id. `fields` is a flat object of the call's facts.
+
+    The record is {"audit_id", "ts", then `fields` in their order, then "prev_sha256"}. A field
+    named prev_sha256 in `fields` is overwritten by the chain's own; one named audit_id or ts would
+    replace the chain's (the callers never pass them). The line is
+    ASCII JSON (ensure_ascii escapes everything else, U+2028 and newlines included), so one record
+    is always exactly one line. A damaged last line is never built on: nothing is added, so the
+    damage stays visible instead of being chained over. Side effects: may create the folder, the
+    log, its lock and its anchor."""
     folder = os.path.dirname(os.path.abspath(path))
     try:
         if not os.path.isdir(folder):
@@ -124,7 +172,7 @@ def append(path, fields):
         try:
             handle.write(line.encode("ascii") + b"\n")
             handle.flush()
-            os.fsync(handle.fileno())
+            os.fsync(handle.fileno())  # on disk before the anchor names it
         finally:
             handle.close()
         write_anchor(path, number, line)
@@ -139,12 +187,17 @@ def append(path, fields):
 
 
 def anchor_path(path):
+    """The anchor file of a log: the log's path with ".anchor" added."""
     return path + ".anchor"
 
 
 def write_anchor(path, number, line):
     """The anchor beside the log: the last line's audit_id and SHA-256 (written into place, so it is
-    never half written). It may fall behind if writing it fails; that only weakens the check."""
+    never half written). It may fall behind if writing it fails; that only weakens the check.
+
+    "Written into place": the anchor goes to ANCHOR.part first and os.replace renames it over the
+    old one, a single step on the same drive, so a reader sees the old anchor or the new one. Any
+    OSError is swallowed."""
     try:
         temporary = anchor_path(path) + ".part"
         handle = open(temporary, "w", encoding="ascii", newline="\n")
@@ -158,7 +211,10 @@ def write_anchor(path, number, line):
 
 
 def read_anchor(path):
-    """The anchor's Fingerprint, or None when there is none (or it cannot be read)."""
+    """The anchor's Fingerprint, or None when there is none (or it cannot be read).
+
+    An anchor that is not an object with an integer audit_id (a bool is refused, since JSON true
+    would pass Python's int check) and a string line_sha256 also reads as None."""
     try:
         handle = open(anchor_path(path), "r", encoding="ascii")
         try:
@@ -174,7 +230,18 @@ def read_anchor(path):
 
 
 def chain(path, kept):
-    """Walk the chain, checking it and, when given, a kept Fingerprint -> Result number of records."""
+    """Walk the chain, checking it and, when given, a kept Fingerprint -> Result number of records.
+
+    `kept` is None to check the chain alone. A failure names the first line that is wrong.
+
+    Steps:
+      1. No log: fine when nothing was kept, else the whole log is gone.
+      2. For each non-empty line, counted from 1: it must be a JSON object, its prev_sha256 must be
+         the SHA-256 of the line before (GENESIS for the first), and its audit_id its own number.
+      3. On the kept line's number, note that line's SHA-256.
+      4. With a Fingerprint: the log must reach its line (else lines were cut off the end), and that
+         line must hash to what was kept. Lines added after it are fine.
+    """
     if not os.path.isfile(path):
         if kept is not None:
             return fail("there is no log, but a fingerprint says " + str(kept["audit_id"]) + " lines were written")
@@ -182,6 +249,7 @@ def chain(path, kept):
     previous = ""
     count = 0
     seen = None
+    # every line is written as ASCII; a byte that is not becomes U+FFFD and breaks the next hash
     handle = open(path, "r", encoding="ascii", errors="replace")
     try:
         for line in handle:
@@ -221,7 +289,10 @@ def verify(path):
 
 
 def fingerprint(path):
-    """The log's last line as a Fingerprint, to keep somewhere else -> Result."""
+    """The log's last line as a Fingerprint, to keep somewhere else -> Result.
+
+    Fails when the log is empty or missing, or its last line is not a record with an audit_id. The
+    chain itself is not checked here; verify does that."""
     line = last_line(path)
     if line == "":
         return fail("the audit log is empty")
@@ -239,7 +310,10 @@ def fingerprint_text(found):
 
 def check_fingerprint(path, text):
     """Check the log against a fingerprint kept elsewhere ("45:3f2a…", as fingerprint_text writes it)
-    -> Result number of records."""
+    -> Result number of records.
+
+    The text must be digits, one colon and 64 characters; the hash is compared in lowercase, so a
+    fingerprint typed in capitals still matches."""
     parts = text.strip().split(":")
     if len(parts) != 2 or not parts[0].isdigit() or len(parts[1]) != 64:
         return fail("a fingerprint is the line number, a colon and 64 hex digits")
@@ -249,6 +323,8 @@ def check_fingerprint(path, text):
 def read_records(path, limit):
     """The last `limit` records of the log, oldest first, for reading (a damaged line becomes
     {"audit_id": "?", "damaged": its text})."""
+    # Known limitation: the whole log is read into memory to take its last lines; a very long log
+    # makes the Audit log dialog slow to open.
     found = []
     if not os.path.isfile(path):
         return found
@@ -265,7 +341,7 @@ def read_records(path, limit):
         except ValueError:
             record = None
         if not isinstance(record, dict):
-            record = {"audit_id": "?", "damaged": line[:200]}
+            record = {"audit_id": "?", "damaged": line[:200]}  # the first 200 characters, to look at
         found.append(record)
     return found
 

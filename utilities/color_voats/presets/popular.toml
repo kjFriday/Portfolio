@@ -1,6 +1,13 @@
 # Your best-voated colors first: Wilson score, then net voats.
+# A Color Voats preset: factory.py reads it with the weights of each algo in uses and writes
+# rankers/ranker_popular.py. Pick it in the window's Ranking list or with --preset popular.
+
+# blend: each scorer's scores are scaled to 0..1 and summed with the weights below.
 algo = "blend"
 
+# The scorers to blend and how much each counts; only the ratio of the weights matters.
 [uses]
+# the share of upvoats a color can be trusted to have, given how many voats it has
 wilson = 0.7
+# upvoats minus downvoats
 net = 0.3

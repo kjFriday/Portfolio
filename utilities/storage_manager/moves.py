@@ -11,6 +11,16 @@
 Nothing is deleted: files go to the trash folder inside the analyzed folder, keeping their relative
 paths, and only empty folders are removed. apply_moves records each batch it carried out in the undo
 log in that folder, a list of {"time", "moves": [Move]}, and undo_last reverses the last one.
+
+Who calls it: gui.py plans and applies every change the user confirms (trash files, remove empty
+folders, organize, keep one copy of duplicates) and its Undo button calls undo_last; duplicates.py uses
+trash_target. It calls paths.py for the names and records.py for Results.
+
+Flow
+  1. plan_trash / plan_empty_dir_removal (or organize.plan_organize) build a list of Move records.
+  2. The GUI shows the plan; on confirm, apply_moves runs it on a worker thread and appends the batch
+     that worked to the undo log.
+  3. undo_last pops the newest batch and moves its files back in reverse order.
 """
 
 import json
@@ -25,6 +35,7 @@ from records import error_text, failure, is_cancelled, report_progress, success
 # ---- planning moves -----------------------------------------------------------------------------
 
 def trash_target(root, path):
+    """Where path goes in root's trash folder: the trash folder plus path relative to root."""
     return os.path.join(root, TRASH_DIR_NAME, relative_path(root, path))
 
 
@@ -45,7 +56,16 @@ def plan_empty_dir_removal(empty_dirs):
 
 
 def select_empty_dirs(all_empty, chosen, root):
-    """The chosen empty folders plus the empty folders inside them, deepest first, so all can be removed."""
+    """The chosen empty folders plus the empty folders inside them, deepest first, so all can be removed.
+
+    all_empty is the scan's empty_dirs list and keeps its order; chosen is a dict (or set) of the folders
+    the user picked. A folder holding only empty folders is itself listed as empty by the scan, and
+    os.rmdir only removes a folder once its subfolders are gone, so the order matters.
+
+    Steps:
+      1. Keep a folder that was chosen itself.
+      2. Otherwise walk up its parents while they are still below root; keep it when one was chosen.
+    """
     result = []
     for folder in all_empty:
         if folder in chosen:
@@ -66,10 +86,15 @@ def select_empty_dirs(all_empty, chosen, root):
 # ---- applying moves and undo --------------------------------------------------------------------
 
 def undo_log_path(root):
+    """The undo log file inside root (it may not exist yet)."""
     return os.path.join(root, UNDO_LOG_NAME)
 
 
 def read_undo_log(root):
+    """The list of batches in root's undo log, oldest first; [] when it is missing, unreadable or not a list.
+
+    A damaged log reads as empty rather than failing, so applying moves never stops on it.
+    """
     path = undo_log_path(root)
     if not os.path.isfile(path):
         return []
@@ -85,6 +110,7 @@ def read_undo_log(root):
 
 
 def write_undo_log(root, batches):
+    """Replace root's undo log with batches (JSON, indent 1) -> Result(None), failure on an OSError."""
     try:
         handle = open(undo_log_path(root), "w", encoding="utf-8")
         json.dump(batches, handle, indent=1)
@@ -98,6 +124,16 @@ def apply_moves(root, moves, cancel_flag, progress):
     """Carry out a list of Move; record what was done so undo_last can reverse it.
 
     -> Result({"done": int, "errors": [str], "moved": [Move]})
+
+    Always succeeds: each move that fails adds a line to errors and the rest go on. A target "" removes
+    the empty folder source. An existing target is never overwritten. cancel_flag stops before the next
+    move; the moves done so far still go into the undo log. progress gets a call every 100 items.
+    Runs on a worker thread in the GUI.
+
+    Steps:
+      1. For each move: remove the folder, or create the target's folder and move the file.
+      2. Collect what worked in done and what failed in errors.
+      3. When anything was done, append {"time", "moves": done} to root's undo log.
     """
     done = []
     errors = []
@@ -118,6 +154,7 @@ def apply_moves(root, moves, cancel_flag, progress):
                 if os.path.exists(target):
                     errors.append("already exists: " + target)
                     continue
+                # a rename on the same drive; shutil.move copies and deletes only across drives
                 shutil.move(source, target)
             done.append(move)
         except OSError as e:
@@ -135,7 +172,16 @@ def apply_moves(root, moves, cancel_flag, progress):
 
 
 def undo_last(root):
-    """Reverse the most recent applied batch -> Result({"done": int, "errors": [str], "moved": []})."""
+    """Reverse the most recent applied batch -> Result({"done": int, "errors": [str], "moved": []}).
+
+    Fails only with "nothing to undo". Moves go back in the reverse of the order they were applied; a
+    file returns to its source path (its folder is made again when needed) and a removed empty folder
+    is made again. The batch is then dropped from the log.
+
+    Known limitation: the batch leaves the log even when some moves fail to go back, so those cannot be
+    retried by Undo; and an error for a recreated folder names its empty target, not its path. The
+    result of writing the log is not checked.
+    """
     batches = read_undo_log(root)
     if len(batches) == 0:
         return failure("nothing to undo")

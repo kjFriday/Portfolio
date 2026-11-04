@@ -7,12 +7,30 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""QR Palette colors: the 216-color cube, color names and families, contrast against white, and ranking.
+"""QR Palette colors: the 216-color cube, names and families, contrast on white, and ranking.
 
 Colors are lowercase "#rrggbb" strings, as in Color Voats. The cube and OKLab come from Color Voats'
 algos.py (copied unchanged into algos.py) and the names from its color_voats.py. Ranking reads the
 presets and weights in presets/ and weights/ (plain JSON) through ranking.py. The limits used here
-(MIN_CONTRAST, NEAR, RANKING_ROOT, FAMILY_WORDS) are set from settings.json at start.
+(MIN_CONTRAST, NEAR, RANKING_ROOT) are set from settings.json at start (app_settings.py), and
+FAMILY_WORDS from planner.json (ecp.configure_planner).
+
+What it is for: every place that shows, checks or orders a color goes through here. The window's tabs,
+making.py, batches.py, registry.py, votes.py, ecp.py and selftest.py call it; it calls algos.py for the
+color math and ranking.py for the presets.
+
+Three ideas carry the module:
+  1. The cube: the 216 "web-safe" colors, each channel one of 0, 51, 102, 153, 204, 255 (six steps
+     of 255 / 5 = 51), so a color's place in the cube is a three-digit number in base 6.
+  2. OKLab (Bjorn Ottosson, 2020): a color space built so that straight-line distance follows how
+     different two colors look. L is lightness (0 black to 1 white); a runs green (-) to red (+) and
+     b blue (-) to yellow (+). Chroma, how colorful, is the length of (a, b); hue is its angle.
+     Names, families and "near" all work in OKLab.
+  3. WCAG 2.x contrast: relative luminance of each color in linear light, then (lighter + 0.05) /
+     (darker + 0.05), from 1:1 to 21:1. A QR code needs its dark modules to stand apart from the
+     white background, so only colors at MIN_CONTRAST or above are offered.
+
+Start reading at color_name() and usable().
 
 Records
   Result   {"ok": bool, "error": str, "value": any}
@@ -25,18 +43,23 @@ import os
 import algos
 import ranking
 
+# Each entry is the upper bound (degrees, exclusive) of a hue band: below 40 is red, 40 up to 85
+# orange, and so on round the circle; 320 to 360 is pink.
 HUES = ((40.0, "red"), (85.0, "orange"), (125.0, "yellow"), (170.0, "green"), (225.0, "teal"),
         (285.0, "blue"), (320.0, "purple"), (360.0, "pink"))  # OKLab hue angle -> name
+# every family color_name() can end in (its last word, lower case)
 FAMILIES = ("red", "orange", "brown", "yellow", "olive", "green", "teal", "blue", "purple", "pink",
             "grey", "black", "white")
-WHITE = "#ffffff"
-DEFAULT_PRESET = "mixer"
-HERE = os.path.dirname(os.path.abspath(__file__))
+WHITE = "#ffffff"  # the background every code is drawn on
+DEFAULT_PRESET = "mixer"  # the ranking preset used when none is chosen (presets/mixer.json)
+HERE = os.path.dirname(os.path.abspath(__file__))  # the program folder
 
 # Set from settings.json and planner.json at start (these are the defaults).
 MIN_CONTRAST = 3.0  # WCAG 2.x minimum for graphics against the white background
+# (3:1 is WCAG 2.1's non-text contrast level, success criterion 1.4.11)
 NEAR = 0.08  # OKLab distance that still counts as "near" a color
 RANKING_ROOT = HERE  # the folder that holds presets/ and weights/
+# words people type for a family, mapped to the family name (planner.json family_words replaces it)
 FAMILY_WORDS = {"gray": "grey", "cyan": "teal", "aqua": "teal", "turquoise": "teal", "violet": "purple",
                 "lilac": "purple", "lavender": "purple", "magenta": "pink", "fuchsia": "pink", "navy": "blue",
                 "azure": "blue", "maroon": "red", "crimson": "red", "scarlet": "red", "lime": "green",
@@ -44,39 +67,52 @@ FAMILY_WORDS = {"gray": "grey", "cyan": "teal", "aqua": "teal", "turquoise": "te
 
 
 def ok_result(value):
+    """A successful Result carrying `value`."""
     return {"ok": True, "error": "", "value": value}
 
 
 def fail(error):
+    """A failed Result with the short phrase `error` and no value."""
     return {"ok": False, "error": error, "value": None}
 
 
 # --- The cube and OKLab (Color Voats' algos.py) ---------------------------------------------------
 
 def palette():
-    """The 216 colors of the 6x6x6 cube as "#rrggbb", red changing slowest."""
+    """The 216 colors of the 6x6x6 cube as "#rrggbb", red changing slowest.
+
+    So "#000000" is index 0, "#000033" index 1 and "#ffffff" index 215 (see cube_index)."""
     return algos.palette()
 
 
 def linear(channel):
-    """An sRGB channel (0-255) as linear light (0..1)."""
+    """An sRGB channel (0-255) as linear light (0..1).
+
+    This undoes sRGB's gamma curve (IEC 61966-2-1): stored values are spaced for the eye, while light
+    adds up only in linear terms, so luminance and OKLab both start here."""
     return algos.linear(channel)
 
 
 def oklab(color):
-    """A "#rrggbb" color as [L, a, b] in OKLab."""
+    """A "#rrggbb" color as [L, a, b] in OKLab.
+
+    L runs 0 (black) to 1 (white); a and b are roughly -0.4 to 0.4 for sRGB colors."""
     return algos.oklab(color)
 
 
 def color_distance(first, second):
-    """How different two OKLab colors look: the straight-line distance between them."""
+    """How different two OKLab colors look: the straight-line distance between them.
+
+    Both arguments are [L, a, b] lists from oklab(), not hex strings."""
     return algos.distance(first, second)
 
 
 # --- Names and families (from Color Voats' color_voats.py 0.2.0) ---------------------------------
 
 def normalize_hex(text):
-    """A color typed as #RRGGBB or rrggbb, as "#rrggbb"; "" when it is not one."""
+    """A color typed as #RRGGBB or rrggbb, as "#rrggbb"; "" when it is not one.
+
+    Surrounding spaces are ignored; three-digit shorthand such as #fff is not accepted."""
     if not isinstance(text, str):
         return ""
     value = text.strip().lower()
@@ -92,7 +128,16 @@ def normalize_hex(text):
 
 def color_name(color):
     """A plain name for a color, such as "Dark teal" or "Light grey", from its OKLab lightness,
-    chroma (how colorful) and hue."""
+    chroma (how colorful) and hue.
+
+    Steps:
+      1. Below chroma 0.03 a color reads as no hue at all: name it by lightness alone, White, Light
+         grey, Grey, Dark grey or Black.
+      2. Otherwise take the hue angle of (a, b) in degrees, 0 to 360, and find its band in HUES.
+      3. Dark orange is brown and dark yellow is olive (below L 0.6), as people name them.
+      4. Add "dark" (L below 0.45), else "light" (L above 0.8 and chroma below 0.15), else "muted"
+         (chroma below 0.08).
+    The thresholds are Color Voats' own, tuned by eye on the 216 cube colors."""
     lab = oklab(color)
     lightness = lab[0]
     chroma = math.sqrt(lab[1] * lab[1] + lab[2] * lab[2])
@@ -106,6 +151,7 @@ def color_name(color):
         if lightness < 0.45:
             return "Dark grey"
         return "Grey"
+    # atan2(b, a) gives -180..180 degrees; % 360 folds it onto 0..360 so the bands in HUES apply
     hue = math.degrees(math.atan2(lab[2], lab[1])) % 360.0
     name = "pink"
     for bound in HUES:
@@ -132,7 +178,10 @@ def family(color):
 
 
 def family_of_word(word):
-    """A word someone typed ("blues", "Gray", "navy") as one of FAMILIES; "" when it is none."""
+    """A word someone typed ("blues", "Gray", "navy") as one of FAMILIES; "" when it is none.
+
+    Tries the word as it is, then through FAMILY_WORDS, then both again with one trailing "s" taken
+    off for plurals. ecp.py uses it to read a family out of a question."""
     value = word.strip().lower()
     if value in FAMILIES:
         return value
@@ -155,11 +204,15 @@ def channels(color):
 
 
 def hex_of(red, green, blue):
+    """Three channels (each 0-255) -> "#rrggbb" in lower case, the inverse of channels()."""
     return "#%02x%02x%02x" % (red, green, blue)
 
 
 def cube_index(color):
-    """The color's place in palette() (0..215), or -1 when it is not one of the 216."""
+    """The color's place in palette() (0..215), or -1 when it is not one of the 216.
+
+    Each channel that is a multiple of 51 is one base-6 digit (value // 51, 0 to 5), red first, so
+    the index is red * 36 + green * 6 + blue: the same order palette() lists them in."""
     values = channels(color)
     index = 0
     for value in values:
@@ -170,13 +223,19 @@ def cube_index(color):
 
 
 def relative_luminance(color):
-    """WCAG 2.x relative luminance, 0 (black) to 1 (white)."""
+    """WCAG 2.x relative luminance, 0 (black) to 1 (white).
+
+    The weights are the sRGB / ITU-R BT.709 luminance coefficients: green looks brightest, blue
+    darkest. They apply to linear light, so each channel goes through linear() first."""
     values = channels(color)
     return 0.2126 * linear(values[0]) + 0.7152 * linear(values[1]) + 0.0722 * linear(values[2])
 
 
 def contrast(first, second):
-    """WCAG 2.x contrast ratio between two colors, 1 to 21."""
+    """WCAG 2.x contrast ratio between two colors, 1 to 21.
+
+    (lighter + 0.05) / (darker + 0.05): the 0.05 stands for ambient light on the screen, and keeps
+    black from dividing by zero. The order of the arguments does not matter."""
     one = relative_luminance(first)
     two = relative_luminance(second)
     if one < two:
@@ -200,7 +259,9 @@ def usable_colors():
 
 
 def nearest_cube(color):
-    """The cube color that looks closest (OKLab distance)."""
+    """The cube color that looks closest (OKLab distance).
+
+    A plain scan of all 216; on a tie the earlier one in palette order wins."""
     target = oklab(color)
     best = "#000000"
     best_distance = -1.0
@@ -226,6 +287,7 @@ def nearest_usable(color):
 
 
 def is_near(first, second):
+    """True when two "#rrggbb" colors are within NEAR of each other in OKLab (they look alike)."""
     return color_distance(oklab(first), oklab(second)) <= NEAR
 
 
@@ -238,7 +300,11 @@ def presets():
 
 def rank_colors(name, voats, scans=None):
     """All 216 colors, best first, for a preset, a vote log and scans (None: they do not count)
-    -> Result [hex]."""
+    -> Result [hex].
+
+    `name` is a preset in RANKING_ROOT/presets, read fresh from disk on every call. `voats` is the
+    Voat list, oldest first. A preset that cannot be read, or whose weights break the arithmetic,
+    fails instead of raising."""
     preset = ranking.read_preset(RANKING_ROOT, name)
     if not preset["ok"]:
         return preset

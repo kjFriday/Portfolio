@@ -9,12 +9,22 @@
 """Storage Manager core: sizes, counts, dates and plurals in words.
 
 The window shows this text as it is, and the self-test compares some of it exactly.
+
+What it is for: gui.py and gui_views.py build every size, count and date they show with these
+helpers, and space_map.py names its "N smaller items" slices with plural. Nothing here touches the
+disk; human_date reads the local time zone. Sizes use 1024-based steps with the familiar names
+(KB, MB, GB), as Explorer does, not KiB/MiB.
 """
 
 import time
 
 
 def human_size(count):
+    """A byte count in words: 512 -> "512 B", 1536 -> "1.5 KB" (1024-based, one decimal).
+
+    Divides by 1024 until the value is under 1024 or the units run out (PB is the largest). Plain
+    bytes are shown whole, without a decimal.
+    """
     units = ["B", "KB", "MB", "GB", "TB", "PB"]
     value = float(count)
     index = 0
@@ -41,7 +51,12 @@ def human_date(seconds):
 
 
 def plural(count, word):
-    """plural(1, "file") -> "1 file", plural(3, "copy") -> "3 copies"."""
+    """plural(1, "file") -> "1 file", plural(3, "copy") -> "3 copies".
+
+    Counts other than 1 get thousands separators (human_count). English rule: a word ending in a
+    consonant plus "y" takes "ies" ("copy" -> "copies"), a vowel plus "y" just "s" ("day" -> "days");
+    every other word takes "s". Only the last word changes, so "extra copy" -> "extra copies".
+    """
     if count == 1:
         return "1 " + word
     if len(word) > 1 and word[len(word) - 1] == "y" and word[len(word) - 2] not in "aeiou":
@@ -50,7 +65,7 @@ def plural(count, word):
 
 
 def join_words(parts):
-    """["a"] -> "a", ["a", "b", "c"] -> "a, b and c"."""
+    """["a"] -> "a", ["a", "b", "c"] -> "a, b and c" (no comma before "and"); [] -> ""."""
     text = ""
     index = 0
     while index < len(parts):
@@ -65,7 +80,13 @@ def join_words(parts):
 
 def disk_note(report, links_counted):
     """What "on disk" means for a ScanReport, in one or two sentences. links_counted: hard links have
-    been counted once (always where the listing says which names are one file)."""
+    been counted once (always where the listing says which names are one file).
+
+    The Overview shows it under the totals. report["saved"] (see disk_summary in scanning.py) says
+    where space on disk and the sum of file sizes differ; each non-zero part becomes a clause. With
+    no parts the sizes simply agree. When links_counted is False (a Windows scan before the duplicate
+    comparison has run), a sentence says hard links will be counted once later.
+    """
     saved = report["saved"]
     parts = []
     if saved["compressed"] > 0:

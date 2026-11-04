@@ -6,6 +6,23 @@
 # the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 # ========================================================================
 
+"""Unit tests for pixel_icons.py: PNG decoding, pixel scaling, ICO, RES and .syso layout.
+
+    python -m unittest discover -s tools      # from the portfolio root
+
+Test PNGs are built here byte by byte (chunk, filtered, png), so every colour type and every row
+filter is exercised without image files. The Silk originals in icons/silk and each project's
+committed icon/app.res are read but never written; write_project runs in a temporary folder.
+
+Groups:
+1. DecodeTest: PNG colour types, filters, transparency and bad input.
+2. ScaleTest: nearest-neighbour blocks and a PNG round trip.
+3. IcoResTest: the ICO directory, BMP pixel and mask layout, the .res layout and manifests, and
+   that committed app.res files still match.
+4. SysoTest: fix_syso on a hand-made COFF symbol table.
+5. ProjectTest: the files write_project produces and the PROJECTS table.
+"""
+
 import os
 import struct
 import sys
@@ -19,6 +36,7 @@ import pixel_icons as pi  # noqa: E402
 
 
 def chunk(kind, body):
+    """One PNG chunk: big-endian length, type, data and CRC-32 of type + data."""
     return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
 
 
@@ -39,6 +57,10 @@ def filtered(rows, bpp, kind):
 
 
 def png(width, height, ctype, rows, kind=0, extra=b""):
+    """A complete 8-bit PNG of colour type ctype from raw rows, every row filtered with `kind`.
+
+    extra is inserted between IHDR and IDAT (for PLTE and tRNS chunks).
+    """
     bpp = pi.CHANNELS[ctype]
     head = chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, ctype, 0, 0, 0))
     return pi.SIGNATURE + head + extra + chunk(b"IDAT", zlib.compress(filtered(rows, bpp, kind))) + chunk(b"IEND", b"")
@@ -54,7 +76,10 @@ def checker(n=4):
 
 
 class DecodeTest(unittest.TestCase):
+    """decode_png against hand-built PNGs and the real Silk originals."""
+
     def test_rgba_all_filters(self):
+        """Every row filter (0 to 4) decodes the same 4 x 4 RGBA image back exactly."""
         img = checker()
         rows = [img.rgba[y * 16:(y + 1) * 16] for y in range(4)]
         for kind in range(5):
@@ -62,12 +87,14 @@ class DecodeTest(unittest.TestCase):
                 self.assertEqual(pi.decode_png(png(4, 4, 6, rows, kind)), img)
 
     def test_grey_alpha(self):
+        """Grey + alpha (type 4, Paeth-filtered) expands to equal R, G and B with the given alpha."""
         rows = [bytes((10, 255, 20, 0)), bytes((30, 128, 40, 64))]
         img = pi.decode_png(png(2, 2, 4, rows, 4))
         self.assertEqual(img.pixel(0, 0), (10, 10, 10, 255))
         self.assertEqual(img.pixel(1, 1), (40, 40, 40, 64))
 
     def test_rgb_and_palette(self):
+        """RGB is opaque; a palette tRNS shorter than the palette leaves later entries opaque."""
         img = pi.decode_png(png(2, 1, 2, [bytes((1, 2, 3, 4, 5, 6))], 1))
         self.assertEqual(img.pixel(1, 0), (4, 5, 6, 255))
         extra = chunk(b"PLTE", bytes((9, 8, 7, 1, 2, 3))) + chunk(b"tRNS", bytes((0,)))
@@ -75,6 +102,7 @@ class DecodeTest(unittest.TestCase):
         self.assertEqual([img.pixel(0, 0), img.pixel(1, 0)], [(9, 8, 7, 0), (1, 2, 3, 255)])
 
     def test_rejects_bad_input(self):
+        """A missing signature and one flipped bit in the IHDR CRC both raise ValueError."""
         with self.assertRaises(ValueError):
             pi.decode_png(b"not a png")
         bad = bytearray(png(1, 1, 6, [bytes(4)]))
@@ -83,6 +111,7 @@ class DecodeTest(unittest.TestCase):
             pi.decode_png(bytes(bad))
 
     def test_silk_originals(self):
+        """Every project's Silk icon decodes to 16 x 16 with both transparent and opaque pixels."""
         for project, (silk, *_rest) in pi.PROJECTS.items():
             with open(os.path.join(pi.SILK, silk), "rb") as f:
                 img = pi.decode_png(f.read())
@@ -93,7 +122,10 @@ class DecodeTest(unittest.TestCase):
 
 
 class ScaleTest(unittest.TestCase):
+    """scale() and encode_png()."""
+
     def test_pixel_exact_blocks(self):
+        """At factors 2, 3 and 16 every output pixel equals its source pixel: no blending."""
         img = checker()
         for k in (2, 3, 16):
             big = pi.scale(img, k)
@@ -103,18 +135,23 @@ class ScaleTest(unittest.TestCase):
                     self.assertEqual(big.pixel(x, y), img.pixel(x // k, y // k))
 
     def test_png_round_trip(self):
+        """encode_png output decodes to the same image and is byte-identical on every call."""
         img = pi.scale(checker(), 3)
         self.assertEqual(pi.decode_png(pi.encode_png(img)), img)
         self.assertEqual(pi.encode_png(img), pi.encode_png(img))
 
 
 class IcoResTest(unittest.TestCase):
+    """ICO and RES structure, using the real bell.png original."""
+
     def setUp(self):
+        """Decode bell.png and build its four icon images."""
         with open(os.path.join(pi.SILK, "bell.png"), "rb") as f:
             self.original = pi.decode_png(f.read())
         self.images = pi.icon_images(self.original)
 
     def test_ico_directory(self):
+        """The ICO lists four 32-bit images; 256 is stored as 0 and as a PNG, the rest as BMP."""
         ico = pi.encode_ico(self.images)
         self.assertEqual(struct.unpack("<HHH", ico[:6]), (0, 1, 4))
         for i, size in enumerate(pi.SIZES):
@@ -128,6 +165,7 @@ class IcoResTest(unittest.TestCase):
                 self.assertEqual(struct.unpack("<Iii", blob[:12]), (40, size, size * 2))
 
     def test_bmp_pixels_and_mask(self):
+        """The 32 px BMP holds BGRA rows bottom-up, and its AND mask bit is 1 exactly where alpha is 0."""
         blob = dict(self.images)[32]
         big = pi.scale(self.original, 2)
         pixels = blob[40:40 + 32 * 32 * 4]
@@ -142,6 +180,7 @@ class IcoResTest(unittest.TestCase):
                 self.assertEqual(bit, 1 if a == 0 else 0)
 
     def test_res_layout(self):
+        """Walking the .res finds the empty entry, RT_ICON 1-4, RT_GROUP_ICON 1 and RT_MANIFEST 1, in order."""
         res = pi.encode_res(self.images)
         pos, found = 0, []
         while pos < len(res):
@@ -157,6 +196,7 @@ class IcoResTest(unittest.TestCase):
         self.assertIn(b"PerMonitorV2", found[6][2])
 
     def test_controls_manifest(self):
+        """Only the "controls" extra switches app.res to the Common Controls 6 manifest."""
         plain = pi.outputs(pi.encode_png(self.original))["app.res"]
         controls = pi.outputs(pi.encode_png(self.original), ("controls",))["app.res"]
         self.assertEqual(plain, pi.encode_res(self.images))
@@ -168,6 +208,7 @@ class IcoResTest(unittest.TestCase):
                 self.assertIn(needle, controls)
 
     def test_existing_res_unchanged(self):
+        """Each committed icon/app.res equals today's output, so a script change cannot drift silently."""
         # every project's committed app.res is what this script makes today
         for project, (silk, _, _, extras) in pi.PROJECTS.items():
             path = os.path.join(pi.ROOT, project, "icon", "app.res")
@@ -182,19 +223,31 @@ class IcoResTest(unittest.TestCase):
 
 
 class SysoTest(unittest.TestCase):
+    """fix_syso on a minimal COFF file."""
+
     def test_absolute_symbols_move_to_section_one(self):
+        """Symbols in section -1 move to section 1; a normal symbol and its aux record are untouched.
+
+        The table mimics cvtres output: @comp.id (absolute), .rsrc$01 (section 2, one aux record),
+        that aux record (18 zero bytes), @feat.00 (absolute). The header's PointerToSymbolTable is
+        20, right after the header, and NumberOfSymbols is 4 (the aux record counts).
+        """
+        # one 18-byte COFF symbol record: name, value 7, section, type 0, storage class, aux count
         def sym(name, sect, cls, aux=0):
             return struct.pack("<8sIhHBB", name, 7, sect, 0, cls, aux)
         symbols = sym(b"@comp.id", -1, 3) + sym(b".rsrc$01", 2, 3, 1) + bytes(18) + sym(b"@feat.00", -1, 3)
-        header = struct.pack("<HHIIIHH", 0x8664, 0, 0, 20, 4, 0, 0)
-        fixed = pi.fix_syso(header + symbols + b"\x04\x00\x00\x00")
+        header = struct.pack("<HHIIIHH", 0x8664, 0, 0, 20, 4, 0, 0)  # 0x8664: IMAGE_FILE_MACHINE_AMD64
+        fixed = pi.fix_syso(header + symbols + b"\x04\x00\x00\x00")  # trailing 4: an empty string table
         entries = [struct.unpack_from("<8sIhHBB", fixed, 20 + 18 * i) for i in (0, 1, 3)]
         self.assertEqual([(e[2], e[4]) for e in entries], [(1, 3), (2, 3), (1, 3)])
         self.assertEqual(fixed[20 + 18 * 2:20 + 18 * 3], bytes(18))  # the aux record is left alone
 
 
 class ProjectTest(unittest.TestCase):
+    """write_project output and the PROJECTS table."""
+
     def test_write_project(self):
+        """A project with "rgba" and "favicon" gets all eight files; README hashes and .rgba pixels match."""
         with tempfile.TemporaryDirectory() as tmp:
             written = pi.write_project(tmp, "note.png", "Generic Company Ticket Tracker", ("rgba", "favicon"))
             names = sorted(os.path.relpath(p, tmp).replace(os.sep, "/") for p in written)
@@ -213,11 +266,13 @@ class ProjectTest(unittest.TestCase):
             self.assertEqual(raw[8:], pi.scale(pi.decode_png(original), 2).rgba)
 
     def test_distinct_icons(self):
+        """No two projects share a Silk file or an app id."""
         files = [silk for silk, *_ in pi.PROJECTS.values()]
         self.assertEqual(len(set(files)), len(pi.PROJECTS))
         self.assertEqual(len({app for _, app, *_ in pi.PROJECTS.values()}), len(pi.PROJECTS))
 
     def test_controls_readme_row(self):
+        """A "controls" project's README describes its richer manifest."""
         with tempfile.TemporaryDirectory() as tmp:
             pi.write_project(tmp, "wand.png", "Generic Company Wizard Maker", ("controls",))
             with open(os.path.join(tmp, "icon", "README.md"), encoding="utf-8") as f:

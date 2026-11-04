@@ -7,7 +7,7 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""Short links in the registry: the one a new code prints, where each one goes now and later, and its pages.
+"""Short links in the registry: planning, changes, scans, pages and tamper checks.
 
 A code can hold a short link, a short address (a base from links.json and a Damm-checked ID) printed under
 the code, instead of its destination, so the destination can change without reprinting. links.json,
@@ -21,6 +21,25 @@ pages; this module works with the short links the registry keeps:
   - scan counts from an analytics report or a server log (import_scan_file)
   - the redirect pages, exported for a web server (export_redirects) or published where links.json says
   - what the Read tab says about a scanned link: yours, or only looking like yours (tamper_verdict)
+
+Callers: the window's tabs (gui/make_tab.py: short_request, fresh_code, plan_short_link; gui/find_tab.py:
+the change, undo, schedule and history calls; gui/read_tab.py: tamper_verdict; gui/window.py: export,
+scan import and publishing), making.py (plan_short_link) and the command line in qr_palette.py
+(export_redirects). This module calls registry.py for the stored rows, shortlinks.py for IDs and pages,
+localkey.py for the tag key, scans.py for scan files and publish.py for publishing.
+
+The usual flow for a new code with a short link:
+  1. The Make tab asks short_request() for the base and a ready ID (fresh_code()), so its preview
+     already shows the address that will be printed.
+  2. plan_short_link() reuses a short link made earlier for the same destination, color and base, or
+     settles on a free, valid ID for a new one.
+  3. The code is saved (making.py, registry.save_qr); later retarget_link() or schedule_link_change()
+     moves the destination, and export_redirects() or publish_now() writes the pages that carry it.
+
+Every function answers with a Result {"ok", "error", "value"} (common.py) instead of raising, except
+short_request, fresh_code, tamper_verdict and short_note, which answer plain values. Writes go through
+common.with_registry (read-write, one connection per call); the exports and publishing read on the
+read-only rail (registry.connect(path, True)).
 """
 
 import app_settings
@@ -43,7 +62,11 @@ def short_request(code, section):
 
 def fresh_code(db_path, digits):
     """A new short-link ID, tagged when links.json says so and the registry's key can be had; an ID without
-    a tag works just the same, so a key that cannot be made never stops a code being made."""
+    a tag works just the same, so a key that cannot be made never stops a code being made.
+
+    `digits` is the count of random digits (links.json id_digits); the ID adds two tag digits when
+    tagged, and always one Damm check digit. Side effect: localkey.key_for() writes the key file beside
+    the registry the first time it is needed."""
     key = None
     if app_settings.LINKS["tag_ids"]:
         found = localkey.key_for(db_path)
@@ -56,13 +79,26 @@ def plan_short_link(db_path, target, color, short):
     """The short link a code for `target` in `color` prints -> Result {"code", "url", "made": bool}:
     the one already made on short["base"] for this destination in this color, else a new one there
     with short["code"] (or a fresh ID when that one is not valid or already used). Local and nonlocal
-    short links to the same destination are separate, since they print different addresses."""
+    short links to the same destination are separate, since they print different addresses.
+
+    `short` is short_request()'s record. "made" is True when the short link already exists in the
+    registry (nothing new is stored), False when the caller is to save it with the code. Nothing is
+    written here: the registry is only read.
+
+    Steps:
+      1. Look for a short link on this base with the same destination and color; reuse it.
+      2. Otherwise start from the ID the window had ready, and draw fresh IDs while the current one
+         fails its Damm check or is already used, giving up after 50 tries.
+    """
     def plan(connection):
+        """Find or choose the short link inside one registry connection -> Result."""
         found = registry.short_link_for(connection, target, color, short["base"])
         if found is not None:
             return ok_result({"code": found["code"], "url": found["url"], "made": True})
         code = short["code"]
         tries = 0
+        # with 7 random digits there are ten million IDs, so 50 straight collisions means the ID space
+        # is nearly full; a longer ID is the only way out
         while not shortlinks.is_valid_code(code) or registry.code_taken(connection, code):
             tries = tries + 1
             if tries > 50:
@@ -74,12 +110,17 @@ def plan_short_link(db_path, target, color, short):
 
 
 def retarget_link(db_path, code, link):
-    """Send short link `code` to `link` from now on -> Result True. Export the pages to publish it."""
+    """Send short link `code` to `link` from now on -> Result True. Export the pages to publish it.
+
+    `link` is checked and cleaned by shortlinks.check_target first. Side effect: the registry's
+    short_links row changes and the old destination goes into the link's history (registry.retarget).
+    Fails with "there is no short link ..." when `code` is not in the registry."""
     checked = shortlinks.check_target(link)
     if not checked["ok"]:
         return checked
 
     def change(connection):
+        """Retarget inside one registry connection -> Result True when the short link exists."""
         return registry.retarget(connection, code, checked["value"])
 
     changed = with_registry(db_path, change)
@@ -89,35 +130,50 @@ def retarget_link(db_path, code, link):
 
 
 def undo_link_change(db_path, code):
-    """Send short link `code` back where it went before its latest change -> Result its target now."""
+    """Send short link `code` back where it went before its latest change -> Result its target now.
+
+    The undo is itself written into the history as a change (registry.undo_last_change)."""
     def undo(connection):
+        """Undo the latest change inside one registry connection -> Result."""
         return registry.undo_last_change(connection, code)
 
     return with_registry(db_path, undo)
 
 
 def schedule_link_change(db_path, code, link, from_day):
-    """Send short link `code` to `link` from `from_day` on -> Result the schedule's id."""
+    """Send short link `code` to `link` from `from_day` on -> Result the schedule's id.
+
+    `from_day` is a calendar day "YYYY-MM-DD". The change shows in exports from that day on, and in the
+    registry's own row once apply_due_changes() runs on or after it."""
     checked = shortlinks.check_target(link)
     if not checked["ok"]:
         return checked
 
     def schedule(connection):
+        """Store the scheduled change inside one registry connection -> Result id."""
         return registry.schedule_change(connection, code, checked["value"], from_day)
 
     return with_registry(db_path, schedule)
 
 
 def cancel_link_change(db_path, number):
+    """Take back scheduled change `number` before its day -> Result True when there was one.
+
+    A change already applied cannot be cancelled; undo_link_change() reverses it instead."""
     def cancel(connection):
+        """Delete the scheduled change inside one registry connection -> Result."""
         return registry.cancel_scheduled(connection, number)
 
     return with_registry(db_path, cancel)
 
 
 def link_history(db_path, code):
-    """A short link's past and future -> Result {"changes": [Change], "coming": [Scheduled]}."""
+    """A short link's past and future -> Result {"changes": [Change], "coming": [Scheduled]}.
+
+    "changes" is newest first; "coming" is soonest first. A registry older than schema 3 kept no
+    history, so both lists are empty there."""
     def read(connection):
+        """Read the history and the schedule inside one registry connection -> Result."""
         return ok_result({"changes": registry.link_changes(connection, code),
                           "coming": registry.scheduled(connection, code)})
 
@@ -125,16 +181,23 @@ def link_history(db_path, code):
 
 
 def due_link_changes(db_path, today):
-    """The scheduled changes whose day has come -> Result [Scheduled]."""
+    """The scheduled changes whose day has come -> Result [Scheduled].
+
+    `today` is "YYYY-MM-DD" (the window passes registry.today_text()); days compare as text, which
+    orders correctly because the format is fixed-width."""
     def read(connection):
+        """List the due changes inside one registry connection -> Result."""
         return ok_result(registry.due_changes(connection, today))
 
     return with_registry(db_path, read)
 
 
 def apply_due_changes(db_path, today):
-    """Make the scheduled changes whose day has come -> Result how many."""
+    """Make the scheduled changes whose day has come -> Result how many.
+
+    Each one is applied in order and written into its link's history, in one transaction."""
     def apply(connection):
+        """Apply the due changes inside one registry connection -> Result count."""
         return registry.apply_due(connection, today)
 
     return with_registry(db_path, apply)
@@ -143,13 +206,21 @@ def apply_due_changes(db_path, today):
 def import_scan_file(db_path, path):
     """Scan counts from an analytics CSV or a server log into the registry -> Result {"kind", "source",
     "read", "ignored", "days", "scans": how many counted, "unknown": [IDs that are not short links here]}.
-    Importing the same file again changes nothing."""
+    Importing the same file again changes nothing.
+
+    Steps:
+      1. scans.read_file() parses the file into counts keyed by (code, day).
+      2. registry.import_scans() stores one row per (code, day, source), replacing an earlier count,
+         and names the codes it does not know.
+      3. The scans total counts only the codes the registry knows.
+    """
     read = scans.read_file(path)
     if not read["ok"]:
         return read
     value = read["value"]
 
     def bring(connection):
+        """Store the counts inside one registry connection -> Result {"days", "unknown"}."""
         return registry.import_scans(connection, value["counts"], value["source"])
 
     saved = with_registry(db_path, bring)
@@ -157,6 +228,7 @@ def import_scan_file(db_path, path):
         return saved
     counted = 0
     for key in value["counts"]:
+        # key is (code, day); scans of IDs that are not short links here were not stored
         if key[0] not in saved["value"]["unknown"]:
             counted = counted + value["counts"][key]
     return ok_result({"kind": value["kind"], "source": value["source"], "read": value["read"],
@@ -167,7 +239,10 @@ def import_scan_file(db_path, path):
 def export_redirects(db_path, folder, section, day=""):
     """Write a redirect page for every short link of `section` ("local" or "nonlocal") into `folder`
     (shortlinks.export_pages), with the destination in force on `day` ("" for today) -> Result. The
-    registry is only read, on the read-only rail."""
+    registry is only read, on the read-only rail.
+
+    Side effect: files under `folder` (one index.html per ID, plus index.html, 404.html and
+    robots.txt). Short links on the other section's base are skipped by export_pages."""
     if day == "":
         day = registry.today_text()
     opened = registry.connect(db_path, True)
@@ -183,7 +258,9 @@ def export_redirects(db_path, folder, section, day=""):
 
 
 def publish_rows(db_path, day):
-    """The short links as they should be published on `day` ("" for today) -> Result [ShortLink]."""
+    """The short links as they should be published on `day` ("" for today) -> Result [ShortLink].
+
+    Read-only: a scheduled change whose day has come counts even before it is applied."""
     opened = registry.connect(db_path, True)
     if not opened["ok"]:
         return opened
@@ -196,7 +273,9 @@ def publish_rows(db_path, day):
 
 
 def publish_plan(db_path, day=""):
-    """What publishing the nonlocal pages would change, with nothing touched -> Result publish.Changes."""
+    """What publishing the nonlocal pages would change, with nothing touched -> Result publish.Changes.
+
+    The window shows this list and asks before publish_now() runs."""
     rows = publish_rows(db_path, day)
     if not rows["ok"]:
         return rows
@@ -206,7 +285,10 @@ def publish_plan(db_path, day=""):
 
 
 def publish_now(db_path, day=""):
-    """Publish the nonlocal pages where links.json says -> Result of publish.publish."""
+    """Publish the nonlocal pages where links.json says -> Result of publish.publish.
+
+    Side effects: files in the publish folder, and for kind "git" a commit and a push there
+    (publish.py; never forced)."""
     rows = publish_rows(db_path, day)
     if not rows["ok"]:
         return rows
@@ -218,7 +300,17 @@ def publish_now(db_path, day=""):
 def tamper_verdict(db_path, text):
     """What the Read tab says about a scanned link -> {"line": str, "warning": bool}, "" for a link that
     has nothing to do with your addresses. A warning is for an address that only looks like yours, or
-    an ID on your address that is not yours. Limits: two tag digits are right by chance 1 time in 100."""
+    an ID on your address that is not yours. Limits: two tag digits are right by chance 1 time in 100.
+
+    Steps:
+      1. Anything that is not an http(s) link gets no verdict.
+      2. A host that imitates one of your bases (shortlinks.lookalike) is a warning at once.
+      3. A link on neither base gets no verdict; otherwise its last path segment is the ID.
+      4. shortlinks.code_standing() weighs the ID's check digit, its tag under the local key (read,
+         never made here) and whether the registry knows it, and the standing picks the line.
+
+    Side effect: the registry lookup goes through with_registry, which opens read-write and so makes
+    an empty registry when the file is missing. A failed lookup counts as "not in this registry"."""
     verdict = {"line": "", "warning": False}
     if not qr_codec.is_link(text):
         return verdict
@@ -229,6 +321,7 @@ def tamper_verdict(db_path, text):
                            "so it may be a sticker over your code.")
         verdict["warning"] = True
         return verdict
+    # bases are stored in capitals (QR alphanumeric mode), so compare the scanned text in capitals too
     lifted = text.upper()
     section = ""
     for name in shortlinks.SECTIONS:
@@ -236,11 +329,14 @@ def tamper_verdict(db_path, text):
             section = name
     if section == "":
         return verdict
+    # the ID is the last path segment, with any query and trailing slash taken off
     code = text.split("?")[0].rstrip("/").split("/")[-1]
+    # isdigit() also accepts digits of other scripts (Arabic-Indic, for one); isascii() keeps 0-9 only
     if not code.isdigit() or not code.isascii():
         return verdict
 
     def read(connection):
+        """Ask the registry whether it holds this ID -> Result bool."""
         return ok_result(registry.code_taken(connection, code))
 
     known = with_registry(db_path, read)
@@ -255,6 +351,7 @@ def tamper_verdict(db_path, text):
     elif standing == "unknown":
         verdict["line"] = "On your address, but not in this registry, and its tag cannot be checked: no key here."
     else:
+        # "foreign": a wrong check digit, or a wrong tag on an ID the registry does not know
         verdict["line"] = ("Not yours: this ID is on your address (" + section + "), but it is not in this registry and "
                            "its tag or check digit is wrong. It may be a sticker over your code.")
         verdict["warning"] = True
@@ -263,7 +360,9 @@ def tamper_verdict(db_path, text):
 
 def short_note(shown):
     """A short link's section for the window: " (local)", " (nonlocal)", or "" when its address is
-    on neither section's base any more."""
+    on neither section's base any more.
+
+    `shown` is a registry record with its printed address under "link"."""
     section = shortlinks.section_of(app_settings.LINKS, shown["link"])
     if section == "":
         return ""

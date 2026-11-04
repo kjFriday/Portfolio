@@ -1,4 +1,11 @@
 # The default. Net voats rank first; the colors they leave tied go to Wilson score, then to
 # color similarity, then to exploration. Three downvoats in a row pass the lead down the chain.
+# A Color Voats preset: factory.py reads it with the weights of each algo in uses (and the
+# mixer's own tie, streak and budget in weights/mixer.toml) and writes rankers/ranker_mixer.py.
+
+# mixer: the scorers in uses rank in turn, each ordering only what the one before left tied.
 algo = "mixer"
+
+# The chain, lead first. Each scorer may appear once; the lead moves one place down the chain
+# (wrapping to the start) after every streak of downvoats.
 uses = ["net", "wilson", "similar", "explore"]

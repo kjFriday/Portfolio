@@ -12,6 +12,18 @@ Run it with `python storage_manager.py --selftest`. It works in a temp folder na
 storage_manager_test_..., prints "ok" or "FAIL" for each check, grouped by area, and returns 0 when
 every check passed, else 1. Besides the core it checks option_value, the command-line helper in
 storage_manager.py, which imports this module only when --selftest is given.
+
+Main flow of selftest:
+  1. Build a small tree (two equal text files, an old "photo", a song, an unknown type, nested and
+     side-by-side empty folders) with known sizes and times.
+  2. Run each area's checks in turn: scan, duplicates (and undo), large duplicates, space on disk,
+     empty folders, organize, names and paths, sync, space map, shares/settings/desktop.
+  3. Remove the temp folder, also after an exception, and print the count of failed checks.
+
+Some checks need what the drive allows (hard links, NTFS compression, the offline attribute); where
+it refuses, the check prints "skip" and the reason instead of failing. The space-map checks use
+fake_file records rather than real files, so the byte counts and angles are exact.
+Start reading at selftest; check_space_on_disk holds the space-on-disk checks.
 """
 
 import ctypes
@@ -42,6 +54,8 @@ from storage_manager import option_value
 
 
 def write_file(path, text, modified):
+    """Write text to path as UTF-8, creating its folders, and set its access and modified times to
+    modified (seconds since the epoch), so the old-file checks have known ages."""
     parent = os.path.dirname(path)
     if not os.path.isdir(parent):
         os.makedirs(parent)
@@ -52,6 +66,7 @@ def write_file(path, text, modified):
 
 
 def write_bytes(path, data):
+    """Write the bytes data to path, creating its folders; the times are left as written."""
     parent = os.path.dirname(path)
     if not os.path.isdir(parent):
         os.makedirs(parent)
@@ -61,6 +76,7 @@ def write_bytes(path, data):
 
 
 def check(condition, message, failures):
+    """Print "ok" or "FAIL" with message; a failed message is appended to failures (a list)."""
     if condition:
         print("  ok   " + message)
     else:
@@ -74,7 +90,11 @@ def fake_file(path, size, modified):
 
 
 def set_offline(path):
-    """Mark a file offline, as a file whose data is elsewhere (Windows) -> True when it worked."""
+    """Mark a file offline, as a file whose data is elsewhere (Windows) -> True when it worked.
+
+    SetFileAttributesW replaces all of a file's attributes, so ARCHIVE (which a new file has) is set
+    again with OFFLINE. Some file systems refuse OFFLINE; the caller then skips its check.
+    """
     if os.name != "nt":
         return False
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -83,7 +103,13 @@ def set_offline(path):
 
 
 def check_space_on_disk(work, now, failures):
-    """Space on disk, hard links and cloud-only files, with real files where this drive allows them."""
+    """Space on disk, hard links and cloud-only files, with real files where this drive allows them.
+
+    work is the temp folder, now the current time, failures the shared list of failed checks. First
+    the pure functions on made-up values, then real hard links (any OS that has them), then on
+    Windows an NTFS-compressed file and an offline one.
+    """
+    # 16 blocks of 512 bytes are 8192; 8 blocks (4096) are more than 1000 bytes, so the size wins
     check(disk_from_listing(1000, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_SPARSE_FILE, -1, True) == 0
           and disk_from_listing(1000, FILE_ATTRIBUTE_RECALL_ON_OPEN, -1, True) == 0
           and disk_from_listing(1000, FILE_ATTRIBUTE_OFFLINE, -1, False) == 0,
@@ -95,6 +121,8 @@ def check_space_on_disk(work, now, failures):
           "compressed and sparse files are asked about, but not on a network share", failures)
     check(disk_from_listing(100000, 0, 16, False) == 8192 and disk_from_listing(1000, 0, 8, False) == 1000
           and disk_from_listing(5000, 0, 0, False) == 0, "allocated blocks, where the listing has them", failures)
+    # os.stat_result fields in order: mode, ino, dev, nlink, uid, gid, size, atime, mtime, ctime;
+    # identity is "dev:ino", given only when nlink is above 1
     check(file_identity(os.stat_result((0, 7, 3, 2, 0, 0, 10, 0, 0, 0))) == "3:7"
           and file_identity(os.stat_result((0, 7, 3, 1, 0, 0, 10, 0, 0, 0))) == ""
           and file_identity(os.stat_result((0, 0, 0, 0, 0, 0, 10, 0, 0, 0))) is None, "which names are one file", failures)
@@ -114,6 +142,8 @@ def check_space_on_disk(work, now, failures):
     mark_wasted(pair_tree, top, [[plain, linked]], {})
     check(unmarked and pair_tree["wasted"] == 100 and pair_tree["wasted_paths"] == {plain["path"]: 100},
           "the map marks only copies whose removal frees space", failures)
+    # sizes 100 + 100 + 50 + 30 = 280; on disk 100 + 40 + 0 + 0 = 140: 60 saved by compression,
+    # 50 with no data here, 30 a second name of a linked file
     mixed = [plain, packed, {"path": os.path.join(top, "cloud.bin"), "size": 50, "disk": 0, "modified": now, "link": ""},
              {"path": os.path.join(top, "a2.bin"), "size": 30, "disk": 0, "modified": now, "link": "1:5"}]
     summary = disk_summary(mixed)
@@ -129,6 +159,7 @@ def check_space_on_disk(work, now, failures):
     # Real hard links: a large and a small file with a second name and a real copy each, and one with
     # a second name only. The second names sort after the first ones.
     space = os.path.join(work, "links")
+    # film is big enough to take the large-file path (both ends sampled), note_text the small one
     film = os.urandom(3 * SAMPLE_SIZE)
     note_text = b"tiny but shared " * 10
     solo = os.urandom(1000)
@@ -176,6 +207,8 @@ def check_space_on_disk(work, now, failures):
     # Windows: an NTFS-compressed file and an offline one (the attribute cloud files carry too).
     real = os.path.join(work, "real")
     packed_path = os.path.join(real, "packed.txt")
+    # 18 bytes * 60000 of repeated text compresses well; `compact /c` turns on NTFS compression for
+    # the file and /q keeps its report short. FAT and exFAT drives refuse, so the check is skipped.
     write_bytes(packed_path, b"compressible text " * 60000)
     compacted = run_command(["compact", "/c", "/q", packed_path], 60)
     if compacted["ok"]:
@@ -185,6 +218,7 @@ def check_space_on_disk(work, now, failures):
     else:
         print("  skip compressed file: " + compacted["error"])
     offline_path = os.path.join(real, "offline.txt")
+    # two equal 5000-byte files: if the offline one were read and compared they would form a group
     write_bytes(offline_path, b"elsewhere " * 500)
     write_bytes(os.path.join(real, "here.txt"), b"elsewhere " * 500)
     if set_offline(offline_path):
@@ -201,8 +235,15 @@ def check_space_on_disk(work, now, failures):
 
 
 def selftest():
+    """Run every check in a throwaway temp folder -> 0 when all passed, else 1 (the exit code).
+
+    Prints one line per check, grouped under the area's name. Areas run in order on the same tree,
+    and later ones rely on what earlier ones left (undo puts each change back first). The temp folder
+    is removed at the end, whatever happened.
+    """
     failures = []
     now = time.time()
+    # 800 days is well past the 365-day limit the scans below use, so photo.jpg is the one old file
     old = now - 800 * SECONDS_PER_DAY
     work = tempfile.mkdtemp(prefix="storage_manager_test_")
     try:
@@ -216,6 +257,8 @@ def selftest():
         os.makedirs(os.path.join(root, "mixed", "hollow"))
         write_file(os.path.join(root, "mixed", "keep.txt"), "x", now)
 
+        # the six files add up to 12 + 12 + 17 + 5 + 1 + 1 = 48 bytes; empty1, empty1\empty2 and
+        # mixed\hollow are the empty folders (mixed holds keep.txt)
         print("scan")
         report = scan(root, 10, 365, now, None, None)
         check(report["ok"], "scan succeeds", failures)
@@ -240,6 +283,7 @@ def selftest():
               and trashed["trash_bytes"] == 5 and trashed["total_bytes"] == 43, "a file moved to the trash still counts there",
               failures)
 
+        # a.txt and sub\b.txt are the one pair; once b.txt is in the trash, sub is empty too (4 empty)
         print("duplicates")
         dupes = find_duplicates(root, None, None)
         check(dupes["ok"] and len(dupes["value"]["groups"]) == 1 and len(dupes["value"]["linked"]) == 0,
@@ -272,6 +316,8 @@ def selftest():
               and trash_folder_of(root, os.path.join(root, "a", TRASH_DIR_NAME, "b", "c.txt"))
               == os.path.join(root, "a", TRASH_DIR_NAME), "which trash folder a path is in", failures)
 
+        # files of 3 * SAMPLE_SIZE bytes: end.bin differs only in its last byte (caught by the end
+        # sample), middle.bin only in its middle byte, which neither sample reads (caught by the full hash)
         print("large duplicates")
         big = os.path.join(work, "big")
         body = bytes(range(256)) * (3 * SAMPLE_SIZE // 256)
@@ -299,6 +345,7 @@ def selftest():
         undo_last(root)
         check(os.path.isdir(os.path.join(root, "empty1", "empty2")), "undo recreates empty folders", failures)
 
+        # the top level holds a.txt, photo.jpg, song.mp3 and notes.unknownext: 4 moves by type
         print("organize")
         planned = plan_organize(root, "type", None)
         check(planned["ok"] and len(planned["value"]) == 4, "4 top-level files planned", failures)
@@ -324,6 +371,8 @@ def selftest():
         check(normalize_folder(' "D:" ') == "D:" + os.sep, "typed drive becomes its root", failures)
         check(add_recent(["a", "b", "c"], "b", 2) == ["b", "a"], "recent folders", failures)
 
+        # all six files are new to the empty backup; then song.mp3 changes (size and a later time)
+        # and new.txt appears, so exactly those two are copied again
         print("sync")
         target = os.path.join(work, "backup")
         copies = plan_sync(root, target, None, None)
@@ -336,6 +385,8 @@ def selftest():
         changed = plan_sync(root, target, None, None)["value"]
         check(len(changed) == 2, "changed and new files found", failures)
 
+        # 1000 bytes in all, so a slice's angle is bytes * 0.36 degrees: big (900) 324, a.bin (600)
+        # 216. no_merge draws every slice, flat merges below MAP_MIN_DEGREES, wide below 50 degrees.
         print("space map")
         top = os.path.join(work, "m")
         map_files = [fake_file(os.path.join(top, "big", "a.bin"), 600, now),
@@ -360,6 +411,7 @@ def selftest():
               and big_node["file_list"][1]["size"] == 90, "folder totals, files biggest first", failures)
         check(len(tree["folder_list"]) == 2 and tree["folder_list"][0]["name"] == "big" and tree["item_files"] == 5,
               "subfolders biggest first", failures)
+        # ring 1 starts at radius 40: 4 pixels there are 4 / 40 = 0.1 radians
         angles = ring_min_angles(3, 40.0, 20.0, 4, MAP_MIN_DEGREES)
         check(abs(angles[0] - math.degrees(0.1)) < 1e-9 and angles[0] > angles[1] > angles[2] > MAP_MIN_DEGREES
               and ring_min_angles(2, 1000.0, 10.0, 4, MAP_MIN_DEGREES) == [MAP_MIN_DEGREES, MAP_MIN_DEGREES],
@@ -554,10 +606,13 @@ def selftest():
         check(file_folder("D:" + os.sep, "D:" + os.sep + "x.bin") == "D:" + os.sep
               and file_folder(data, os.path.join(data, "s", "x.bin")) == os.path.join(data, "s"),
               "a file's folder", failures)
+        # a quarter ring in 30-degree steps: 4 points per edge, 16 numbers; the outer edge starts
+        # straight up (100, 80) and ends at 3 o'clock (120, 100)
         points = ring_points(100.0, 100.0, 10.0, 20.0, 0.0, 90.0, 30.0)
         check(len(points) == 16 and abs(points[0] - 100.0) < 1e-9 and abs(points[1] - 80.0) < 1e-9
               and abs(points[6] - 120.0) < 1e-9 and abs(points[7] - 100.0) < 1e-9,
               "ring slice starts at 12 o'clock and runs clockwise", failures)
+        # "#rrggbb": a grey has equal channels; red's channel is above green's once copies are marked
         grey = arc_color({"depth": 1, "bytes": 10, "wasted": 0, "kind": "folder", "branch": 0}, "duplicates", 6)
         red = arc_color({"depth": 1, "bytes": 10, "wasted": 10, "kind": "folder", "branch": 0}, "duplicates", 6)
         check(grey[1:3] == grey[3:5] == grey[5:7] and red[1:3] > red[3:5], "duplicate colours go from grey to red", failures)
@@ -579,12 +634,15 @@ def selftest():
               and arc_color(trash_arcs[0], "folders", 6) == TRASH_COLOUR
               and arc_color(trash_arcs[0], "duplicates", 6) == TRASH_COLOUR, "trash folders are slices of their own",
               failures)
+        # Explorer splits its arguments at commas and "=", so such paths must be quoted; a drive root
+        # is given as "D:\." since a quoted "D:\" would end in an escaped quote
         check(command_line(["explorer", "/select,", "D:\\Q1,Q2\\a.xlsx"]) == 'explorer /select,"D:\\Q1,Q2\\a.xlsx"'
               and command_line(["explorer", "/select,", "D:\\Music\\E=mc2.mp3"]) == 'explorer /select,"D:\\Music\\E=mc2.mp3"'
               and command_line(["explorer", "D:\\x=y"]) == 'explorer "D:\\x=y"'
               and command_line(["explorer", "D:\\"]) == 'explorer "D:\\."'
               and command_line(["notepad", "a b.txt"]) == 'notepad "a b.txt"',
               "paths for Explorer are quoted", failures)
+        # 10 ** 20 seconds is past any date the system can show; a normal date is "YYYY-MM-DD"
         check(human_date(10.0 ** 20) == "unknown" and len(human_date(now)) == 10, "dates the system cannot show", failures)
 
         print("shares, settings, desktop")

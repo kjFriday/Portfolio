@@ -23,6 +23,17 @@ Records
             "saved": {color: when saved}}
   Voat     {"color": "#rrggbb", "voat": 1 | -1}            what a ranker reads: your votes, oldest first
   Result   {"ok": bool, "error": str, "value": any}
+
+The built-in posts are never stored: all_posts() makes them again from the palette each time, and
+the store keeps only your own posts and what you did. Every function that changes a store changes
+the dict in place; the caller saves it with save_store().
+
+Main flow of one button press (in the window)
+  1. A handler calls vote(), toggle_save(), add_comment(), add_post() or a delete function.
+  2. The window saves the store at once with save_store(data_path()).
+  3. On Refresh, feed_order() builds the voat log (voat_log) and asks the ranker for the order.
+
+Start reading at feed_order() and load_store().
 """
 
 import importlib.util
@@ -37,11 +48,14 @@ import factory
 APP_ID = "GenericCompany.ColorVoats"  # also setup.json's id and appUserModelId, and the data folder's name
 HERE = os.path.dirname(os.path.abspath(__file__))  # presets/, weights/, rankers/ and icon/ sit beside it
 
-DEFAULT_PRESET = "mixer"
+DEFAULT_PRESET = "mixer"  # the preset For you uses unless --preset names another
 SEED_TIME = 1793188800.0  # 2026-10-28 12:00 UTC: when the built-in colors were posted, before any of yours
-CAPTION_LIMIT = 140
-COMMENT_LIMIT = 500
-MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+CAPTION_LIMIT = 140  # characters a caption keeps; longer text is cut, not refused
+COMMENT_LIMIT = 500  # characters a comment keeps
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")  # for when_text's dates
+# each pair is (upper bound in degrees, name): a hue below the bound and at or above the previous one takes
+# that name. The angle is atan2(b, a) in OKLab: pure red sits at about 29 degrees, yellow about 110,
+# green about 142, blue about 264 and magenta about 328 (which this table calls pink)
 HUES = ((40.0, "red"), (85.0, "orange"), (125.0, "yellow"), (170.0, "green"), (225.0, "teal"),
         (285.0, "blue"), (320.0, "purple"), (360.0, "pink"))  # OKLab hue angle -> name
 
@@ -96,7 +110,9 @@ def normalize_hex(text):
 
 def clean_text(text, limit):
     """Text as it is kept: control characters and line breaks become spaces, runs of spaces one space,
-    and it is cut to `limit` characters."""
+    and it is cut to `limit` characters. Control means code points 0-31 and 127 (DEL); split() then
+    folds every run of whitespace, so the result has no leading, trailing or double spaces.
+    Not a string gives ""."""
     if not isinstance(text, str):
         return ""
     characters = []
@@ -110,7 +126,17 @@ def clean_text(text, limit):
 
 def color_name(color):
     """A plain name for a color, such as "Dark teal" or "Light grey", from its OKLab lightness,
-    chroma (how colorful) and hue."""
+    chroma (how colorful) and hue.
+
+    Steps:
+      1. Chroma is the length of (a, b): how far the color is from grey. Under 0.03 the color is a
+         grey, named by lightness alone (Black, Dark grey, Grey, Light grey, White).
+      2. Otherwise the hue angle picks a name from HUES.
+      3. Dark orange is brown and dark yellow is olive, as people name them.
+      4. A prefix by lightness and chroma: dark, light (only when pale) or muted, then capitalized.
+    The thresholds are OKLab values (L 0..1, chroma about 0..0.32 for sRGB colors); the tests pin a
+    sample of names. QR Palette keeps its own copy of this function, which a change here does not update.
+    """
     lab = algos.oklab(color)
     lightness = lab[0]
     chroma = math.sqrt(lab[1] * lab[1] + lab[2] * lab[2])
@@ -144,7 +170,11 @@ def color_name(color):
 
 
 def when_text(then, now):
-    """How long ago, the way feeds say it: just now, 5 min ago, 3 h ago, 2 d ago, then the date."""
+    """How long ago, the way feeds say it: just now, 5 min ago, 3 h ago, 2 d ago, then the date.
+
+    `then` and `now` are seconds since the epoch. A time in the future also reads "just now" (a
+    clock set back must not show a negative age). From a week on it is the local date, "Oct 28, 2026".
+    """
     seconds = now - then
     if seconds < 60:
         return "just now"
@@ -166,7 +196,8 @@ def empty_store():
 
 
 def builtin_posts():
-    """The 216 colors that come with the program, each captioned with its name."""
+    """The 216 colors that come with the program, each captioned with its name, in palette order and all
+    posted at SEED_TIME. Made afresh on every call; they are never written to the store."""
     posts = []
     for color in algos.palette():
         posts.append({"color": color, "caption": color_name(color), "when": SEED_TIME, "mine": False})
@@ -183,7 +214,19 @@ def all_posts(store):
 
 def load_store(path):
     """The store in `path`, checked: a missing or broken file is an empty store, and bad entries
-    (unknown colors, wrong types, empty text) are dropped."""
+    (unknown colors, wrong types, empty text) are dropped.
+
+    The file is hand-editable JSON, so nothing in it is trusted. Steps:
+      1. Read and parse it; any read or parse error, or a top level that is not an object, gives an
+         empty store.
+      2. Posts: keep each one with a valid new color and a numeric time. A color that is built in or
+         already posted is skipped (each color is posted once); the caption is cleaned, or becomes
+         the color's name when empty. Kept posts are marked "mine".
+      3. Votes, comments and saves: keep only entries on known colors (built-in or a kept post),
+         with the right types: a vote of exactly 1 or -1 (an int, so True is refused), comments with
+         text left after cleaning, saves with a numeric time.
+    Keys are normalized, so "#FF0000" in the file becomes "#ff0000".
+    """
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -213,6 +256,7 @@ def load_store(path):
         for key in votes:
             color = normalize_hex(key)
             vote = votes[key]
+            # type() is int, not isinstance: JSON true would otherwise pass as the vote 1
             if color in known and isinstance(vote, dict) and type(vote.get("voat")) is int:
                 if (vote["voat"] == 1 or vote["voat"] == -1) and is_number(vote.get("when")):
                     store["votes"][color] = {"voat": vote["voat"], "when": float(vote["when"])}
@@ -240,7 +284,12 @@ def load_store(path):
 
 
 def save_store(path, store):
-    """Write the store through a temporary file, so a failed write never leaves half a file."""
+    """Write the store through a temporary file, so a failed write never leaves half a file -> Result path.
+
+    Steps: make the folder if needed, write JSON to <path>.tmp, then os.replace() it over `path`.
+    os.replace is atomic on one volume, so a reader sees the old file or the new one, never a mix.
+    Errors: an OSError (no folder rights, disk full) becomes a failed Result; the old file stays.
+    """
     folder = os.path.dirname(path)
     try:
         if folder != "" and not os.path.isdir(folder):
@@ -275,7 +324,11 @@ def vote(store, color, voat, now):
 
 
 def voat_log(store):
-    """Your votes as the voat log a ranker reads, oldest first."""
+    """Your votes as the voat log a ranker reads, oldest first.
+
+    Sorted by vote time, then by color for equal times, so the log is the same on every run. Order
+    matters: the mixer reads downvoat streaks from it. A switched vote counts from when it was switched.
+    """
     rows = []
     for color in store["votes"]:
         rows.append([store["votes"][color]["when"], color])
@@ -304,7 +357,8 @@ def add_comment(store, color, text, now):
 
 
 def delete_comment(store, color, index):
-    """Delete comment number `index` (oldest first) of a post -> True when there was one."""
+    """Delete comment number `index` (oldest first) of a post -> True when there was one. A post left
+    with no comments loses its entry, so the store holds no empty lists."""
     comments = store["comments"].get(color, [])
     if index < 0 or index >= len(comments):
         return False
@@ -324,7 +378,8 @@ def toggle_save(store, color, now):
 
 
 def saved_colors(store):
-    """Your saved colors, the most recently saved first."""
+    """Your saved colors, the most recently saved first (the time is negated so an ascending sort puts
+    the newest first; equal times fall back to the color)."""
     rows = []
     for color in store["saved"]:
         rows.append([-store["saved"][color], color])
@@ -373,7 +428,12 @@ def delete_post(store, color):
 
 
 def feed_order(store, sort, ranker):
-    """The feed's colors in order: "new" is newest first; "for_you" is the ranker's order for your votes."""
+    """The feed's colors in order: "new" is newest first; "for_you" is the ranker's order for your votes.
+
+    `ranker` is a module from load_ranker (only its rank(voats, colors) is used); it may be None for
+    "new". Any sort other than "for_you" is New. In New, posts with the same time (all the built-in
+    colors share SEED_TIME) keep palette order, because the row's second element is the post's index.
+    """
     posts = all_posts(store)
     if sort == "for_you":
         colors = []
@@ -393,7 +453,12 @@ def feed_order(store, sort, ranker):
 def load_ranker(name):
     """Generate rankers/ranker_<name>.py when it is missing or out of date, then load it -> Result module.
     This writes into rankers/ beside the program: app launches, preset switches, --selftest and the tests
-    all rewrite a stale ranker this way."""
+    all rewrite a stale ranker this way.
+
+    The ranker is loaded by file path as module "ranker_<name>" (rankers/ is not a package), and it is
+    not added to sys.modules, so loading it again after a rewrite gives the new code. Any error while
+    running the module's top level becomes a failed Result naming the file.
+    """
     made = factory.ensure(HERE, name)
     if not made["ok"]:
         return made

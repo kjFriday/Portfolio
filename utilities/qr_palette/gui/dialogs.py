@@ -7,10 +7,20 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""The window's larger dialogs: the audit log, print size, make from a list and link from a template.
+"""The window's four larger dialogs: audit log, print size, make from a list, templates.
+
+In full: the audit log, print size, make from a list and link from a template.
 
 Dialogs is part of PaletteWindow (window.py). Print size and Make from a list read the Make tab's error
 correction level (chosen_level), and Make from a list starts with its short link section.
+
+Each dialog is a tk.Toplevel built by one method, with its handlers as functions nested inside it
+that share its widgets and variables. Slow work (verifying the log, reading or making a list) goes
+through PaletteWindow.start_job, which runs it off the window's thread and calls `done` back on it;
+a `done` first checks alive(), since the dialog may have been closed while the job ran.
+
+The work itself lives in the core: audit.py for the log, print_advice.py for print sizes,
+batches.py for lists and shortlinks.py for templates.
 """
 
 import json
@@ -29,11 +39,19 @@ from print_advice import MIN_CAPTION_MM, MIN_MODULE_MM, print_advice
 
 
 class Dialogs:
-    """The dialogs opened from the menus and the Make tab (a part of PaletteWindow)."""
+    """The dialogs opened from the menus and the Make tab (a part of PaletteWindow).
+
+    A mixin with no state of its own: it uses PaletteWindow's window, state, status, db_path,
+    link_text and section_choice, and its start_job, chosen_level, refresh_preview, refresh_footer,
+    refresh_used and refresh_served."""
 
     def show_audit(self):
         """The audit log, newest first: any line in full, the chain checked, and its fingerprint to keep
-        somewhere else (so lines cut off the end would show even if the anchor beside it went too)."""
+        somewhere else (so lines cut off the end would show even if the anchor beside it went too).
+
+        The table shows the last 500 records; a line's whole record shows below it as indented
+        JSON. The log file is engine["audit_file"], the same one ECP writes. Reading is done on the
+        window's thread; checking runs as a job."""
         path = self.state["engine"]["audit_file"]
         dialog = tk.Toplevel(self.window)
         dialog.title("Audit log")
@@ -59,9 +77,12 @@ class Dialogs:
         detail.pack(fill="x", padx=8, pady=8)
         records = []
 
+        # whether the dialog is still open (a job may finish after it was closed)
         def alive():
             return dialog.winfo_exists()
 
+        # read the last 500 records again and list them newest first; a row's iid is its index in
+        # records, so show_line can find the record
         def load():
             records.clear()
             records.extend(audit.read_records(path, 500))
@@ -69,6 +90,7 @@ class Dialogs:
                 table.delete(item)
             for index in range(len(records) - 1, -1, -1):
                 record = records[index]
+                # the model column drops the "@digest" of a model_id, which is too long to show
                 table.insert("", "end", iid=str(index), text=str(record.get("audit_id", "?")),
                              values=(record.get("ts", ""), record.get("tool", ""), record.get("result_kind", ""),
                                      str(record.get("model_id", "")).split("@")[0], record.get("row_count", ""),
@@ -78,6 +100,7 @@ class Dialogs:
             else:
                 outcome_text.set("The last " + str(len(records)) + " line(s), newest first. Click one to read it.")
 
+        # the chosen line's whole record in the read-only text box below the table
         def show_line(event=None):
             chosen = table.selection()
             if len(chosen) == 0:
@@ -87,7 +110,9 @@ class Dialogs:
             detail.insert("end", json.dumps(records[int(chosen[0])], indent=2, ensure_ascii=False))
             detail.config(state="disabled")
 
+        # Check the chain: audit.verify as a job, its answer under the buttons
         def check():
+            # show whether the chain is whole, or its first problem
             def done(outcome):
                 if not alive():
                     return
@@ -99,6 +124,7 @@ class Dialogs:
 
             self.start_job("Checking the audit log", lambda: audit.verify(path), done)
 
+        # put the log's fingerprint ("45:3f2a...") on the clipboard, for the person to keep elsewhere
         def copy_fingerprint():
             found = audit.fingerprint(path)
             if not found["ok"]:
@@ -110,12 +136,14 @@ class Dialogs:
             outcome_text.set("Copied fingerprint " + text[:20] + "…  Keep it somewhere else (a note, an email to "
                              "yourself); Check a kept fingerprint… compares the log with it later.")
 
+        # ask for a fingerprint kept earlier and check the log against it as a job
         def check_kept():
             text = simpledialog.askstring("Check a kept fingerprint", "Paste a fingerprint you kept (a line number, "
                                           "a colon and 64 hex digits):", parent=dialog)
             if not text:
                 return
 
+            # show whether the kept line is still as written, or the first problem
             def done(outcome):
                 if not alive():
                     return
@@ -135,13 +163,18 @@ class Dialogs:
         load()
 
     def print_size(self):
-        """Advice on how big to print the code in the preview, for a scanning distance."""
+        """Advice on how big to print the code in the preview, for a scanning distance.
+
+        One line per error correction level (only H when the preview has a logo, at the version
+        the logo needs), with the chosen level marked. The advice updates on every key typed in the
+        width or distance box; a decimal comma is read as a point. print_advice is quick, so it
+        runs on the window's thread."""
         text = self.state["preview_text"]
         if text == "":
             self.status.set("Type a link first: the advice is for the code in the preview")
             return
         caption = self.state["preview_caption"]
-        logo_version = 0
+        logo_version = 0  # 0: no logo, so every level is advised
         if self.state["preview_logo"] is not None:
             logo_version = self.state["matrix"]["version"]
         dialog = tk.Toplevel(self.window)
@@ -150,6 +183,7 @@ class Dialogs:
         dialog.resizable(False, False)
         body = ttk.Frame(dialog, padding=12)
         body.pack(fill="both", expand=True)
+        # the text as the registry would keep it (a Wi-Fi password masked), on one line, cut to 80
         ttk.Label(body, text="For the code holding " + textsafe.clean(payloads.one_line(payloads.stored_form(text)[0]),
                                                                       80)).grid(row=0, column=0, columnspan=2, sticky="w")
         width_text = tk.StringVar(value="3")
@@ -164,6 +198,7 @@ class Dialogs:
         ttk.Label(body, textvariable=answer, justify="left", wraplength=620).grid(row=3, column=0, columnspan=2,
                                                                                  sticky="w", pady=8)
 
+        # read the two numbers and write the advice, one line per level
         def update(event=None):
             try:
                 width = float(width_text.get().replace(",", "."))
@@ -199,7 +234,17 @@ class Dialogs:
         update()
 
     def make_from_list(self):
-        """A whole print run from a CSV: the rows are counted first, then made as one job, with a report."""
+        """A whole print run from a CSV: the rows are counted first, then made as one job, with a report.
+
+        Steps:
+          1. Choose… reads the list as a job (read_batch_csv) and says how many rows are ready and
+             the first problem; Make the codes is enabled when at least one row is ready.
+          2. The folder, PNG or SVG, short links and their section, and the snap choice are picked.
+          3. Make the codes runs make_batch as a job; tick() shows its progress every 200 ms and
+             Stop asks it to stop after the code it is making.
+          4. When it ends, the status line names the report, the footer, the colors in use and
+             (for local short links) the served pages are refreshed, and the folder can be opened.
+        """
         dialog = tk.Toplevel(self.window)
         dialog.title("Make from a list")
         dialog.transient(self.window)
@@ -215,11 +260,15 @@ class Dialogs:
         summary = tk.StringVar(value="Choose a CSV whose first row names its columns: link and color, and optionally "
                                      "label and file.")
         rows = []
+        # shared by the job's thread (watch writes done and total, reads stop) and the window's
+        # thread (tick reads, Stop writes); plain values, so no lock is needed
         progress = {"done": 0, "total": 0, "stop": False, "running": False}
 
+        # whether the dialog is still open (a job may finish after it was closed)
         def alive():
             return dialog.winfo_exists()
 
+        # pick a CSV and read it as a job; then count the ready rows and say the first problem
         def choose_source():
             path = filedialog.askopenfilename(title="A list of codes", parent=dialog,
                                               filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
@@ -227,6 +276,7 @@ class Dialogs:
                 return
             path = registry.display_path(path)
 
+            # keep the rows read (or none, on a failure) and enable Make when any row is ready
             def done(outcome):
                 self.status.set("Ready")
                 if not alive():
@@ -252,22 +302,26 @@ class Dialogs:
 
             self.start_job("Reading the list", lambda: read_batch_csv(path), done)
 
+        # pick the folder the pictures and the report go to (it need not exist yet)
         def choose_folder():
             chosen = filedialog.askdirectory(title="Save the pictures in", parent=dialog, mustexist=False,
                                              initialdir=folder_text.get())
             if chosen:
                 folder_text.set(registry.display_path(chosen))
 
+        # make_batch's watch, on the job's thread: note the progress, and say whether to stop
         def watch(done_rows, total):
             progress["done"] = done_rows
             progress["total"] = total
             return progress["stop"]
 
+        # show which code is being made, every 200 ms while the job runs and the dialog is open
         def tick():
             if progress["running"] and alive():
                 summary.set("Making code " + str(progress["done"] + 1) + " of " + str(progress["total"]) + "…")
                 dialog.after(200, tick)
 
+        # make the ready rows as one job, with the choices as they are now
         def make():
             target = folder_text.get().strip()
             if target == "":
@@ -276,6 +330,7 @@ class Dialogs:
             section = ""
             if short_on.get():
                 section = section_on.get()
+            # the job reads copies taken here, never the widgets, which belong to the window's thread
             chosen_rows = list(rows)
             kind = kind_choice.get()
             level = self.chosen_level()
@@ -285,6 +340,7 @@ class Dialogs:
             make_button.config(state="disabled")
             stop_button.config(state="normal")
 
+            # say what was made, refresh what changed, and offer to open the folder
             def done(outcome):
                 progress["running"] = False
                 if alive():
@@ -306,10 +362,10 @@ class Dialogs:
                 self.refresh_footer()
                 self.refresh_used()
                 if section == "local":
-                    self.refresh_served()
+                    self.refresh_served()  # new local short links need their pages written
                 if messagebox.askyesno("Make from a list", said + "\n\nOpen the folder?"):
                     try:
-                        os.startfile(target)
+                        os.startfile(target)  # Windows only: AttributeError elsewhere
                     except (AttributeError, OSError) as error:
                         self.status.set(str(error))
 
@@ -317,6 +373,7 @@ class Dialogs:
                                                               app_settings.DEFAULT_SCALE, section, snap, watch), done)
             tick()
 
+        # ask the running job to stop before its next code
         def stop():
             progress["stop"] = True
             summary.set("Stopping after this code…")
@@ -353,7 +410,14 @@ class Dialogs:
         ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="left")
 
     def from_template(self):
-        """A small dialog that builds the link from one of links.json's templates."""
+        """A small dialog that builds the link from one of links.json's templates.
+
+        A template is a link with named fields in it (shortlinks.template_fields lists them, in
+        order). Choosing a template shows its pattern and one box per field; every key typed fills
+        the template again (shortlinks.fill_template) and shows the link or what is wrong. Use this
+        link puts it in the Make tab's link box and redraws the preview. The dialog is modal
+        (grab_set), and opens on the first template by name. The Make tab only offers it when
+        links.json has at least one template, which names[0] relies on."""
         names = sorted(app_settings.LINKS["templates"])
         dialog = tk.Toplevel(self.window)
         dialog.title("Link from a template")
@@ -373,16 +437,19 @@ class Dialogs:
                                                                                        sticky="w")
         entries = {}
 
+        # the chosen template filled with what is typed in each field's box -> Result link
         def filled():
             typed = {}
             for name in entries:
                 typed[name] = entries[name].get()
             return shortlinks.fill_template(app_settings.LINKS["templates"][chooser.get()], typed)
 
+        # show the link as it would be, or what is wrong with it
         def update(event=None):
             outcome = filled()
             result_text.set(outcome["value"] if outcome["ok"] else outcome["error"])
 
+        # a template was chosen: rebuild the boxes, one per field, in the template's order
         def choose(event=None):
             for child in fields.winfo_children():
                 child.destroy()
@@ -398,6 +465,7 @@ class Dialogs:
                 entries[names_in_order[row]] = entry
             update()
 
+        # put the filled link in the Make tab and close, or say what is wrong
         def use():
             outcome = filled()
             if not outcome["ok"]:

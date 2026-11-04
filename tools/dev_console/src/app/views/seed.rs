@@ -6,8 +6,18 @@
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 // ========================================================================
 
-//! The Seed data view: the CRUD Hub's shared database file, its rows per table and dated backups, and the
-//! buttons that run the hub's own seed scripts.
+//! The Seed data view: the shared database, its row counts, backups and seed buttons.
+//!
+//! Every portfolio program reads one shared SQLite file. This view shows which file is in use, how many rows
+//! each table holds and the dated backups beside it, and runs the CRUD Hub's own seed scripts on it (the
+//! console never writes the database itself). The frame loop in app/views.rs draws it when its tab is picked;
+//! the buttons call `seed_click` and `refresh_seed` in app.rs, and seed.rs builds the commands.
+//!
+//! What the view shows, top to bottom:
+//! 1. The Database box with Default and Open folder, then the file's size and age.
+//! 2. A button per op: Refresh counts, Back up now, Reseed, Rebuild fresh, Export mock snapshots. The
+//!    destructive ones ask for a second click.
+//! 3. Two columns: rows per table on the left, the backups with Restore selected on the right.
 
 use std::path::Path;
 
@@ -17,7 +27,22 @@ use super::RED;
 use crate::app::App;
 use crate::seed;
 
+// The view's body, drawn as part of App.
 impl App {
+    /// Draw the Seed data view; `ctx` is passed on to the seed jobs the buttons start.
+    ///
+    /// Steps:
+    /// 1. On first show, read the backups and start a Counts job, so the view is not empty.
+    /// 2. The Database box reloads on Enter. egui has no "submitted" event for a single-line box: the box loses
+    ///    focus when Enter is pressed, so `lost_focus` plus Enter this frame means submitted, while a click
+    ///    elsewhere (focus lost without Enter) does not reload.
+    /// 3. Default goes back to the shared database. Open folder runs `explorer /select,<file>`, which opens
+    ///    the folder with the file highlighted, or just the folder when the file does not exist yet.
+    /// 4. The op buttons, all disabled while any seed job runs. An armed button turns red and reads
+    ///    "Click again: ..."; its tip says it asks for a second click.
+    /// 5. `ui.columns(2)` splits the rest in two equal halves. Left: a striped grid of tables and counts with a
+    ///    total, or why there are none. Right: the backups in a scroll area capped at 180 px (so a long list
+    ///    does not push Restore off screen), each selectable, then the Restore button, which needs a pick.
     pub(super) fn seed_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if !self.seed.loaded {
             self.refresh_seed(ctx);

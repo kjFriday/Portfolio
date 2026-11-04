@@ -22,6 +22,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def make_image(width, height, fill):
+    """A new gray Image of width x height pixels, every pixel `fill` (0 black .. 255 white)."""
     return {"width": width, "height": height, "gray": bytearray([fill]) * (width * height)}
 
 
@@ -43,6 +44,14 @@ def matrix_to_image(matrix, scale, border):
 
 
 def matrix_to_svg(matrix, border):
+    """The matrix as SVG text: black modules on white, `border` modules of quiet zone, one unit per module.
+
+    The viewBox is measured in modules, so the drawing scales to any size without blurring, and
+    shape-rendering="crispEdges" keeps neighbouring squares from showing hairline seams. Every dark
+    module is one small square in a single path ("M x,y h1 v1 h-1 z": move to its corner, then draw
+    right, down, left and close), which keeps the file short. The quiet zone is the light margin a
+    reader needs around the code; the standard asks for 4 modules.
+    """
     size = matrix["size"]
     side = size + 2 * border
     parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + str(side) + " " + str(side) +
@@ -56,6 +65,10 @@ def matrix_to_svg(matrix, border):
 
 
 def png_chunk(kind, data):
+    """One PNG chunk as bytes: data's length (4 bytes, big-endian), the 4-byte kind, data, and a CRC-32.
+
+    The CRC covers the kind and the data, not the length, so a reader can tell a damaged chunk.
+    """
     checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
 
@@ -73,6 +86,13 @@ def write_png(image):
 
 
 def paeth(a, b, c):
+    """The Paeth predictor (PNG section 9.4): whichever of left a, above b and upper-left c is nearest a + b - c.
+
+    a + b - c is what the byte would be if the picture changed at the same rate along the row as it
+    does along the row above (a flat gradient). The neighbour closest to that guess is used, ties going
+    to a, then b, then c, exactly as the PNG specification orders them; any other order would decode
+    some files wrongly.
+    """
     p = a + b - c
     pa = abs(p - a)
     pb = abs(p - b)
@@ -85,6 +105,16 @@ def paeth(a, b, c):
 
 
 def unfilter_row(kind, row, previous, step):
+    """Undo PNG filter type `kind` on one row of bytes, in place, and return it.
+
+    previous is the row above, already unfiltered (all zeros for the first row); step is the bytes per
+    whole pixel, at least 1, so "left" means the same channel of the pixel before. A filtered byte holds
+    the original minus a prediction, modulo 256, so adding the prediction back (& 0xFF) restores it.
+    The five filter types (PNG section 9.2), with left = a, above = b, upper-left = c:
+    0 None: no prediction. 1 Sub: a. 2 Up: b. 3 Average: (a + b) // 2. 4 Paeth: paeth(a, b, c).
+    Bytes left of the first pixel count as 0. The row must be unfiltered left to right, since each
+    byte's prediction uses the restored byte before it.
+    """
     if kind == 0:
         return row
     if kind == 2:
@@ -189,6 +219,11 @@ def read_png(data):
 
 
 def palette_gray(palette, index):
+    """Gray level of palette entry `index` (a PLTE body of R, G, B triples); a missing entry reads as white.
+
+    Gray is the luma of ITU-R BT.601, 0.299 R + 0.587 G + 0.114 B, in integer thousandths: green looks
+    brightest to the eye and blue darkest.
+    """
     i = index * 3
     if i + 2 >= len(palette):
         return 255
@@ -196,6 +231,10 @@ def palette_gray(palette, index):
 
 
 def over_white(value, alpha):
+    """A channel value (0..255) with opacity alpha (0 clear .. 255 opaque) laid over white, rounded down.
+
+    Alpha blending: value * alpha / 255 + 255 * (1 - alpha / 255), done in integers.
+    """
     return (value * alpha + 255 * (255 - alpha)) // 255
 
 
@@ -233,6 +272,12 @@ def read_ppm(data):
 
 
 def read_image_bytes(data):
+    """PNG, PGM or PPM bytes -> Result Image, chosen by the file's first bytes rather than its name.
+
+    PNG files start with PNG_SIGNATURE; binary PGM and PPM start with "P5" and "P6". Anything else
+    fails with a hint, since the window opens other formats (GIF, for one) through Tk and hands them
+    over as PPM (studio_gui.picture_through_tk).
+    """
     if data[:8] == PNG_SIGNATURE:
         return read_png(data)
     if data[:2] in (b"P5", b"P6"):
@@ -241,6 +286,7 @@ def read_image_bytes(data):
 
 
 def load_image_file(path):
+    """A picture file -> Result Image; a file that cannot be opened is a failed Result naming the path."""
     try:
         handle = open(path, "rb")
         data = handle.read()

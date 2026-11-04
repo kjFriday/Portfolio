@@ -6,19 +6,32 @@
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 // ========================================================================
 
-//! Seed data: the CRUD Hub's database, its row counts and backups, and the hub's own seed tools.
+//! Seed data: the CRUD Hub's database, its row counts and backups, and its seed tools.
+//!
 //! Every change goes through the hub's code (seed.py, export_mock.py, seed.backup), which owns the schema;
-//! the console itself only reads.
+//! the console itself only reads. The Seed data view (app/views/seed.rs) shows the database, and app.rs runs
+//! each `Op` as an ordinary job built by `command`, in the hub's folder so `import db, seed` finds the hub's
+//! modules.
+//!
+//! Three ops need a few lines of Python that no hub script offers, so they are inline `python -c` scripts
+//! here (COUNTS, BACKUP, RESTORE) with the paths passed as arguments, never pasted into the code. Their
+//! output lines start with a marker word: `parse_counts` reads the `COUNT` lines back, while `BACKUP` and
+//! `RESTORED` are for the job's log.
+//!
+//! Defines `Op` and `Backup`.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::registry::Cmd;
 
+/// The CRUD Hub's folder relative to the portfolio root; every seed command runs there.
 pub const HUB_DIR: &str = "company/crud_hub";
 
 /// The shared database the programs use when nothing else is chosen: GENERIC_COMPANY_DB, then
 /// `<LOCALAPPDATA>\Generic Company Inc\generic_company.db`.
+///
+/// A blank GENERIC_COMPANY_DB counts as unset. None when neither is available. The path need not exist yet.
 pub fn default_db(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     if let Some(p) = env("GENERIC_COMPANY_DB").filter(|p| !p.trim().is_empty()) {
         return Some(PathBuf::from(p));
@@ -26,17 +39,26 @@ pub fn default_db(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     env("LOCALAPPDATA").map(|d| Path::new(&d).join("Generic Company Inc").join("generic_company.db"))
 }
 
+/// One of the Seed data view's buttons. `help` says what each does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    /// Read the row count of every table (read-only).
     Counts,
+    /// Make a dated backup now.
     Backup,
+    /// Back up, then empty and refill the database in place.
     Reseed,
+    /// Delete the file and build it again; no backup.
     Fresh,
+    /// Back up, then copy a chosen backup over the database.
     Restore,
+    /// Write every program's mock/ snapshot from the database.
     Export,
 }
 
+// Button texts and the confirm rule.
 impl Op {
+    /// The button text.
     pub fn label(self) -> &'static str {
         match self {
             Op::Counts => "Refresh counts",
@@ -48,6 +70,7 @@ impl Op {
         }
     }
 
+    /// The button's tooltip: what it runs and what it changes.
     pub fn help(self) -> &'static str {
         match self {
             Op::Counts => "Read how many rows each table holds (read-only).",
@@ -68,15 +91,35 @@ impl Op {
     }
 
     /// Ops that destroy or replace data ask for a second click.
+    ///
+    /// app.rs arms the op on the first click and runs it on a second click of the same button before the
+    /// confirm time runs out.
     pub fn needs_confirm(self) -> bool {
         matches!(self, Op::Reseed | Op::Fresh | Op::Restore)
     }
 }
 
+/// Python for Counts: `python -c COUNTS DB` prints `COUNT <table> <rows>` for every table.
+///
+/// - The file opens through a `file:` URI with `?mode=ro`, SQLite's read-only mode, so counting can never
+///   create a missing database or write to one; `Path.resolve().as_uri()` makes the URI and escapes spaces.
+/// - `sqlite_master` is SQLite's catalog; its `type='table'` rows are the tables. Names starting `sqlite_`
+///   are SQLite's own internal tables (such as `sqlite_sequence`), left out.
+/// - Each name is put in double quotes, SQL's identifier quoting, in case a name is a keyword.
+///
+/// `parse_counts` reads the output.
 const COUNTS: &str = "import sqlite3, sys, pathlib\nc = sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + '?mode=ro', uri=True)\nnames = [r[0] for r in c.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name\")]\nprint(*[f'COUNT {t} {c.execute(f\"SELECT COUNT(*) FROM \\\"{t}\\\"\").fetchone()[0]}' for t in names], sep='\\n')\n";
 
+/// Python for Backup: `python -c BACKUP DB` points the hub's `db` module at DB and calls `seed.backup()`,
+/// which writes the dated copy beside it and checks the copy's row counts; prints `BACKUP <path>`
+/// (`BACKUP None` when the database is missing or empty, so there is nothing to keep).
 const BACKUP: &str = "import sys, db, seed\ndb.DB_PATH = sys.argv[1]\nprint('BACKUP', seed.backup())\n";
 
+/// Python for Restore: `python -c RESTORE DB FROM` backs DB up first, then copies FROM over it.
+///
+/// The copy uses SQLite's online backup API (`Connection.backup`), not a file copy: it copies page by page
+/// under SQLite's own locking, so it is safe while other programs have the database open, and it replaces
+/// the whole content of DB. Prints `BACKUP <path>` and `RESTORED <from>`.
 const RESTORE: &str = "import sys, sqlite3, db, seed\n\
 db.DB_PATH = sys.argv[1]\n\
 print('BACKUP', seed.backup())\n\
@@ -86,6 +129,11 @@ dst.close(); src.close()\n\
 print('RESTORED', sys.argv[2])\n";
 
 /// The command for `op` on `db`, run in the hub's folder. `backup` is the file Restore copies from.
+///
+/// None only for Restore with no backup chosen. `python` must be on PATH.
+///
+/// Known limitation: Export takes no path, so export_mock.py reads the database the hub resolves for
+/// itself, which is not `db` when another file is chosen in the view.
 pub fn command(op: Op, root: &Path, db: &Path, backup: Option<&Path>) -> Option<Cmd> {
     let d = db.to_string_lossy().into_owned();
     let words: Vec<String> = match op {
@@ -106,26 +154,42 @@ pub fn command(op: Op, root: &Path, db: &Path, backup: Option<&Path>) -> Option<
 }
 
 /// Table counts from a Counts job's output lines (`COUNT table n`).
+///
+/// Every other line (the job's header line, a warning) is skipped, as is a line whose count is not a
+/// number. Known limitation: a table name with a space in it would be cut at the space and skipped.
 pub fn parse_counts(lines: &[String]) -> Vec<(String, u64)> {
     lines
         .iter()
         .filter_map(|l| {
             let mut w = l.split_whitespace();
+            // `?` on the bool-to-Option turns "not a COUNT line" into None for filter_map
             (w.next()? == "COUNT").then_some(())?;
             Some((w.next()?.to_string(), w.next()?.parse().ok()?))
         })
         .collect()
 }
 
+/// One dated backup file beside the database, as the Seed data view lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Backup {
+    /// The backup file.
     pub path: PathBuf,
     /// "2026-10-17 09:30:05", from the file name.
     pub when: String,
+    /// File size in bytes (0 when it cannot be read).
     pub size: u64,
 }
 
 /// The `<stem>-YYYYMMDD-HHMMSS<ext>` backups beside `db`, newest first.
+///
+/// The time comes from the name, not the file's dates, since copying a backup changes those. Names that
+/// do not match exactly (another stem, `-moved`, a `-wal` file) are ignored. The extension defaults to `.db`
+/// when `db` has none. An unreadable folder gives an empty list.
+///
+/// Steps:
+/// 1. Strip `<stem>-` and `<ext>` from each name in the folder.
+/// 2. What is left must be 8 digits, `-`, 6 digits.
+/// 3. Turn it into `YYYY-MM-DD HH:MM:SS`; that text sorts in time order, so newest first is a reverse sort.
 pub fn backups(db: &Path) -> Vec<Backup> {
     let (Some(dir), Some(stem)) = (db.parent(), db.file_stem().map(|s| s.to_string_lossy().into_owned())) else {
         return vec![];
@@ -166,6 +230,9 @@ pub fn backups(db: &Path) -> Vec<Backup> {
 }
 
 /// Size and age of the database file, for the status line.
+///
+/// Such as `1.2 MB, changed 5 min ago`. The age unit grows with the age: seconds under 2 minutes, minutes
+/// under 2 hours, hours under 2 days, then days, always rounded down. A missing file says how to make one.
 pub fn describe(db: &Path) -> String {
     match std::fs::metadata(db) {
         Err(_) => "not created yet: Reseed or Rebuild fresh makes it".into(),
@@ -186,6 +253,7 @@ pub fn describe(db: &Path) -> String {
     }
 }
 
+/// `n` bytes as text: `512 B`, `1.5 KB`, `3.2 MB` (1 KB = 1024 bytes, one decimal).
 pub fn size(n: u64) -> String {
     match n {
         n if n < 1024 => format!("{n} B"),
@@ -194,10 +262,12 @@ pub fn size(n: u64) -> String {
     }
 }
 
+/// Unit tests: the default path, the commands, count parsing, backup listing, and the hub's real scripts.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // GENERIC_COMPANY_DB wins when set; without it the path is built under LOCALAPPDATA.
     #[test]
     fn default_db_prefers_the_variable() {
         let env = |k: &str| match k {
@@ -213,6 +283,8 @@ mod tests {
         );
     }
 
+    // Rebuild fresh passes its flags and the path and runs in the hub; Restore needs a backup and ends with
+    // the database and the backup, in that order.
     #[test]
     fn commands_run_in_the_hub() {
         let c = command(Op::Fresh, Path::new("R"), Path::new("x.db"), None).unwrap();
@@ -223,6 +295,7 @@ mod tests {
         assert_eq!(&r.args[r.args.len() - 2..], ["x.db", "b.db"]);
     }
 
+    // Only well-formed COUNT lines count: the header line and a non-numeric count are skipped.
     #[test]
     fn counts_parse() {
         let lines = ["> python", "COUNT customers 40", "COUNT orders 120", "COUNT bad x"].map(String::from);
@@ -232,6 +305,8 @@ mod tests {
         );
     }
 
+    // Of six files only the two correctly dated ones of this stem are listed, newest first; the database,
+    // a `-moved` copy, another stem and the WAL file are not.
     #[test]
     fn backups_are_found_and_sorted() {
         let dir = std::env::temp_dir().join(format!("gc-console-seed-{}", std::process::id()));
@@ -254,6 +329,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // End to end through python and the hub's code: rebuild, count, back up, restore, and the counts match.
     #[test]
     fn hub_scripts_work_on_a_real_database() {
         // Seeds a fresh database in a temp folder with the hub's own seed.py, then counts and backs it up.

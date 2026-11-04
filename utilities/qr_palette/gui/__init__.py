@@ -19,6 +19,7 @@ the window takes the program's name, version, icon and data folders from qr_pale
 
 from gui.window import run_gui
 
+# the one name the package exports: qr_palette.main calls run_gui to open the window
 __all__ = ["run_gui"]
 
 # ==== stamp v1 | author=kjFriday | hmac-sha256=df5e14b7cb71cb090891c2c2c50bcc4ae5e91584fdcebfc72eb1a908a5bce923 ====

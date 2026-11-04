@@ -7,9 +7,9 @@
 # Reused code, if any, is mapped in PROVENANCE.md.
 # ========================================================================
 
-"""Making codes: draw a code, save it, read it back to prove it scans, and register it; or draw one again.
+"""Making codes: draw a code, save it, read it back to prove it scans, and register it.
 
-make_qr is the Make tab's Save. It cleans the text, checks that the color is dark enough to scan on white,
+It also draws a registered code again. make_qr is the Make tab's Save (batches.py uses it too). It cleans the text, checks that the color is dark enough to scan on white,
 plans the short link when one is asked for (short_link_ops.plan_short_link), encodes the text (at level H
 around a logo, when there is one), saves a PNG or SVG, reads the file back and registers it; a file that
 does not read back the same is removed. A Wi-Fi password never reaches the registry: only the text with it
@@ -17,6 +17,20 @@ masked, and a keyed hash of the real text that finds the record again when the c
 (masked_entry). redraw_record draws a registered code again in another color, read back before it
 replaces the old file. register_picture adds a picture made elsewhere, and forget_record removes a record
 (never its file). Also here: the window's previews and robustness scores, drawn by the same codec.
+
+Callers: the GUI tabs (make, read, find), the window, batches.py and selftest.py. It calls qr_codec for
+drawing and reading, registry (through common.with_registry, one SQLite connection per call) for the
+records, shortlinks and short_link_ops for short links, payloads and localkey for secrets, swatch and
+textsafe for input checks.
+
+Main flow of make_qr:
+1. Clean the text and check the color and level.
+2. With a short link: check the destination and plan the short ID; the code then holds the short URL.
+3. Encode (around a logo at level H when there is one) and save the file.
+4. Read the file back; when the text or color differ, remove the file and fail.
+5. Mask any secret and register the code.
+
+Start reading at make_qr.
 
 Records
   Made     {"id": int, "path": str, "link": str, "color": "#rrggbb", "version": int, "level": str,
@@ -43,7 +57,11 @@ ROBUSTNESS_SCALE = 4  # pixels per module for the robustness score: decoding is 
 
 
 def slug(text):
-    """A short file-name part from a link: "https://shop.example.com/sale" -> "shop-example-com-sale"."""
+    """A short file-name part from a link: "https://shop.example.com/sale" -> "shop-example-com-sale".
+
+    Runs of ASCII letters and digits become words joined by "-"; a leading "www" is dropped; at most 40
+    characters; "qr-code" when nothing is left.
+    """
     lowered = text.lower()
     if "://" in lowered:
         lowered = lowered[lowered.index("://") + 3:]
@@ -64,14 +82,20 @@ def slug(text):
 
 
 def suggested_name(link, color, kind):
-    """A file name for a code. A secret in the text (a Wi-Fi password) never reaches it."""
+    """A file name for a code. A secret in the text (a Wi-Fi password) never reaches it.
+
+    color is "#rrggbb" (the "#" is dropped) and kind the extension, "png" or "svg".
+    """
     return slug(payloads.stored_form(link)[0]) + "-" + color[1:] + "." + kind
 
 
 def masked_entry(db_path, text, entry):
     """Fill in a code's Entry from the text it holds -> Result Entry. A secret (a Wi-Fi password) is
     never stored: the Entry gets the text with it masked, and a hash of the real text under the
-    registry's local key, which finds the record again when the code is scanned."""
+    registry's local key, which finds the record again when the code is scanned.
+
+    entry is changed in place and also returned. Fails when the local key cannot be read or made.
+    """
     stored, masked = payloads.stored_form(text)
     entry["link"] = stored
     if masked:
@@ -88,7 +112,11 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
     destination: the code holds a short link to it instead, with that address printed under it.
     With `logo` (an Image), the code is level H with the logo in its middle (qr_codec.place_logo).
     With `built`, `link` is a payloads.build text, used exactly as it is: its line ends are part of
-    it. Made's link is what the registry keeps, so a Wi-Fi password is masked there too."""
+    it. Made's link is what the registry keeps, so a Wi-Fi password is masked there too.
+
+    level is "L", "M", "Q" or "H" and scale pixels per module. Side effects: writes path (removed again
+    when it does not read back), and adds or replaces a registry record, plus a short link when asked.
+    """
     text = link
     if not built:
         text = textsafe.clean(link, None).strip()
@@ -115,6 +143,7 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
         code = planned["value"]["code"]
         text = planned["value"]["url"]
         caption = shortlinks.caption(text)
+    # --- encode and save ---
     placed_logo = None
     if logo is not None:
         placed = qr_codec.place_logo(text, logo)
@@ -122,6 +151,7 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
             return placed
         matrix = placed["value"]["matrix"]
         placed_logo = placed["value"]["logo"]
+        # a logo covers modules, so only the 30 percent recovery of level H leaves room for it
         level = "H"
     else:
         made = qr_codec.encode_text(text, level, 1, -1)
@@ -132,6 +162,7 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
     saved = qr_codec.save_matrix(matrix, path, scale, color, caption, placed_logo)
     if not saved["ok"]:
         return saved
+    # --- prove it scans ---
     picture = qr_codec.read_qr_file(path)
     if not picture["ok"] or picture["value"]["reading"]["text"] != text or picture["value"]["color"] != color:
         try:
@@ -142,6 +173,7 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
             return fail("with this logo the saved picture did not read back the same, so it was removed; try a "
                         "smaller or lighter logo")
         return fail("the saved picture did not read back the same, so it was removed")
+    # --- register ---
     entry = {"color": color, "path": path, "format": qr_codec.file_kind(path), "ec_level": level,
              "version": matrix["version"], "origin": "made"}
     if code != "":
@@ -153,6 +185,7 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
         return filled
 
     def register(connection):
+        """Save the filled entry on the open registry connection -> Result id."""
         return registry.save_qr(connection, entry)
 
     saved_record = with_registry(db_path, register)
@@ -165,7 +198,17 @@ def make_qr(db_path, link, color, level, path, scale, short=None, logo=None, bui
 def redraw_record(db_path, number, color, scale):
     """Draw registered code `number` again in `color` (a PNG at `scale` pixels per module) over its
     own file -> Result Made. The new drawing is read back before it replaces the old one; its link,
-    error-correction level and short link stay as they were."""
+    error-correction level and short link stay as they were.
+
+    Refuses records whose secret or logo the registry does not keep. The trial drawing is written as
+    ".redraw-<name>" beside the old file; the record is saved again with the new color and version.
+
+    Steps:
+    1. Check the color and scale, and load the record.
+    2. Encode the stored link and draw it into the trial file.
+    3. Read the trial back; on a mismatch remove it and leave the old file alone.
+    4. Move the trial over the old file and update the record.
+    """
     color = swatch.normalize_hex(color)
     if color == "" or not swatch.usable(color):
         return fail("pick a color dark enough to scan on white")
@@ -173,6 +216,7 @@ def redraw_record(db_path, number, color, scale):
         return fail("the size is 1 to 40 pixels per module")
 
     def read(connection):
+        """Load record `number` on the open connection -> Result row, or fail when it is gone."""
         row = registry.row_by_id(connection, number)
         if row is None:
             return fail("there is no record " + str(number))
@@ -197,6 +241,7 @@ def redraw_record(db_path, number, color, scale):
     folder, name = os.path.split(row["path"])
     if not os.path.isdir(folder):
         return fail("the folder of " + row["path"] + " is not there any more")
+    # the trial sits in the same folder so the final os.replace stays on one volume
     trial = os.path.join(folder, ".redraw-" + name)
     saved = qr_codec.save_matrix(made["value"], trial, scale, color, caption)
     if not saved["ok"]:
@@ -218,6 +263,7 @@ def redraw_record(db_path, number, color, scale):
         entry["short"] = {"code": row["short_code"], "target": row["target"]}
 
     def register(connection):
+        """Save the redrawn entry over the record with the same path -> Result id."""
         return registry.save_qr(connection, entry)
 
     saved_record = with_registry(db_path, register)
@@ -239,7 +285,11 @@ def picture_from_image(image):
 
 def register_picture(db_path, path, color):
     """Add a QR code picture made elsewhere (PNG or this program's SVG) to the registry, in `color`
-    -> Result record id."""
+    -> Result record id.
+
+    The picture must decode; its level and version come from the reading, and a secret in its text is
+    masked as for a made code. Side effect: adds or replaces a registry record.
+    """
     color = swatch.normalize_hex(color)
     if color == "":
         return fail("the color must be #rrggbb")
@@ -256,13 +306,17 @@ def register_picture(db_path, path, color):
         return filled
 
     def register(connection):
+        """Save the registered picture's entry -> Result id."""
         return registry.save_qr(connection, entry)
 
     return with_registry(db_path, register)
 
 
 def forget_record(db_path, number):
+    """Remove registry record `number`, never its file -> Result True when there was one."""
+
     def forget(connection):
+        """Delete the record on the open connection (registry.forget_qr)."""
         return registry.forget_qr(connection, number)
 
     return with_registry(db_path, forget)
@@ -270,8 +324,13 @@ def forget_record(db_path, number):
 
 def preview_png(link, color, level, version, caption=""):
     """A small PNG of a record's code, drawn again from its link (for previews in the window), as
-    large as fits in PREVIEW - 20 pixels with its caption."""
+    large as fits in PREVIEW - 20 pixels with its caption.
+
+    version is the smallest version to use (the record's own). Empty bytes when the link cannot be
+    encoded at all.
+    """
     made = qr_codec.encode_text(link, level, version, -1)
+    # a record with an odd level or version still gets a preview, at level M from version 1
     if not made["ok"]:
         made = qr_codec.encode_text(link, "M", 1, -1)
     if not made["ok"]:
@@ -280,10 +339,16 @@ def preview_png(link, color, level, version, caption=""):
 
 
 def fitted_png(matrix, color, caption, room, logo=None):
-    """The code as PNG bytes at the largest scale whose picture, caption included, fits `room` pixels."""
+    """The code as PNG bytes at the largest scale whose picture, caption included, fits `room` pixels.
+
+    Starts at the scale that fits the code and quiet zone (size + 8 modules) and steps down while the
+    caption makes the picture too big; scale 1 is returned even when it does not fit.
+    """
     scale = max(1, room // (matrix["size"] + 8))
     while True:
         png = qr_codec.picture_bytes(matrix, scale, color, "png", caption, logo)
+        # bytes 16..24 are the IHDR chunk's big-endian width and height (after the 8-byte signature,
+        # the 4-byte length and the 4-byte "IHDR" type)
         width, height = struct.unpack(">II", png[16:24])
         if scale == 1 or (width <= room and height <= room):
             return png
@@ -291,7 +356,11 @@ def fitted_png(matrix, color, caption, room, logo=None):
 
 
 def robustness_score(matrix, text, color, caption, logo=None):
-    """How much wear the code in `matrix` survives, drawn as its PNG would be -> Result Score."""
+    """How much wear the code in `matrix` survives, drawn as its PNG would be -> Result Score.
+
+    The picture is drawn at ROBUSTNESS_SCALE, not the saved scale, to keep the pure-Python decoding
+    quick; text is what every worn picture must still decode to.
+    """
     return qr_codec.robustness(qr_codec.picture_image(matrix, ROBUSTNESS_SCALE, color, caption, logo), text)
 
 # ==== stamp v1 | author=kjFriday | hmac-sha256=04288c64aa77e8d755cbb90d13dbc723383d7afee60debee751bcae00b37c0db ====

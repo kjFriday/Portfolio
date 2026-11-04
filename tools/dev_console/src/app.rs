@@ -1,16 +1,35 @@
 // ==== Generic Company Inc. portfolio ====================================
 // Project: dev_console | File: src/app.rs
-// About: The console's state and what it does: jobs and their events, live tests, the live site...
+// About: The console's state and the actions behind its buttons and keys.
 // Copyright (c) 2026 kjFriday | SPDX-License-Identifier: AGPL-3.0-only
 // You may change this file under the AGPL-3.0. The stamp at the end marks
 // the version kjFriday wrote. Verify with the portfolio's tools/stamp.py --check.
 // ========================================================================
 
-//! The console's state and what it does: jobs and their events, live tests, the live site, seed data and
-//! versions. The keyboard controls are in app/keys.rs; the drawing, with the frame loop that calls all of
-//! this, is in app/views.rs and app/views/.
+//! The console's state and the actions behind its buttons and keys.
+//!
+//! `App` holds everything the window knows: the programs from programs.ini, the jobs and their logs, the
+//! Live tests flags, and the state of the Versions, Seed data and live-production views. This file holds the
+//! actions (start a job, take in its events, stop it, run a seed op, apply a version, save the commands,
+//! change the text size); the keyboard controls are in app/keys.rs, and the drawing, with the frame loop that
+//! calls all of this, is in app/views.rs and app/views/. main.rs makes the `App` with `App::new` and hands it
+//! to eframe.
+//!
+//! One frame, as app/views.rs runs it:
+//! 1. `first_frame` once: the saved text size, and the thread that watches folders for Live tests.
+//! 2. `drain`: the job events from jobs.rs threads, the live-production check results, then `tick` (the
+//!    keep-checking timer, Live test runs, the end of an unanswered second-click confirm).
+//! 3. The keys (app/keys.rs), then the panels; buttons call the actions here.
+//! 4. With `--smoke FILE`, `write_self_smoke` writes the report and closes the window.
+//!
+//! Every job is an index into four parallel lists (`jobs`, `smoke`, `kind`, `procs`); `add_job` grows all four
+//! together and nothing is ever removed, so an id stays valid for the life of the window.
+//!
+//! Defines `App` and its parts: `View`, `Kind`, `Proc`, `ProdView`, `Versions`, `SeedView`.
 
+/// The keyboard controls from controls.ini, and the key text that buttons and tips show.
 mod keys;
+/// The drawing: the frame loop, the panels, and each view's body.
 mod views;
 
 use std::path::PathBuf;
@@ -25,20 +44,34 @@ use crate::jobs::{self, Event, Job, Status};
 use crate::registry::{self, Action, Program};
 use crate::{TITLE, VERSION, config, desktop, live, production, seed, versions};
 
+/// The index of `Action::Test` in `Action::ALL`: Test all, Live tests and the sidebar marks use it.
 const TEST: usize = 1; // index of Action::Test in Action::ALL
+/// How long a destructive seed button stays armed for its second click before it disarms itself.
+///
+/// Five seconds is long enough to read "Click again" and confirm, and short enough that a click much later is
+/// not taken as a confirm the user has forgotten about.
 const CONFIRM_FOR: Duration = Duration::from_secs(5);
 
 /// The window's views. ALL holds each view with its tab label, its controls.ini key and its hover help, in tab
 /// order.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
+    /// Build, test, run and smoke-check the selected program; the log fills the window.
     Run,
+    /// The selected program's version lines and the commands the console runs for it.
     Versions,
+    /// The CRUD Hub's shared database: counts, backups and seed scripts.
     Seed,
+    /// A program's live site: start, stop, open and check it.
     Production,
 }
 
+// The view table that the tabs, the view keys and the --smoke report all read.
 impl View {
+    /// Every view with its tab label, its controls.ini key and its hover help, in tab order.
+    ///
+    /// One table instead of a `match` per use keeps the tabs (views.rs), the keys (keys.rs) and the --smoke
+    /// report from drifting apart: a new view is one more row here.
     const ALL: [(View, &'static str, &'static str, &'static str); 4] = [
         (
             View::Run,
@@ -72,8 +105,11 @@ impl View {
 enum Kind {
     /// (program index, action index in Action::ALL)
     Program(usize, usize),
+    /// Building every program and placing (or removing) the desktop shortcuts.
     Desktop,
+    /// A seed op on the shared database.
     Seed(seed::Op),
+    /// tools/stamp.py --restamp after Apply version changed stamped files.
     Stamp,
     /// A program's live site (its production command).
     Production(usize),
@@ -82,7 +118,9 @@ enum Kind {
 /// A job's process, once it runs.
 #[derive(Default)]
 struct Proc {
+    /// The process id from `Event::Started`; Stop needs it.
     pid: Option<u32>,
+    /// When the process started, for the live site's uptime.
     started: Option<Instant>,
     /// Stop was pressed: the job ends as Stopped, not as a failure.
     stopped: bool,
@@ -96,12 +134,19 @@ type Checked = (String, Vec<production::Outcome>);
 /// The console's whole state. Each job has one entry in four lists indexed by its id (`jobs`, `smoke`,
 /// `kind`, `procs`): add_job pushes to all four, and nothing is removed.
 pub struct App {
+    /// The portfolio folder (the one with RULES.md); None disables everything that runs a command.
     root: Option<PathBuf>,
+    /// The layered settings, controls and warnings.
     cfg: config::Config,
+    /// The programs from programs.ini, in sidebar order; indexes into it are program ids.
     programs: Vec<Program>,
+    /// The text size factor, saved to settings.ini when it changes.
     zoom: f32,
+    /// The view tab shown.
     view: View,
+    /// The program picked in the sidebar.
     selected: usize,
+    /// Every job started since the window opened, indexed by job id.
     jobs: Vec<Job>,
     /// Smoke report file per job, read when the job ends.
     smoke: Vec<Option<PathBuf>>,
@@ -113,7 +158,9 @@ pub struct App {
     shown: Option<usize>,
     /// Last finished status per (program, action).
     last: Vec<[Option<Status>; Action::ALL.len()]>,
+    /// Cloned into every job thread to send its events.
     tx: Sender<Event>,
+    /// Where `drain_jobs` reads the job events, once per frame.
     rx: Receiver<Event>,
     /// Live tests on or off per program, shared with the watcher thread.
     live: Arc<Mutex<Vec<bool>>>,
@@ -125,8 +172,11 @@ pub struct App {
     started: bool,
     /// Messages from the last save or version change, shown in the Versions view.
     notes: Vec<(bool, String)>,
+    /// The Versions & commands view.
     ver: Versions,
+    /// The Seed data view.
     seed: SeedView,
+    /// The live-production view.
     prod: ProdView,
 }
 
@@ -134,15 +184,21 @@ pub struct App {
 struct ProdView {
     /// The program shown (an index into `programs`).
     pick: Option<usize>,
+    /// The results of the last check, one per check line.
     outcomes: Vec<production::Outcome>,
     /// When the outcomes were taken, and the URL they were taken from.
     checked: Option<(Instant, String)>,
+    /// A checks thread is running; no second one starts until it reports.
     checking: bool,
     /// The address a check is waiting on, while a just-started server comes up.
     waiting: Option<String>,
+    /// The "Keep checking" box: `tick` checks again every interval_s.
     keep_checking: bool,
+    /// A message under the buttons (ok, text), such as a port that is already taken.
     note: Option<(bool, String)>,
+    /// Cloned into each checks thread to send its results.
     tx: Sender<Checked>,
+    /// Where `drain_checks` reads the results.
     rx: Receiver<Checked>,
 }
 
@@ -150,7 +206,9 @@ struct ProdView {
 struct Versions {
     /// Program the spots were read for.
     for_program: Option<usize>,
+    /// One entry per version file: where its version line is, or why it was not found.
     spots: Vec<Result<versions::Spot, String>>,
+    /// The New version box.
     new_version: String,
     /// Commands being edited; saved to programs.ini on Save.
     edit: Vec<Program>,
@@ -158,17 +216,36 @@ struct Versions {
 
 /// Seed data view state.
 struct SeedView {
+    /// The Database box: the path of the file to work on, as typed.
     db: String,
+    /// Rows per table from the last Counts job; None while unread or after an error.
     counts: Option<Vec<(String, u64)>>,
+    /// Why the last Counts job failed (its last non-empty log line).
     counts_error: Option<String>,
+    /// The dated backups beside the database, newest first.
     backups: Vec<seed::Backup>,
+    /// The backup picked for Restore (an index into `backups`).
     pick: Option<usize>,
+    /// The destructive op waiting for its second click, and when it was first clicked.
     armed: Option<(seed::Op, Instant)>,
+    /// The view has read the backups and counts once; set on first show.
     loaded: bool,
 }
 
+// Construction and every action the views and keys call.
 impl App {
     /// The state for the programs in `cfg`; `root` is the portfolio folder, if it was found.
+    ///
+    /// `self_smoke` is the `--smoke FILE` path, if given. Nothing runs yet: no thread starts and no job is made
+    /// until the first frame, so building an `App` in a test is cheap.
+    ///
+    /// Steps:
+    /// 1. Make the job event channel and read the saved text size.
+    /// 2. Turn programs.ini into programs; its problems join the config warnings shown in the sidebar.
+    /// 3. Size the per-program lists (`last`, `live`) to the program count.
+    /// 4. Default the Seed data view to the shared database (GENERIC_COMPANY_DB or the LOCALAPPDATA file).
+    /// 5. Make the checks channel and fill in every view's starting state; the commands editor starts as a
+    ///    copy of the programs, so it is not "dirty".
     pub fn new(cfg: config::Config, root: Option<PathBuf>, self_smoke: Option<PathBuf>) -> Self {
         let (tx, rx) = channel();
         let zoom = cfg.number("view", "zoom", 1.0);
@@ -231,6 +308,19 @@ impl App {
     }
 
     /// Runs once, on the first frame: the text size, and the thread that watches program folders for Live tests.
+    ///
+    /// It waits for the first frame because it needs the egui `Context`, which `new` does not have.
+    ///
+    /// Steps:
+    /// 1. Turn off egui's own Ctrl+Plus/Minus zoom, so the keys in controls.ini are the only zoom keys (and the
+    ///    size gets saved), then apply the saved size.
+    /// 2. With a portfolio root, start the watcher thread. Each pass it copies the Live tests flags, and for
+    ///    each program that is on, asks live.rs for the newest change time in its folder (skipping the
+    ///    `[live] skip` folders such as target).
+    /// 3. A change sends the program index and asks for a repaint; `tick` then starts its tests. A program
+    ///    turned off has its `Watch` reset, so turning it on again does not count old edits.
+    /// 4. The thread sleeps `interval_ms` (at least 200 ms, so polling cannot hog the disk) and ends when the
+    ///    window, and with it the receiver, is gone.
     fn first_frame(&mut self, ctx: &egui::Context) {
         self.started = true;
         ctx.options_mut(|o| o.zoom_with_keyboard = false); // zoom keys come from controls.ini instead
@@ -266,6 +356,9 @@ impl App {
     }
 
     /// Add a job and return its id; `header` is the first log line.
+    ///
+    /// `kind` says what the job belongs to and `smoke` is the report file a Smoke run writes. The job starts as
+    /// Running and becomes the shown log. The caller then spawns the process with the returned id.
     fn add_job(&mut self, title: String, header: String, kind: Kind, smoke: Option<PathBuf>) -> usize {
         let id = self.jobs.len();
         let mut job = Job {
@@ -282,12 +375,25 @@ impl App {
         id
     }
 
+    /// A callback that asks egui to draw a new frame; job and check threads call it after each message.
+    ///
+    /// egui only repaints on input, so without it a job's output would not show until the mouse moved. The
+    /// `Context` is cheap to clone and safe to use from any thread.
     fn wake(ctx: &egui::Context) -> impl Fn() + Send + Clone + 'static {
         let ctx = ctx.clone();
         move || ctx.request_repaint()
     }
 
     /// Start action `a` (an index in Action::ALL) of program `p`, unless it is running already.
+    ///
+    /// Does nothing without a portfolio root, for a program index out of range, or when the program has no
+    /// command for that action.
+    ///
+    /// Steps:
+    /// 1. Name a temporary report file, unique by process id and job count, for a Smoke run to write.
+    /// 2. Ask registry.rs for the command; it puts the report path into Smoke's arguments.
+    /// 3. Add the job (with the report path only for Smoke) and mark the program's last run as Running.
+    /// 4. Spawn the process; its events arrive in `drain_jobs`.
     fn start(&mut self, ctx: &egui::Context, p: usize, a: usize) {
         let Some(root) = self.root.clone() else { return };
         if p >= self.programs.len() || self.busy(Kind::Program(p, a)) {
@@ -323,6 +429,16 @@ impl App {
     /// Apply the job events that arrived since the last frame. A job that ends is marked Stopped if Stop was
     /// pressed, lets a check waiting for its port give up, adds its --smoke report to its log, and then runs its
     /// follow-up: the last-run mark, the seed counts or a seed refresh, or the restamp note.
+    ///
+    /// `try_recv` never blocks, so the frame goes on as soon as the channel is empty.
+    ///
+    /// Steps:
+    /// 1. `Started` records the process id (for Stop) and the start time (for uptime).
+    /// 2. `Line` appends to the job's log.
+    /// 3. `Done` swaps in `Stopped` when Stop was pressed, clears the job's `alive` flag, moves a Smoke report
+    ///    into the log (then deletes the file), stores the status, and runs the follow-up for its kind: a
+    ///    Counts job parses its log into `counts` or keeps its last line as the error, any other seed job
+    ///    refreshes the view, and a restamp job leaves a note.
     fn drain_jobs(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
@@ -383,6 +499,9 @@ impl App {
     }
 
     /// Take the results of a finished production check.
+    ///
+    /// Stores the outcomes with the time and URL, and clears `checking` and `waiting` so the buttons and the
+    /// timer can start another check.
     fn drain_checks(&mut self) {
         while let Ok((url, outcomes)) = self.prod.rx.try_recv() {
             self.prod.outcomes = outcomes;
@@ -394,6 +513,12 @@ impl App {
 
     /// The rest of the frame's bookkeeping: the keep-checking timer, a test run for each program whose files
     /// changed (Live tests), and the end of a second-click confirm that was not answered in time.
+    ///
+    /// Steps:
+    /// 1. With Keep checking on and no check running, check the picked site again once `interval_s` (at least
+    ///    5 s, to spare the site) has passed since the last one.
+    /// 2. Start a test run for every program index the watcher thread sent; `start` skips one already running.
+    /// 3. Disarm a seed button armed longer than CONFIRM_FOR.
     fn tick(&mut self, ctx: &egui::Context) {
         if self.prod.keep_checking && !self.prod.checking {
             let every = Duration::from_secs_f32(self.cfg.number("production", "interval_s", 30.0).max(5.0));
@@ -417,6 +542,8 @@ impl App {
     }
 
     /// Whether a job of `kind` is running.
+    ///
+    /// Used to grey out a button whose job is still going, so one action never runs twice at once.
     fn busy(&self, kind: Kind) -> bool {
         self.kind
             .iter()
@@ -425,6 +552,8 @@ impl App {
     }
 
     /// Whether any seed job is running.
+    ///
+    /// Seed ops all touch the same database file, so any running one blocks the others, whatever its op.
     fn seed_busy(&self) -> bool {
         self.kind
             .iter()
@@ -433,6 +562,10 @@ impl App {
     }
 
     /// Start a desktop-shortcut job: build and place the set (`make`), or take it away.
+    ///
+    /// Needs the portfolio root and the user's config folder (where desktop.rs keeps its list of placed
+    /// shortcuts), and does nothing while a desktop job runs. The work runs on desktop.rs's own thread, which
+    /// sends the same job events as any other job.
     fn desktop_job(&mut self, ctx: &egui::Context, make: bool) {
         let (Some(root), Some(user)) = (self.root.clone(), self.cfg.user_dir.clone()) else {
             return;
@@ -464,6 +597,8 @@ impl App {
     // ---- live production ---------------------------------------------------------------------
 
     /// The running live-site job of program `p`, if any.
+    ///
+    /// Searches from the newest job back, since the newest is the one that can still be running.
     fn production_job(&self, p: usize) -> Option<usize> {
         (0..self.jobs.len())
             .rev()
@@ -471,6 +606,8 @@ impl App {
     }
 
     /// The last live-site job of program `p`, running or not.
+    ///
+    /// The view shows its status (such as stopped, or an exit code) when no site is running.
     fn last_production_job(&self, p: usize) -> Option<usize> {
         (0..self.jobs.len())
             .rev()
@@ -478,6 +615,9 @@ impl App {
     }
 
     /// Folders whose paths a public page must never show: the user's own and the portfolio's.
+    ///
+    /// USERPROFILE and LOCALAPPDATA come from the environment (skipped when unset), then the root. The checks
+    /// turn them into leak patterns: a page that prints one gives away the machine's user name and layout.
     fn local_paths(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = ["USERPROFILE", "LOCALAPPDATA"]
             .iter()
@@ -489,6 +629,16 @@ impl App {
     }
 
     /// Start program `p`'s live site, then check it once its address answers.
+    ///
+    /// Does nothing without a root, while the site already runs, or when the production command is empty.
+    ///
+    /// Steps:
+    /// 1. Split the production command into words; it runs in the program's folder.
+    /// 2. Take the host:port from production_url. If something answers there already, refuse with a note:
+    ///    the checks would reach that other server, not the one started here.
+    /// 3. Add the job and give it an `alive` flag, which `drain_jobs` clears when the process ends.
+    /// 4. Spawn the process, then start a check that first waits up to `start_wait_s` for the port to answer,
+    ///    giving up early if `alive` turns false.
     fn start_production(&mut self, ctx: &egui::Context, p: usize) {
         let Some(root) = self.root.clone() else { return };
         if self.production_job(p).is_some() {
@@ -529,6 +679,16 @@ impl App {
     }
 
     /// Check program `p`'s site on a thread; with `wait`, first wait for its address to answer.
+    ///
+    /// `wait` is (host:port, how long to wait, the job's alive flag). Does nothing without a production_url or
+    /// while a check runs. The results arrive in `drain_checks`; the network calls never block the window.
+    ///
+    /// Steps:
+    /// 1. Parse production_checks; a bad line becomes a note instead of a check.
+    /// 2. Build the leak patterns from `local_paths` and read the per-request timeout (at least 1 s).
+    /// 3. Mark the check as running (and what it waits on), then start the thread.
+    /// 4. On the thread: if waiting fails, report one failed "Server on" outcome, saying whether the time ran
+    ///    out or the server ended; otherwise run every check. Send the results and wake the window.
     fn check_production(&mut self, ctx: &egui::Context, p: usize, wait: Option<(String, Duration, Arc<AtomicBool>)>) {
         let url = self.programs[p].production_url.trim().to_string();
         if url.is_empty() || self.prod.checking {
@@ -569,6 +729,10 @@ impl App {
     }
 
     /// Stop job `id`'s process and everything it started.
+    ///
+    /// Marks the job as stopped first, so the Done event that the kill causes shows Stopped rather than a
+    /// failure. If taskkill fails, the mark is undone and the error goes into the job's log. A job with no
+    /// process id yet is left alone.
     fn stop_job(&mut self, id: usize) {
         let Some(pid) = self.procs[id].pid else { return };
         self.procs[id].stopped = true;
@@ -580,10 +744,22 @@ impl App {
 
     // ---- seed data ---------------------------------------------------------------------------
 
+    /// The Database box as a path, without the spaces a paste can bring along.
     fn db_path(&self) -> PathBuf {
         PathBuf::from(self.seed.db.trim())
     }
 
+    /// Start seed op `op` on the database in the Database box, with the picked backup for Restore.
+    ///
+    /// Does nothing without a root, with an empty Database box, or while another seed job runs. Callers go
+    /// through `seed_click` for a button press, so the second-click confirm has already happened.
+    ///
+    /// Steps:
+    /// 1. Look up the picked backup's path (only Restore uses it).
+    /// 2. Ask seed.rs for the command; it may refuse (Restore with no backup).
+    /// 3. Write a header that says what happens in words for Restore, Counts and Backup, whose commands are
+    ///    long inline scripts, and the command itself for the rest.
+    /// 4. Add the job and spawn it; `drain_jobs` runs the follow-up when it ends.
     fn seed_job(&mut self, ctx: &egui::Context, op: seed::Op) {
         let Some(root) = self.root.clone() else { return };
         if self.seed_busy() || self.seed.db.trim().is_empty() {
@@ -612,6 +788,12 @@ impl App {
     }
 
     /// Rescan backups and re-read the counts.
+    ///
+    /// Steps:
+    /// 1. Remember the picked backup by path, since a new backup shifts the list's indexes.
+    /// 2. Rescan the backups beside the database and find the picked one again (None if it is gone).
+    /// 3. If the database file exists, start a Counts job; otherwise clear the counts and the error, so the
+    ///    view says there is no file yet.
     fn refresh_seed(&mut self, ctx: &egui::Context) {
         self.seed.loaded = true;
         let picked = self
@@ -630,6 +812,10 @@ impl App {
     }
 
     /// A destructive op runs on the second click within a few seconds.
+    ///
+    /// The first click on an op that needs a confirm arms it (the button turns red and says "Click again");
+    /// a second click on the same op within CONFIRM_FOR runs it. Clicking another op re-arms for that op. Ops
+    /// that need no confirm run at once.
     fn seed_click(&mut self, ctx: &egui::Context, op: seed::Op) {
         if op.needs_confirm() && self.seed.armed.map(|(o, _)| o) != Some(op) {
             self.seed.armed = Some((op, Instant::now()));
@@ -641,6 +827,11 @@ impl App {
 
     // ---- versions & commands -----------------------------------------------------------------
 
+    /// Read the selected program's version lines from each of its version_files.
+    ///
+    /// Each file gives a spot (file, line, value) or an error to show in its row. The New version box starts
+    /// at the first version found. `for_program` records whose spots these are, so the view rereads them when
+    /// another program is picked. Does nothing without a root.
     fn load_versions(&mut self) {
         let Some(root) = &self.root else { return };
         let p = &self.programs[self.selected];
@@ -660,6 +851,18 @@ impl App {
             .unwrap_or_default();
     }
 
+    /// Write the New version into every version spot of the selected program, then restamp what changed.
+    ///
+    /// Side effects: edits the program's files, may start a restamp job, adds notes, and rereads the spots.
+    /// Nothing is committed.
+    ///
+    /// Steps:
+    /// 1. `versions::set` rewrites every spot whose value differs; an invalid version is an error note.
+    /// 2. With nothing changed, note that the program is already at that version.
+    /// 3. Otherwise note the changed files, relative to the root with forward slashes.
+    /// 4. The changed files that are not JSON carry a stamp, which the edit has made stale; if
+    ///    tools/stamp.py exists, start `python tools/stamp.py --restamp` on them as a Stamp job.
+    /// 5. Reread the spots, so the grid shows the new values.
     fn apply_version(&mut self, ctx: &egui::Context) {
         let Some(root) = self.root.clone() else { return };
         let spots: Vec<versions::Spot> = self.ver.spots.iter().flatten().cloned().collect();
@@ -693,10 +896,22 @@ impl App {
         self.load_versions();
     }
 
+    /// Whether the commands editor differs from the programs in use (enables Save and Revert).
     fn commands_dirty(&self) -> bool {
         self.ver.edit != self.programs
     }
 
+    /// Save the edited commands to programs.ini and use them from now on.
+    ///
+    /// Side effects: writes the file (creating its folder), replaces `programs` on success, adds a note either
+    /// way.
+    ///
+    /// Steps:
+    /// 1. Without a programs file location there is nowhere to save; note it and stop.
+    /// 2. Render the edits as programs.ini text, then load that text back. Any problem, or a program lost on
+    ///    the way, refuses the save, so a file the console could not read again is never written.
+    /// 3. Create the folder and write the file.
+    /// 4. On success the edits become the programs; on failure the note says why.
     fn save_commands(&mut self) {
         let Some(path) = self.cfg.programs_file.clone() else {
             self.notes
@@ -726,14 +941,24 @@ impl App {
 
     // ---- live, zoom --------------------------------------------------------------------------
 
+    /// Whether Live tests are on for program `p`.
+    ///
+    /// The flags sit behind a mutex because the watcher thread reads them too; the lock is held only for the
+    /// one read.
     fn is_live(&self, p: usize) -> bool {
         self.live.lock().unwrap()[p]
     }
 
+    /// Turn Live tests on or off for program `p`; the watcher thread sees it on its next pass.
     fn set_live(&mut self, p: usize, on: bool) {
         self.live.lock().unwrap()[p] = on;
     }
 
+    /// Set the text size to `z`, kept within zoom_min..zoom_max and rounded to whole percent.
+    ///
+    /// Side effects: applies the zoom to the window and saves it to settings.ini in the user folder; a save that
+    /// fails becomes a config warning. Rounding keeps repeated steps of 0.1 from drifting to 1.2000001, and an
+    /// unchanged size returns early so a key held at the limit does not rewrite the file every frame.
     fn set_zoom(&mut self, ctx: &egui::Context, z: f32) {
         let (lo, hi) = (
             self.cfg.number("view", "zoom_min", 0.5),
@@ -753,6 +978,10 @@ impl App {
     // ---- smoke report ------------------------------------------------------------------------
 
     /// `--smoke FILE`: after the first frame, write the report and close the window.
+    ///
+    /// The report is one line of JSON: title, version, program count, whether the root was found, control and
+    /// warning counts, the view labels and how many programs have a live site. It proves the window really
+    /// opened and drew with the shipped config. `take` empties `self_smoke`, so it runs only once.
     fn write_self_smoke(&mut self, ctx: &egui::Context) {
         let Some(path) = self.self_smoke.take() else { return };
         let views: Vec<String> = View::ALL
@@ -774,8 +1003,12 @@ impl App {
     }
 }
 
+// Cleanup when the window closes.
 impl Drop for App {
     /// Closing the console must not leave a live site running with no console to stop it.
+    ///
+    /// Stops the process tree of every running live-site job. Other jobs (a build, a test run) are left to finish
+    /// on their own.
     fn drop(&mut self) {
         for id in 0..self.jobs.len() {
             if matches!(self.kind[id], Kind::Production(_)) && self.jobs[id].status == Status::Running {
@@ -787,12 +1020,17 @@ impl Drop for App {
     }
 }
 
+/// Tests that drive `App` itself, without a window.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
 
     /// The view's own Start, checks and Stop, on the Journal at a free port. Needs Go; slow.
+    ///
+    /// Steps: point the production command of the Journal and URL at a free port, start it, pump `drain` until
+    /// the checks report, expect them all to pass, then Stop and expect the job to end as Stopped with
+    /// nothing left answering on the port.
     #[test]
     #[ignore]
     fn app_starts_checks_and_stops_the_live_site() {
@@ -843,4 +1081,4 @@ mod tests {
     }
 }
 
-// ==== stamp v1 | author=kjFriday | hmac-sha256=e701841fb56ae042e93d2d918eb799041864acd88821c0d91b4c2a12b2023752 ====
+// ==== stamp v1 | author=kjFriday | hmac-sha256=ebfcee9d409fe500d1aed0996dba36d94ba73d768126a6348a6ec76d4f9f97b7 ====
